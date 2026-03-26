@@ -5,11 +5,17 @@ import { eq } from 'drizzle-orm';
 import * as schema from '../database/schema';
 
 // ─── Mock do banco Drizzle ────────────────────────────────────────────────────
-const mockInsert = jest.fn().mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) });
+const mockInsert = jest
+  .fn()
+  .mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) });
 const mockUpdate = jest.fn().mockReturnValue({
-  set: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
+  set: jest
+    .fn()
+    .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
 });
-const mockDelete = jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) });
+const mockDelete = jest
+  .fn()
+  .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) });
 
 const mockDb = {
   insert: mockInsert,

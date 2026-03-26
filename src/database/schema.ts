@@ -27,13 +27,19 @@ export const users = sqliteTable('users', {
 // Extensão do usuário quando ele se torna vendedor
 
 export const sellerProfiles = sqliteTable('seller_profiles', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   bio: text('bio'),
   // ID da conta Stripe Connect do vendedor
   stripeAccountId: text('stripe_account_id'),
   // false = aguardando verificação | true = verificado pela equipe
-  isVerified: integer('is_verified', { mode: 'boolean' }).notNull().default(false),
+  isVerified: integer('is_verified', { mode: 'boolean' })
+    .notNull()
+    .default(false),
   ...timestamps,
 });
 
@@ -41,7 +47,9 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
 // Árvore de categorias (pode ter parentId para subcategorias)
 
 export const categories = sqliteTable('categories', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
   icon: text('icon'), // emoji ou nome de ícone
@@ -53,18 +61,22 @@ export const categories = sqliteTable('categories', {
 // Anúncios de venda (direta ou leilão)
 
 export const listings = sqliteTable('listings', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  sellerId: text('seller_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  sellerId: text('seller_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   categoryId: text('category_id').references(() => categories.id),
   title: text('title').notNull(),
   description: text('description'),
 
   // Metadados específicos de colecionáveis
-  brand: text('brand'),       // Ex: Hot Wheels
-  line: text('line'),         // Ex: RLC
-  scale: text('scale'),       // Ex: 1:64
+  brand: text('brand'), // Ex: Hot Wheels
+  line: text('line'), // Ex: RLC
+  scale: text('scale'), // Ex: 1:64
   year: text('year'),
-  edition: text('edition'),   // Ex: Limited 5000 pçs
+  edition: text('edition'), // Ex: Limited 5000 pçs
 
   // lacrado | novo | mint | usado
   condition: text('condition').notNull(),
@@ -88,12 +100,18 @@ export const listings = sqliteTable('listings', {
 // Configuração do leilão vinculado a um listing do tipo 'auction'
 
 export const auctions = sqliteTable('auctions', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  listingId: text('listing_id').notNull().references(() => listings.id, { onDelete: 'cascade' }),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  listingId: text('listing_id')
+    .notNull()
+    .references(() => listings.id, { onDelete: 'cascade' }),
 
   // Lance inicial e incremento mínimo em centavos
   startingBidInCents: integer('starting_bid_in_cents').notNull(),
-  minIncrementInCents: integer('min_increment_in_cents').notNull().default(1000),
+  minIncrementInCents: integer('min_increment_in_cents')
+    .notNull()
+    .default(1000),
   currentBidInCents: integer('current_bid_in_cents'),
   reservePriceInCents: integer('reserve_price_in_cents'), // null = sem reserva
 
@@ -105,7 +123,9 @@ export const auctions = sqliteTable('auctions', {
   endsAt: integer('ends_at', { mode: 'timestamp' }),
 
   // Anti-sniper: estende tempo se houver lance nos últimos minutos
-  antiSniper: integer('anti_sniper', { mode: 'boolean' }).notNull().default(true),
+  antiSniper: integer('anti_sniper', { mode: 'boolean' })
+    .notNull()
+    .default(true),
 
   // active | ended | cancelled
   status: text('status').notNull().default('active'),
@@ -117,9 +137,15 @@ export const auctions = sqliteTable('auctions', {
 // Histórico de lances em um leilão
 
 export const bids = sqliteTable('bids', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  auctionId: text('auction_id').notNull().references(() => auctions.id, { onDelete: 'cascade' }),
-  bidderId: text('bidder_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  auctionId: text('auction_id')
+    .notNull()
+    .references(() => auctions.id, { onDelete: 'cascade' }),
+  bidderId: text('bidder_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   amountInCents: integer('amount_in_cents').notNull(),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
@@ -130,19 +156,25 @@ export const bids = sqliteTable('bids', {
 // Endereços de entrega do comprador
 
 export const addresses = sqliteTable('addresses', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  label: text('label'),            // Ex: "Casa", "Trabalho"
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  label: text('label'), // Ex: "Casa", "Trabalho"
   recipientName: text('recipient_name').notNull(),
   street: text('street').notNull(),
   number: text('number').notNull(),
   complement: text('complement'),
   neighborhood: text('neighborhood'),
   city: text('city').notNull(),
-  state: text('state').notNull(),  // UF: SP, RJ...
+  state: text('state').notNull(), // UF: SP, RJ...
   zip: text('zip').notNull(),
   country: text('country').notNull().default('BR'),
-  isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+  isDefault: integer('is_default', { mode: 'boolean' })
+    .notNull()
+    .default(false),
   ...timestamps,
 });
 
@@ -150,10 +182,18 @@ export const addresses = sqliteTable('addresses', {
 // Pedidos criados após o checkout
 
 export const orders = sqliteTable('orders', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  buyerId: text('buyer_id').notNull().references(() => users.id),
-  sellerId: text('seller_id').notNull().references(() => users.id),
-  listingId: text('listing_id').notNull().references(() => listings.id),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  buyerId: text('buyer_id')
+    .notNull()
+    .references(() => users.id),
+  sellerId: text('seller_id')
+    .notNull()
+    .references(() => users.id),
+  listingId: text('listing_id')
+    .notNull()
+    .references(() => listings.id),
   addressId: text('address_id').references(() => addresses.id),
 
   // Valor total em centavos
@@ -175,9 +215,15 @@ export const orders = sqliteTable('orders', {
 // Anúncios salvos/favoritados por um usuário
 
 export const favorites = sqliteTable('favorites', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  listingId: text('listing_id').notNull().references(() => listings.id, { onDelete: 'cascade' }),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  listingId: text('listing_id')
+    .notNull()
+    .references(() => listings.id, { onDelete: 'cascade' }),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -187,9 +233,15 @@ export const favorites = sqliteTable('favorites', {
 // Mensagens entre comprador e vendedor
 
 export const messages = sqliteTable('messages', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  senderId: text('sender_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  receiverId: text('receiver_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  senderId: text('sender_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  receiverId: text('receiver_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   // Contexto opcional: mensagem vinculada a um anúncio ou pedido
   listingId: text('listing_id').references(() => listings.id),
   orderId: text('order_id').references(() => orders.id),
@@ -204,10 +256,18 @@ export const messages = sqliteTable('messages', {
 // Avaliações pós-transação (comprador avalia vendedor e vice-versa)
 
 export const reviews = sqliteTable('reviews', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  orderId: text('order_id').notNull().references(() => orders.id, { onDelete: 'cascade' }),
-  authorId: text('author_id').notNull().references(() => users.id),
-  targetId: text('target_id').notNull().references(() => users.id),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  orderId: text('order_id')
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  authorId: text('author_id')
+    .notNull()
+    .references(() => users.id),
+  targetId: text('target_id')
+    .notNull()
+    .references(() => users.id),
   // 1 a 5 estrelas
   rating: integer('rating').notNull(),
   comment: text('comment'),
@@ -220,9 +280,15 @@ export const reviews = sqliteTable('reviews', {
 // Disputas abertas por compradores ou vendedores
 
 export const disputes = sqliteTable('disputes', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  orderId: text('order_id').notNull().references(() => orders.id, { onDelete: 'cascade' }),
-  reporterId: text('reporter_id').notNull().references(() => users.id),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  orderId: text('order_id')
+    .notNull()
+    .references(() => orders.id, { onDelete: 'cascade' }),
+  reporterId: text('reporter_id')
+    .notNull()
+    .references(() => users.id),
   reason: text('reason').notNull(),
   description: text('description'),
   // open | under_review | resolved | closed
@@ -230,4 +296,3 @@ export const disputes = sqliteTable('disputes', {
   resolvedAt: integer('resolved_at', { mode: 'timestamp' }),
   ...timestamps,
 });
-

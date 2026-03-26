@@ -83,7 +83,9 @@ describe('UsersService', () => {
         .mockResolvedValueOnce([fakeUser])
         .mockResolvedValueOnce([{ ...fakeUser, name: 'João Atualizado' }]);
 
-      const result = await service.update('user_abc', { name: 'João Atualizado' });
+      const result = await service.update('user_abc', {
+        name: 'João Atualizado',
+      });
 
       expect(result.name).toBe('João Atualizado');
       expect(updateChain.set).toHaveBeenCalledWith(

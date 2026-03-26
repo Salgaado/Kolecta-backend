@@ -13,7 +13,7 @@ import { UsersService } from '../users/users.service';
  * RolesGuard — usado APÓS AuthGuard.
  * Lê a role do usuário diretamente do Turso (fonte de verdade),
  * garantindo que mudanças de role via webhook sejam respeitadas imediatamente.
- * 
+ *
  * Uso:
  *   @UseGuards(AuthGuard, RolesGuard)
  *   @Roles('seller')
@@ -30,10 +30,10 @@ export class RolesGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     // 1. Verificar se a rota tem @Roles definido
-    const requiredRoles = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    const requiredRoles = this.reflector.getAllAndOverride<string[]>(
+      ROLES_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     // Se a rota não tem @Roles, qualquer usuário autenticado pode acessar
     if (!requiredRoles || requiredRoles.length === 0) {

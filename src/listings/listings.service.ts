@@ -21,10 +21,10 @@ export type CreateListingDto = {
   scale?: string;
   year?: string;
   edition?: string;
-  condition: string;           // lacrado | novo | mint | usado
+  condition: string; // lacrado | novo | mint | usado
   type: 'direct' | 'auction';
   priceInCents?: number;
-  images?: string;             // JSON array stringificado
+  images?: string; // JSON array stringificado
 };
 
 export type UpdateListingDto = Partial<Omit<CreateListingDto, 'type'>>;
@@ -82,7 +82,10 @@ export class ListingsService {
 
   // ── Criar anúncio ────────────────────────────────────────────────────────
 
-  async create(sellerId: string, dto: CreateListingDto): Promise<ListingRecord> {
+  async create(
+    sellerId: string,
+    dto: CreateListingDto,
+  ): Promise<ListingRecord> {
     const id = crypto.randomUUID();
 
     await this.db.insert(schema.listings).values({
@@ -108,7 +111,9 @@ export class ListingsService {
 
     // Apenas o próprio vendedor pode editar
     if (listing.sellerId !== sellerId) {
-      throw new ForbiddenException('Você não tem permissão para editar este anúncio.');
+      throw new ForbiddenException(
+        'Você não tem permissão para editar este anúncio.',
+      );
     }
 
     await this.db
@@ -128,12 +133,12 @@ export class ListingsService {
 
     // Apenas o próprio vendedor pode deletar
     if (listing.sellerId !== sellerId) {
-      throw new ForbiddenException('Você não tem permissão para remover este anúncio.');
+      throw new ForbiddenException(
+        'Você não tem permissão para remover este anúncio.',
+      );
     }
 
-    await this.db
-      .delete(schema.listings)
-      .where(eq(schema.listings.id, id));
+    await this.db.delete(schema.listings).where(eq(schema.listings.id, id));
 
     this.logger.log(`[remove] Anúncio removido: ${id}`);
   }

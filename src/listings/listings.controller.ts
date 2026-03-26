@@ -91,10 +91,7 @@ export class ListingsController {
   @Patch(':id/status')
   @UseGuards(AuthGuard, RolesGuard)
   @Roles('admin')
-  async updateStatus(
-    @Param('id') id: string,
-    @Body('status') status: string,
-  ) {
+  async updateStatus(@Param('id') id: string, @Body('status') status: string) {
     const listing = await this.listingsService.updateStatus(id, status);
     return { data: listing };
   }

@@ -4,7 +4,7 @@ import { clerkMiddleware } from '@clerk/express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
-  
+
   // CORS para o MVP (Permitir requests do Front local ou prod)
   app.enableCors({
     origin: '*', // Ajustar para a URL do Front na etapa de deploy

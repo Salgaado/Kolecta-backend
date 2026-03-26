@@ -86,7 +86,9 @@ describe('ListingsService', () => {
 
     it('deve lançar NotFoundException quando não encontrado', async () => {
       selectChain.limit.mockResolvedValueOnce([]);
-      await expect(service.findById('nao_existe')).rejects.toThrow(NotFoundException);
+      await expect(service.findById('nao_existe')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -115,7 +117,9 @@ describe('ListingsService', () => {
         .mockResolvedValueOnce([fakeListing])
         .mockResolvedValueOnce([{ ...fakeListing, title: 'Novo Título' }]);
 
-      const result = await service.update('listing_001', 'user_seller', { title: 'Novo Título' });
+      const result = await service.update('listing_001', 'user_seller', {
+        title: 'Novo Título',
+      });
 
       expect(updateChain.set).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'Novo Título' }),
@@ -143,9 +147,9 @@ describe('ListingsService', () => {
     it('deve lançar ForbiddenException se sellerId não bate', async () => {
       selectChain.limit.mockResolvedValueOnce([fakeListing]);
 
-      await expect(
-        service.remove('listing_001', 'user_outro'),
-      ).rejects.toThrow(ForbiddenException);
+      await expect(service.remove('listing_001', 'user_outro')).rejects.toThrow(
+        ForbiddenException,
+      );
     });
   });
 

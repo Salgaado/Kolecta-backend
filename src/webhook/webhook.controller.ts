@@ -1,4 +1,12 @@
-import { Controller, Post, Headers, Req, Res, HttpStatus, Logger } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Headers,
+  Req,
+  Res,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { Webhook } from 'svix';
 import { WebhookService } from './webhook.service';
@@ -44,7 +52,10 @@ export class WebhookController {
         'svix-signature': svixSignature,
       }) as { type: string; data: any };
     } catch (err) {
-      this.logger.error('Falha na verificação da assinatura Svix:', err.message);
+      this.logger.error(
+        'Falha na verificação da assinatura Svix:',
+        err.message,
+      );
       return res
         .status(HttpStatus.BAD_REQUEST)
         .json({ message: 'Assinatura de webhook inválida.' });

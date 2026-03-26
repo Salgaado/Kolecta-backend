@@ -61,9 +61,14 @@ export class WebhookService {
         .set({ email, name, updatedAt: new Date() })
         .where(eq(schema.users.id, id));
 
-      this.logger.log(`[user.updated] Usuário atualizado no Turso com sucesso.`);
+      this.logger.log(
+        `[user.updated] Usuário atualizado no Turso com sucesso.`,
+      );
     } catch (err) {
-      this.logger.error(`[user.updated] Erro ao atualizar usuário:`, err.message);
+      this.logger.error(
+        `[user.updated] Erro ao atualizar usuário:`,
+        err.message,
+      );
     }
   }
 
@@ -75,9 +80,7 @@ export class WebhookService {
     this.logger.log(`[user.deleted] ID: ${id}`);
 
     try {
-      await this.db
-        .delete(schema.users)
-        .where(eq(schema.users.id, id));
+      await this.db.delete(schema.users).where(eq(schema.users.id, id));
 
       this.logger.log(`[user.deleted] Usuário removido do Turso com sucesso.`);
     } catch (err) {
