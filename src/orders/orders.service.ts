@@ -4,7 +4,10 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
+import { WalletService } from '../wallet/wallet.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
@@ -13,9 +16,12 @@ import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
+    private readonly walletService: WalletService,
   ) {}
 
   async createOrders(buyerId: string, dto: CreateOrderDto) {
@@ -125,5 +131,46 @@ export class OrdersService {
       .returning();
 
     return updated;
+  }
+
+  @OnEvent('stripe.checkout.completed')
+  async handleCheckoutCompleted(session: any) {
+    this.logger.log(`Processando webhook checkout.completed da Sessão Stripe: ${session.id}`);
+    
+    const orderId = session.metadata?.orderId;
+    if (!orderId) {
+      this.logger.error('Sessão sem orderId no metadata. Ignorando.');
+      return;
+    }
+
+    const [order] = await this.db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    if (!order) {
+      this.logger.error(`Pedido ${orderId} não encontrado.`);
+      return;
+    }
+
+    if (order.status !== 'pending') {
+      this.logger.warn(`Pedido ${orderId} já alterado anteriormente. Status atual: ${order.status}`);
+      return;
+    }
+    
+    await this.db.transaction(async (tx: any) => {
+      await tx.update(schema.orders).set({
+        status: 'paid',
+        stripePaymentId: session.payment_intent || session.id
+      }).where(eq(schema.orders.id, orderId));
+
+      await tx.update(schema.listings)
+        .set({ status: 'sold' })
+        .where(eq(schema.listings.id, order.listingId));
+    });
+
+    await this.walletService.hold(
+      order.sellerId, 
+      order.totalInCents, 
+      `Pagamento Confirmado (Pedido #${order.id.slice(0, 8)})`, 
+      order.id
+    );
+    this.logger.log(`✅ Pagamento Confirmado! Pedido ${order.id}. Hold de ${order.totalInCents / 100} BRL aplicado à carteira do vendedor ${order.sellerId}.`);
   }
 }
