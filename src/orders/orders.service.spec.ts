@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { OrdersService } from './orders.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { WalletService } from '../wallet/wallet.service';
 import { BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 
 // ─── Mock DB ──────────────────────────────────────────────────────────────────
@@ -56,6 +57,12 @@ const mockDb = {
   transaction: jest.fn(async (cb) => cb(mockTx)),
 };
 
+// Mock do WalletService — hold é chamado no handleCheckoutCompleted
+const mockWalletService = {
+  hold: jest.fn().mockResolvedValue({ success: true }),
+  getOrCreateWallet: jest.fn().mockResolvedValue({ id: 'wallet_001', balanceInCents: 0 }),
+};
+
 // ─── Suite ────────────────────────────────────────────────────────────────────
 
 describe('OrdersService', () => {
@@ -68,6 +75,7 @@ describe('OrdersService', () => {
       providers: [
         OrdersService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
+        { provide: WalletService, useValue: mockWalletService },
       ],
     }).compile();
 

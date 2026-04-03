@@ -94,6 +94,22 @@ export class OrdersService {
       .where(eq(schema.orders.buyerId, buyerId));
   }
 
+  async findById(orderId: string, userId: string) {
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+
+    if (!order) throw new NotFoundException('Pedido não encontrado');
+
+    // Apenas o comprador, o vendedor ou um admin podem ver o pedido
+    if (order.buyerId !== userId && order.sellerId !== userId) {
+      throw new ForbiddenException('Acesso negado a este pedido');
+    }
+
+    return order;
+  }
+
   async findSellerOrders(sellerId: string) {
     return this.db
       .select()

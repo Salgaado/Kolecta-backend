@@ -339,3 +339,27 @@ export const webhookEvents = sqliteTable('webhook_events', {
   errorMessage: text('error_message'),
   ...timestamps,
 });
+
+// ─── Withdrawal Requests ─────────────────────────────────────────────────────
+// Solicitações de saque de sellers via Stripe Connect Express
+export const withdrawalRequests = sqliteTable('withdrawal_requests', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+
+  // Valor solicitado em centavos (mínimo: R$50,00 = 5000 centavos)
+  amountInCents: integer('amount_in_cents').notNull(),
+
+  // requested | processing | paid | failed | cancelled
+  status: text('status').notNull().default('requested'),
+
+  // IDs do Stripe para rastreabilidade
+  stripePayoutId: text('stripe_payout_id'),
+  stripeAccountId: text('stripe_account_id'),
+
+  // Motivo de falha (se status = failed)
+  failureReason: text('failure_reason'),
+
+  ...timestamps,
+});

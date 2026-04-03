@@ -38,6 +38,12 @@ export class OrdersController {
     return this.ordersService.findSellerOrders(req.user.id);
   }
 
+  @Get(':id')
+  @Roles('buyer', 'seller', 'admin')
+  async getOrderById(@Req() req: any, @Param('id') id: string) {
+    return this.ordersService.findById(id, req.auth?.userId ?? req.user?.id);
+  }
+
   @Patch(':id/status')
   @Roles('seller', 'admin') // Apenas o próprio vendedor atualiza (validado via sellerId) ou um interceptador admin
   async updateStatus(

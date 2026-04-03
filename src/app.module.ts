@@ -12,20 +12,31 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { StripeCoreModule } from './stripe/stripe-core.module';
 import { DepositsModule } from './deposits/deposits.module';
 import { ConnectAccountsModule } from './connect/connect.module';
+import { AddressesModule } from './addresses/addresses.module';
+import { FavoritesModule } from './favorites/favorites.module';
+import { WithdrawalsModule } from './withdrawals/withdrawals.module';
+import { AuctionsModule } from './auctions/auctions.module';
 
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
+    // ── Stripe ──────────────────────────────────────────
     StripeCoreModule,
     DepositsModule,
     ConnectAccountsModule,
+    WithdrawalsModule,
+    // ── Core ────────────────────────────────────────────
     DatabaseModule,
     WebhookModule,
     AuthModule,
     UsersModule,
+    // ── Domain ──────────────────────────────────────────
     ListingsModule,
     OrdersModule,
+    AuctionsModule,
     WalletModule,
+    AddressesModule,
+    FavoritesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
