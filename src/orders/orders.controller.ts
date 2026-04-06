@@ -26,6 +26,12 @@ export class OrdersController {
     return this.ordersService.createOrders(buyerId, createOrderDto);
   }
 
+  @Post('checkout')
+  @Roles('buyer', 'seller', 'admin')
+  async createCheckout(@Req() req: any, @Body() dto: CreateOrderDto) {
+    return this.ordersService.createOrderWithPaymentIntent(req.user.id, dto);
+  }
+
   @Get('buyer/me')
   @Roles('buyer', 'seller', 'admin')
   async getBuyerOrders(@Req() req: any) {
