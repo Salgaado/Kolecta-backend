@@ -20,38 +20,38 @@ export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Post()
-  @Roles('buyer', 'seller', 'admin') // Todo usuário autenticado pode comprar (exceção tratada no service)
+  @Roles('user', 'admin')
   async createOrder(@Req() req: any, @Body() createOrderDto: CreateOrderDto) {
     const buyerId = req.user.id;
     return this.ordersService.createOrders(buyerId, createOrderDto);
   }
 
   @Post('checkout')
-  @Roles('buyer', 'seller', 'admin')
+  @Roles('user', 'admin')
   async createCheckout(@Req() req: any, @Body() dto: CreateOrderDto) {
     return this.ordersService.createOrderWithPaymentIntent(req.user.id, dto);
   }
 
-  @Get('buyer/me')
-  @Roles('buyer', 'seller', 'admin')
+  @Get('my/purchases')
+  @Roles('user', 'admin')
   async getBuyerOrders(@Req() req: any) {
     return this.ordersService.findBuyerOrders(req.user.id);
   }
 
-  @Get('seller/me')
-  @Roles('seller', 'admin')
+  @Get('my/sales')
+  @Roles('user', 'admin')
   async getSellerOrders(@Req() req: any) {
     return this.ordersService.findSellerOrders(req.user.id);
   }
 
   @Get(':id')
-  @Roles('buyer', 'seller', 'admin')
+  @Roles('user', 'admin')
   async getOrderById(@Req() req: any, @Param('id') id: string) {
     return this.ordersService.findById(id, req.auth?.userId ?? req.user?.id);
   }
 
   @Patch(':id/status')
-  @Roles('seller', 'admin') // Apenas o próprio vendedor atualiza (validado via sellerId) ou um interceptador admin
+  @Roles('user', 'admin')
   async updateStatus(
     @Req() req: any,
     @Param('id') id: string,

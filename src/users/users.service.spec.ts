@@ -9,7 +9,7 @@ const fakeUser = {
   id: 'user_abc',
   email: 'test@kolecta.com',
   name: 'João Silva',
-  role: 'buyer',
+  role: 'user',
   createdAt: new Date(),
   updatedAt: new Date(),
 };

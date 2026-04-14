@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc, and, getTableColumns } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 
@@ -29,7 +29,7 @@ export type CreateListingDto = {
 
 export type UpdateListingDto = Partial<Omit<CreateListingDto, 'type'>>;
 
-export type ListingRecord = typeof schema.listings.$inferSelect;
+export type ListingRecord = typeof schema.listings.$inferSelect & { sellerName?: string | null };
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -46,8 +46,12 @@ export class ListingsService {
 
   async findById(id: string): Promise<ListingRecord> {
     const result = await this.db
-      .select()
+      .select({
+        ...getTableColumns(schema.listings),
+        sellerName: schema.users.name,
+      })
       .from(schema.listings)
+      .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
       .where(eq(schema.listings.id, id))
       .limit(1);
 
@@ -62,9 +66,35 @@ export class ListingsService {
 
   async findAll(limit = 20, offset = 0): Promise<ListingRecord[]> {
     return this.db
-      .select()
+      .select({
+        ...getTableColumns(schema.listings),
+        sellerName: schema.users.name,
+      })
       .from(schema.listings)
+      .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
       .where(eq(schema.listings.status, 'active'))
+      .orderBy(desc(schema.listings.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  // ── Listar anúncios para Administração (filtra por status) ───────────────
+
+  async findAllAdmin(status?: string, limit = 50, offset = 0): Promise<ListingRecord[]> {
+    let query = this.db
+      .select({
+        ...getTableColumns(schema.listings),
+        sellerName: schema.users.name,
+      })
+      .from(schema.listings)
+      .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .$dynamic();
+
+    if (status) {
+      query = query.where(eq(schema.listings.status, status));
+    }
+
+    return query
       .orderBy(desc(schema.listings.createdAt))
       .limit(limit)
       .offset(offset);
@@ -74,8 +104,12 @@ export class ListingsService {
 
   async findBySeller(sellerId: string): Promise<ListingRecord[]> {
     return this.db
-      .select()
+      .select({
+        ...getTableColumns(schema.listings),
+        sellerName: schema.users.name,
+      })
       .from(schema.listings)
+      .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
       .where(eq(schema.listings.sellerId, sellerId))
       .orderBy(desc(schema.listings.createdAt));
   }

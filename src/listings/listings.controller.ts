@@ -40,6 +40,24 @@ export class ListingsController {
     return { data: listings };
   }
 
+  // ── GET /api/listings/admin — Admin: dashboard queue ─────────────────────
+
+  @Get('admin')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('admin')
+  async findAllAdmin(
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const listings = await this.listingsService.findAllAdmin(
+      status,
+      limit ? Number(limit) : 50,
+      offset ? Number(offset) : 0,
+    );
+    return { data: listings };
+  }
+
   // ── GET /api/listings/:id — Público: detalhe de um anúncio ──────────────
 
   @Get(':id')
@@ -48,22 +66,22 @@ export class ListingsController {
     return { data: listing };
   }
 
-  // ── GET /api/listings/seller/me — Vendedor: meus anúncios ───────────────
+  // ── GET /api/listings/my — Meus anúncios ────────────────────────────────
 
-  @Get('seller/me')
+  @Get('my')
   @UseGuards(AuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @Roles('user', 'admin')
   async findMine(@Req() req: Request) {
     const sellerId = (req as any).auth.userId as string;
     const listings = await this.listingsService.findBySeller(sellerId);
     return { data: listings };
   }
 
-  // ── POST /api/listings — Vendedor: criar anúncio ────────────────────────
+  // ── POST /api/listings — Criar anúncio ──────────────────────────────────
 
   @Post()
   @UseGuards(AuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @Roles('user', 'admin')
   @HttpCode(HttpStatus.CREATED)
   async create(@Req() req: Request, @Body() dto: CreateListingDto) {
     const sellerId = (req as any).auth.userId as string;
@@ -71,11 +89,11 @@ export class ListingsController {
     return { data: listing };
   }
 
-  // ── PATCH /api/listings/:id — Vendedor: editar anúncio ──────────────────
+  // ── PATCH /api/listings/:id — Editar anúncio ───────────────────────────
 
   @Patch(':id')
   @UseGuards(AuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @Roles('user', 'admin')
   async update(
     @Param('id') id: string,
     @Req() req: Request,
@@ -96,11 +114,11 @@ export class ListingsController {
     return { data: listing };
   }
 
-  // ── DELETE /api/listings/:id — Vendedor: remover anúncio ────────────────
+  // ── DELETE /api/listings/:id — Remover anúncio ─────────────────────────
 
   @Delete(':id')
   @UseGuards(AuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @Roles('user', 'admin')
   @HttpCode(HttpStatus.NO_CONTENT)
   async remove(@Param('id') id: string, @Req() req: Request) {
     const sellerId = (req as any).auth.userId as string;

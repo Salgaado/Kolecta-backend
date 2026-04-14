@@ -50,7 +50,7 @@ export class AuctionsController {
 
   @Post()
   @UseGuards(AuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @Roles('user', 'admin')
   @HttpCode(HttpStatus.CREATED)
   async create(@Req() req: Request, @Body() dto: CreateAuctionDto) {
     const sellerId = (req as any).auth.userId as string;

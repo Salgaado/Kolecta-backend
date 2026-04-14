@@ -18,8 +18,8 @@ export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   email: text('email').notNull().unique(),
   name: text('name'),
-  // buyer | seller | admin
-  role: text('role').notNull().default('buyer'),
+  // user | admin
+  role: text('role').notNull().default('user'),
   ...timestamps,
 });
 

@@ -28,6 +28,7 @@ const fakeListing = {
 
 const selectChain = {
   from: jest.fn().mockReturnThis(),
+  leftJoin: jest.fn().mockReturnThis(),
   where: jest.fn().mockReturnThis(),
   orderBy: jest.fn().mockReturnThis(),
   limit: jest.fn(),

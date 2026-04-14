@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { OrdersService } from './orders.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { WalletService } from '../wallet/wallet.service';
+import { StripeService } from '../stripe/stripe.service';
 import { BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 
 // ─── Mock DB ──────────────────────────────────────────────────────────────────
@@ -63,6 +64,14 @@ const mockWalletService = {
   getOrCreateWallet: jest.fn().mockResolvedValue({ id: 'wallet_001', balanceInCents: 0 }),
 };
 
+const mockStripeService = {
+  stripe: {
+    paymentIntents: {
+      create: jest.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test' }),
+    },
+  },
+};
+
 // ─── Suite ────────────────────────────────────────────────────────────────────
 
 describe('OrdersService', () => {
@@ -76,6 +85,7 @@ describe('OrdersService', () => {
         OrdersService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
         { provide: WalletService, useValue: mockWalletService },
+        { provide: StripeService, useValue: mockStripeService },
       ],
     }).compile();
 

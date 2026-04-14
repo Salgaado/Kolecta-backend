@@ -23,7 +23,7 @@ export class WithdrawalsController {
   // ── GET /api/withdrawals/me — Histórico de saques do seller ─────────────
 
   @Get('me')
-  @Roles('seller', 'admin')
+  @Roles('user', 'admin')
   async findMine(@Req() req: Request) {
     const userId = (req as any).auth.userId as string;
     const withdrawals = await this.withdrawalsService.findMyWithdrawals(userId);
@@ -33,7 +33,7 @@ export class WithdrawalsController {
   // ── POST /api/withdrawals — Solicitar saque ──────────────────────────────
 
   @Post()
-  @Roles('seller', 'admin')
+  @Roles('user', 'admin')
   @HttpCode(HttpStatus.CREATED)
   async request(@Req() req: Request, @Body() dto: RequestWithdrawalDto) {
     const userId = (req as any).auth.userId as string;

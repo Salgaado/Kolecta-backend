@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { clerkMiddleware } from '@clerk/express';
@@ -13,7 +16,11 @@ async function bootstrap() {
   });
 
   // O Auth Middleware do Clerk preencherá o objeto `req.auth` (usado no AuthGuard)
-  app.use(clerkMiddleware());
+  // Em dev (local), se a chave não existir no .env, não roda o middleware do Clerk.
+  // O DevAuthMiddleware assumirá o mock completo.
+  if (process.env.NODE_ENV === 'production' || process.env.CLERK_PUBLISHABLE_KEY) {
+    app.use(clerkMiddleware());
+  }
 
   // Escutar a porta injetada pela Render (ou 3000 local) na rede 0.0.0.0
   const port = process.env.PORT || 3000;

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
@@ -16,6 +16,7 @@ import { AddressesModule } from './addresses/addresses.module';
 import { FavoritesModule } from './favorites/favorites.module';
 import { WithdrawalsModule } from './withdrawals/withdrawals.module';
 import { AuctionsModule } from './auctions/auctions.module';
+import { DevAuthMiddleware } from './auth/dev-auth.middleware';
 
 @Module({
   imports: [
@@ -41,4 +42,11 @@ import { AuctionsModule } from './auctions/auctions.module';
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Apenas em ambiente de desenvolvimento — injeta req.auth mock
+    if (process.env.NODE_ENV !== 'production') {
+      consumer.apply(DevAuthMiddleware).forRoutes('*');
+    }
+  }
+}

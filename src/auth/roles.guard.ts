@@ -16,7 +16,7 @@ import { UsersService } from '../users/users.service';
  *
  * Uso:
  *   @UseGuards(AuthGuard, RolesGuard)
- *   @Roles('seller')
+ *   @Roles('user')
  *   async createListing() {}
  */
 @Injectable()
