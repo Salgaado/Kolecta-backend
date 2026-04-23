@@ -23,15 +23,7 @@ async function bootstrap() {
     process.env.NODE_ENV === 'production' ||
     process.env.CLERK_PUBLISHABLE_KEY
   ) {
-    app.use(
-      clerkMiddleware({
-        authorizedParties: [
-          'https://kolecta.com.br',
-          'https://kolecta.vercel.app',
-          'http://localhost:5173',
-        ],
-      }),
-    );
+    app.use(clerkMiddleware());
   }
 
   // Escutar a porta injetada pela Render (ou 3000 local) na rede 0.0.0.0
