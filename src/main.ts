@@ -10,9 +10,9 @@ async function bootstrap() {
 
   // CORS para o MVP (Permitir requests do Front local ou prod)
   app.enableCors({
-    origin: '*', // Ajustar para a URL do Front na etapa de deploy
+    origin: ['https://kolecta.com.br', 'https://kolecta.vercel.app', 'http://localhost:5173'],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders: '*',
+    allowedHeaders: 'Content-Type, Accept, Authorization',
     credentials: true,
   });
 
@@ -23,7 +23,15 @@ async function bootstrap() {
     process.env.NODE_ENV === 'production' ||
     process.env.CLERK_PUBLISHABLE_KEY
   ) {
-    app.use(clerkMiddleware());
+    app.use(
+      clerkMiddleware({
+        authorizedParties: [
+          'https://kolecta.com.br',
+          'https://kolecta.vercel.app',
+          'http://localhost:5173',
+        ],
+      }),
+    );
   }
 
   // Escutar a porta injetada pela Render (ou 3000 local) na rede 0.0.0.0
