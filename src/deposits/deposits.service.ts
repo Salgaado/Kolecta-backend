@@ -1,45 +1,48 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { StripeService } from '../stripe/stripe.service';
 
 @Injectable()
 export class DepositsService {
+  private readonly logger = new Logger(DepositsService.name);
+
   constructor(private readonly stripeService: StripeService) {}
 
-  async createCheckoutSession(orderId: string, amountInCents: number, buyerEmail?: string) {
-    // Para simplificar o MVP, usamos PaymentIntents diretamente
-    // ou Checkout Session caso haja redirecionamento. O plano pediu Checkout Session.
-    
-    // As urls de sucesso/cancel devem apontar pro FrontEnd (porta 5173 localmente ou dominio em prod)
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  /**
+   * Cria uma Checkout Session do Stripe para depósito na Wallet.
+   * O dinheiro vai para a conta da plataforma Kolecta.
+   * Após confirmação via webhook, o saldo é creditado na wallet do usuário.
+   */
+  async createDepositSession(userId: string, amountInCents: number) {
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:8080';
 
     const session = await this.stripeService.stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
+      payment_method_types: ['card', 'pix'],
       mode: 'payment',
-      customer_email: buyerEmail, // Opcional, auto-preenche
       line_items: [
         {
           price_data: {
             currency: 'brl',
             product_data: {
-              name: `Pedido Kolecta #${orderId.slice(0, 8)}`,
+              name: 'Recarga de Saldo Kolecta',
+              description: `Depósito de R$ ${(amountInCents / 100).toFixed(2)} na sua carteira Kolecta`,
             },
             unit_amount: amountInCents,
           },
           quantity: 1,
         },
       ],
-      success_url: `${frontendUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}&order_id=${orderId}`,
-      cancel_url: `${frontendUrl}/checkout/cancel?order_id=${orderId}`,
+      success_url: `${frontendUrl}/painel/financeiro?deposit=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/painel/financeiro?deposit=cancelled`,
       metadata: {
-        orderId,
-      },
-      // Salva a intent com metadata pra ser facilmente amarrada no webhook
-      payment_intent_data: {
-        metadata: {
-          orderId,
-        },
+        type: 'wallet_deposit',
+        userId,
+        amountInCents: String(amountInCents),
       },
     });
+
+    this.logger.log(
+      `Checkout Session ${session.id} criada para depósito de ${amountInCents / 100} BRL do usuário ${userId}`,
+    );
 
     return {
       sessionId: session.id,

@@ -1,6 +1,7 @@
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -24,6 +25,10 @@ export class CreateOrderDto {
   @IsString()
   @IsOptional()
   addressId?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  useWalletBalance?: boolean;
 }
 
 export class UpdateOrderStatusDto {

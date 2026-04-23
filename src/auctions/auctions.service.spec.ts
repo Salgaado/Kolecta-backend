@@ -162,7 +162,9 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([mockAuction]) // auction
-        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }]); // listing different seller
+        .mockResolvedValueOnce([
+          { ...mockListing, sellerId: 'another_seller' },
+        ]); // listing different seller
       service = await buildModule();
 
       await expect(
@@ -175,7 +177,9 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
-        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }]);
+        .mockResolvedValueOnce([
+          { ...mockListing, sellerId: 'another_seller' },
+        ]);
       service = await buildModule();
 
       const result = await service.placeBid(mockAuctionId, bidderId, {

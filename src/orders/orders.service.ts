@@ -86,7 +86,7 @@ export class OrdersService {
     });
   }
 
-  // ── Create order + PaymentIntent (checkout nativo) ─────────────────────────
+  // ── Create order + PaymentIntent (checkout híbrido: wallet + stripe) ────────
 
   async createOrderWithPaymentIntent(buyerId: string, dto: CreateOrderDto) {
     if (!dto.items || dto.items.length === 0) {
@@ -105,10 +105,25 @@ export class OrdersService {
       throw new NotFoundException('Anúncio não encontrado');
     }
     if (listing.status !== 'active') {
-      throw new BadRequestException('Este anúncio não está mais disponível para venda');
+      throw new BadRequestException(
+        'Este anúncio não está mais disponível para venda',
+      );
     }
     if (listing.sellerId === buyerId) {
-      throw new ForbiddenException('Você não pode comprar o seu próprio produto');
+      throw new ForbiddenException(
+        'Você não pode comprar o seu próprio produto',
+      );
+    }
+
+    const totalInCents = listing.priceInCents ?? 0;
+    let walletDeducted = 0;
+    let chargeAmount = totalInCents;
+
+    // ── Verificar saldo da wallet se solicitado ──
+    if (dto.useWalletBalance) {
+      const wallet = await this.walletService.getOrCreateWallet(buyerId);
+      walletDeducted = Math.min(wallet.balanceInCents, totalInCents);
+      chargeAmount = totalInCents - walletDeducted;
     }
 
     // Transação atômica: bloqueia o listing + cria o pedido
@@ -124,7 +139,7 @@ export class OrdersService {
           buyerId,
           sellerId: listing.sellerId,
           listingId: listing.id,
-          totalInCents: listing.priceInCents ?? 0,
+          totalInCents,
           status: 'pending',
         })
         .returning();
@@ -132,16 +147,56 @@ export class OrdersService {
       return newOrder;
     });
 
-    // Cria o PaymentIntent após confirmar o pedido no DB
+    // ── Caso 1: Saldo da wallet cobre 100% do valor ──
+    if (chargeAmount <= 0) {
+      const wallet = await this.walletService.getOrCreateWallet(buyerId);
+      await this.walletService.debit(
+        wallet.id,
+        walletDeducted,
+        `Compra #${order.id.slice(0, 8)} (saldo integral)`,
+        order.id,
+      );
+
+      // Confirma o pedido imediatamente
+      await this.confirmOrderPayment(order.id, `wallet-${wallet.id}`);
+
+      this.logger.log(
+        `Pedido ${order.id} pago 100% via wallet (${totalInCents / 100} BRL)`,
+      );
+
+      return {
+        orderId: order.id,
+        totalInCents,
+        walletDeducted,
+        paidViaWallet: true,
+      };
+    }
+
+    // ── Caso 2: Deduz parcial da wallet + cobra restante via Stripe ──
+    if (walletDeducted > 0) {
+      const wallet = await this.walletService.getOrCreateWallet(buyerId);
+      await this.walletService.debit(
+        wallet.id,
+        walletDeducted,
+        `Abatimento parcial - Compra #${order.id.slice(0, 8)}`,
+        order.id,
+      );
+      this.logger.log(
+        `Abatido ${walletDeducted / 100} BRL da wallet. Restante: ${chargeAmount / 100} BRL via Stripe.`,
+      );
+    }
+
+    // Cria o PaymentIntent para o valor restante
     const paymentIntent = await this.stripeService.stripe.paymentIntents.create(
       {
-        amount: order.totalInCents,
+        amount: chargeAmount,
         currency: 'brl',
-        automatic_payment_methods: { enabled: true },
+        payment_method_types: ['card', 'pix'],
         metadata: {
           orderId: order.id,
           buyerId,
           sellerId: listing.sellerId,
+          walletDeducted: String(walletDeducted),
         },
       },
       {
@@ -150,13 +205,15 @@ export class OrdersService {
     );
 
     this.logger.log(
-      `PaymentIntent ${paymentIntent.id} criado para Order ${order.id} (${order.totalInCents / 100} BRL)`,
+      `PaymentIntent ${paymentIntent.id} criado para Order ${order.id} (${chargeAmount / 100} BRL)`,
     );
 
     return {
       clientSecret: paymentIntent.client_secret,
       orderId: order.id,
-      totalInCents: order.totalInCents,
+      totalInCents,
+      walletDeducted,
+      chargeAmount,
     };
   }
 
@@ -225,7 +282,9 @@ export class OrdersService {
 
   @OnEvent('stripe.checkout.completed')
   async handleCheckoutCompleted(session: any) {
-    this.logger.log(`Processando webhook checkout.completed da Sessão Stripe: ${session.id}`);
+    this.logger.log(
+      `Processando webhook checkout.completed da Sessão Stripe: ${session.id}`,
+    );
 
     const orderId = session.metadata?.orderId;
     if (!orderId) {
@@ -233,16 +292,23 @@ export class OrdersService {
       return;
     }
 
-    await this.confirmOrderPayment(orderId, session.payment_intent || session.id);
+    await this.confirmOrderPayment(
+      orderId,
+      session.payment_intent || session.id,
+    );
   }
 
   @OnEvent('stripe.payment_intent.succeeded')
   async handlePaymentIntentSucceeded(paymentIntent: any) {
-    this.logger.log(`Processando webhook payment_intent.succeeded: ${paymentIntent.id}`);
+    this.logger.log(
+      `Processando webhook payment_intent.succeeded: ${paymentIntent.id}`,
+    );
 
     const orderId = paymentIntent.metadata?.orderId;
     if (!orderId) {
-      this.logger.warn(`PaymentIntent ${paymentIntent.id} sem orderId no metadata. Ignorando.`);
+      this.logger.warn(
+        `PaymentIntent ${paymentIntent.id} sem orderId no metadata. Ignorando.`,
+      );
       return;
     }
 
@@ -263,7 +329,9 @@ export class OrdersService {
     }
 
     if (order.status !== 'pending') {
-      this.logger.warn(`Pedido ${orderId} já processado. Status atual: ${order.status}`);
+      this.logger.warn(
+        `Pedido ${orderId} já processado. Status atual: ${order.status}`,
+      );
       return;
     }
 

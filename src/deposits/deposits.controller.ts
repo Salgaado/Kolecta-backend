@@ -1,23 +1,43 @@
-import { Controller, Post, Body, Req } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Req,
+  UseGuards,
+  BadRequestException,
+} from '@nestjs/common';
 import { DepositsService } from './deposits.service';
+import { AuthGuard } from '../auth/auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 
-@Controller('deposits')
+@Controller('api/wallet')
+@UseGuards(AuthGuard, RolesGuard)
 export class DepositsController {
   constructor(private readonly depositsService: DepositsService) {}
 
-  @Post('checkout-session')
-  async createCheckoutSession(
-    @Body() body: { orderId: string; amountInCents: number; buyerEmail?: string },
+  @Post('deposit')
+  @Roles('user', 'admin')
+  async createDepositSession(
     @Req() req: any,
+    @Body() body: { amountInCents: number },
   ) {
-    if (!body.orderId || !body.amountInCents) {
-      throw new Error('orderId and amountInCents are required');
+    const userId = req.auth.userId;
+
+    if (!body.amountInCents || body.amountInCents < 500) {
+      throw new BadRequestException('O valor mínimo de depósito é R$ 5,00');
     }
 
-    return this.depositsService.createCheckoutSession(
-      body.orderId,
+    if (body.amountInCents > 100_000_00) {
+      throw new BadRequestException(
+        'O valor máximo por depósito é R$ 100.000,00',
+      );
+    }
+
+    const result = await this.depositsService.createDepositSession(
+      userId,
       body.amountInCents,
-      body.buyerEmail,
     );
+    return { data: result };
   }
 }

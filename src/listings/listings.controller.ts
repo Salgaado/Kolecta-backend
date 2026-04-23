@@ -32,10 +32,12 @@ export class ListingsController {
   async findAll(
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('q') q?: string,
   ) {
     const listings = await this.listingsService.findAll(
       limit ? Number(limit) : 20,
       offset ? Number(offset) : 0,
+      q,
     );
     return { data: listings };
   }
@@ -58,14 +60,6 @@ export class ListingsController {
     return { data: listings };
   }
 
-  // ── GET /api/listings/:id — Público: detalhe de um anúncio ──────────────
-
-  @Get(':id')
-  async findOne(@Param('id') id: string) {
-    const listing = await this.listingsService.findById(id);
-    return { data: listing };
-  }
-
   // ── GET /api/listings/my — Meus anúncios ────────────────────────────────
 
   @Get('my')
@@ -75,6 +69,14 @@ export class ListingsController {
     const sellerId = (req as any).auth.userId as string;
     const listings = await this.listingsService.findBySeller(sellerId);
     return { data: listings };
+  }
+
+  // ── GET /api/listings/:id — Público: detalhe de um anúncio ──────────────
+
+  @Get(':id')
+  async findOne(@Param('id') id: string) {
+    const listing = await this.listingsService.findById(id);
+    return { data: listing };
   }
 
   // ── POST /api/listings — Criar anúncio ──────────────────────────────────

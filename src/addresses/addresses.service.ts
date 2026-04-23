@@ -100,7 +100,8 @@ export class AddressesService {
       );
 
     if (!address) throw new NotFoundException('Endereço não encontrado');
-    if (address.userId !== userId) throw new ForbiddenException('Acesso negado');
+    if (address.userId !== userId)
+      throw new ForbiddenException('Acesso negado');
 
     await this.db
       .delete(schema.addresses)

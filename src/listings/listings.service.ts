@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { eq, desc, and, getTableColumns } from 'drizzle-orm';
+import { eq, desc, and, getTableColumns, like } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 
@@ -29,7 +29,9 @@ export type CreateListingDto = {
 
 export type UpdateListingDto = Partial<Omit<CreateListingDto, 'type'>>;
 
-export type ListingRecord = typeof schema.listings.$inferSelect & { sellerName?: string | null };
+export type ListingRecord = typeof schema.listings.$inferSelect & {
+  sellerName?: string | null;
+};
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -64,8 +66,8 @@ export class ListingsService {
 
   // ── Listar anúncios públicos ativos ──────────────────────────────────────
 
-  async findAll(limit = 20, offset = 0): Promise<ListingRecord[]> {
-    return this.db
+  async findAll(limit = 20, offset = 0, q?: string): Promise<ListingRecord[]> {
+    let query = this.db
       .select({
         ...getTableColumns(schema.listings),
         sellerName: schema.users.name,
@@ -73,6 +75,18 @@ export class ListingsService {
       .from(schema.listings)
       .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
       .where(eq(schema.listings.status, 'active'))
+      .$dynamic();
+
+    if (q) {
+      query = query.where(
+        and(
+          eq(schema.listings.status, 'active'),
+          like(schema.listings.title, `%${q}%`),
+        ),
+      );
+    }
+
+    return query
       .orderBy(desc(schema.listings.createdAt))
       .limit(limit)
       .offset(offset);
@@ -80,7 +94,11 @@ export class ListingsService {
 
   // ── Listar anúncios para Administração (filtra por status) ───────────────
 
-  async findAllAdmin(status?: string, limit = 50, offset = 0): Promise<ListingRecord[]> {
+  async findAllAdmin(
+    status?: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<ListingRecord[]> {
     let query = this.db
       .select({
         ...getTableColumns(schema.listings),

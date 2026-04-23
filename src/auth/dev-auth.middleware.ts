@@ -23,7 +23,7 @@ export class DevAuthMiddleware implements NestMiddleware {
       return next();
     }
 
-    const devUserId = req.headers['x-dev-user-id'] as string || 'seller-001';
+    const devUserId = (req.headers['x-dev-user-id'] as string) || 'seller-001';
 
     (req as any).auth = { userId: devUserId };
     this.logger.debug(`[DEV] Auth mockado → userId=${devUserId}`);

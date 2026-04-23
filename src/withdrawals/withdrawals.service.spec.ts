@@ -40,14 +40,16 @@ const makeDb = () => ({
   returning: jest.fn().mockResolvedValue([mockWithdrawal]),
   update: jest.fn().mockReturnThis(),
   set: jest.fn().mockReturnThis(),
-  transaction: jest.fn().mockImplementation(async (fn: any) => fn({
-    update: jest.fn().mockReturnThis(),
-    set: jest.fn().mockReturnThis(),
-    where: jest.fn().mockResolvedValue(undefined),
-    insert: jest.fn().mockReturnThis(),
-    values: jest.fn().mockReturnThis(),
-    returning: jest.fn().mockResolvedValue([mockWithdrawal]),
-  })),
+  transaction: jest.fn().mockImplementation(async (fn: any) =>
+    fn({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockResolvedValue(undefined),
+      insert: jest.fn().mockReturnThis(),
+      values: jest.fn().mockReturnThis(),
+      returning: jest.fn().mockResolvedValue([mockWithdrawal]),
+    }),
+  ),
 });
 
 const mockStripeService = {

@@ -1,4 +1,10 @@
-import { Injectable, Inject, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  NotFoundException,
+  BadRequestException,
+  Logger,
+} from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { StripeService } from '../stripe/stripe.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -18,7 +24,8 @@ export class ConnectService {
 
   async getOnboardingLink(userId: string) {
     // 1. Encontrar o seller_profile
-    const [seller] = await this.db.select()
+    const [seller] = await this.db
+      .select()
       .from(schema.sellerProfiles)
       .where(eq(schema.sellerProfiles.userId, userId));
 
@@ -41,7 +48,8 @@ export class ConnectService {
       accountId = account.id;
 
       // Persistir na base
-      await this.db.update(schema.sellerProfiles)
+      await this.db
+        .update(schema.sellerProfiles)
         .set({ stripeAccountId: accountId })
         .where(eq(schema.sellerProfiles.id, seller.id));
     }
@@ -60,17 +68,20 @@ export class ConnectService {
   }
 
   async getLoginLink(userId: string) {
-    const [seller] = await this.db.select()
+    const [seller] = await this.db
+      .select()
       .from(schema.sellerProfiles)
       .where(eq(schema.sellerProfiles.userId, userId));
 
     if (!seller || !seller.stripeAccountId) {
-      throw new BadRequestException('A conta Connect do vendedor não foi inicializada.');
+      throw new BadRequestException(
+        'A conta Connect do vendedor não foi inicializada.',
+      );
     }
 
     // Gerar link de login para o Dashboard financeiro do Stripe Express
     const loginLink = await this.stripeService.stripe.accounts.createLoginLink(
-      seller.stripeAccountId
+      seller.stripeAccountId,
     );
 
     return { url: loginLink.url };
@@ -81,25 +92,29 @@ export class ConnectService {
     this.logger.log(`Sincronizando status da conta Connect: ${account.id}`);
 
     // Encontrar o seller pelo stripeAccountId
-    const [seller] = await this.db.select()
+    const [seller] = await this.db
+      .select()
       .from(schema.sellerProfiles)
       .where(eq(schema.sellerProfiles.stripeAccountId, account.id));
 
     if (!seller) {
-      this.logger.warn(`Nenhum seller encontrado com stripeAccountId=${account.id}. Ignorando.`);
+      this.logger.warn(
+        `Nenhum seller encontrado com stripeAccountId=${account.id}. Ignorando.`,
+      );
       return;
     }
 
     // Uma conta está "pronta para receber" quando charges_enabled e payouts_enabled são true
     const isReadyToReceive = account.charges_enabled && account.payouts_enabled;
 
-    await this.db.update(schema.sellerProfiles)
+    await this.db
+      .update(schema.sellerProfiles)
       .set({ isVerified: isReadyToReceive })
       .where(eq(schema.sellerProfiles.id, seller.id));
 
     this.logger.log(
       `✅ Seller ${seller.id} sincronizado: isVerified=${isReadyToReceive} ` +
-      `(charges_enabled=${account.charges_enabled}, payouts_enabled=${account.payouts_enabled})`
+        `(charges_enabled=${account.charges_enabled}, payouts_enabled=${account.payouts_enabled})`,
     );
   }
 }

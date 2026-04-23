@@ -22,32 +22,38 @@ export class OrdersController {
   @Post()
   @Roles('user', 'admin')
   async createOrder(@Req() req: any, @Body() createOrderDto: CreateOrderDto) {
-    const buyerId = req.user.id;
+    const buyerId = req.auth.userId;
     return this.ordersService.createOrders(buyerId, createOrderDto);
   }
 
   @Post('checkout')
   @Roles('user', 'admin')
   async createCheckout(@Req() req: any, @Body() dto: CreateOrderDto) {
-    return this.ordersService.createOrderWithPaymentIntent(req.user.id, dto);
+    return this.ordersService.createOrderWithPaymentIntent(
+      req.auth.userId,
+      dto,
+    );
   }
 
   @Get('my/purchases')
   @Roles('user', 'admin')
   async getBuyerOrders(@Req() req: any) {
-    return this.ordersService.findBuyerOrders(req.user.id);
+    const orders = await this.ordersService.findBuyerOrders(req.auth.userId);
+    return { data: orders };
   }
 
   @Get('my/sales')
   @Roles('user', 'admin')
   async getSellerOrders(@Req() req: any) {
-    return this.ordersService.findSellerOrders(req.user.id);
+    const orders = await this.ordersService.findSellerOrders(req.auth.userId);
+    return { data: orders };
   }
 
   @Get(':id')
   @Roles('user', 'admin')
   async getOrderById(@Req() req: any, @Param('id') id: string) {
-    return this.ordersService.findById(id, req.auth?.userId ?? req.user?.id);
+    const order = await this.ordersService.findById(id, req.auth.userId);
+    return { data: order };
   }
 
   @Patch(':id/status')
@@ -57,6 +63,11 @@ export class OrdersController {
     @Param('id') id: string,
     @Body() dto: UpdateOrderStatusDto,
   ) {
-    return this.ordersService.updateOrderStatus(req.user.id, id, dto);
+    const order = await this.ordersService.updateOrderStatus(
+      req.auth.userId,
+      id,
+      dto,
+    );
+    return { data: order };
   }
 }

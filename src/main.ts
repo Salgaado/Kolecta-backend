@@ -12,13 +12,17 @@ async function bootstrap() {
   app.enableCors({
     origin: '*', // Ajustar para a URL do Front na etapa de deploy
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders: '*',
     credentials: true,
   });
 
   // O Auth Middleware do Clerk preencherá o objeto `req.auth` (usado no AuthGuard)
   // Em dev (local), se a chave não existir no .env, não roda o middleware do Clerk.
   // O DevAuthMiddleware assumirá o mock completo.
-  if (process.env.NODE_ENV === 'production' || process.env.CLERK_PUBLISHABLE_KEY) {
+  if (
+    process.env.NODE_ENV === 'production' ||
+    process.env.CLERK_PUBLISHABLE_KEY
+  ) {
     app.use(clerkMiddleware());
   }
 

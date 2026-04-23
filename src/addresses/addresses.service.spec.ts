@@ -109,8 +109,8 @@ describe('AddressesService', () => {
       // 3ª .where: select.where → retorna o endereço atualizado
       mockDb.where
         .mockResolvedValueOnce([mockAddress]) // find check
-        .mockReturnValueOnce(mockDb)          // update.where (chain — sem await direto)
-        .mockResolvedValueOnce([updated]);    // select.where final
+        .mockReturnValueOnce(mockDb) // update.where (chain — sem await direto)
+        .mockResolvedValueOnce([updated]); // select.where final
       service = await buildModule();
 
       const result = await service.update(mockUserId, mockAddressId, {
@@ -135,7 +135,9 @@ describe('AddressesService', () => {
 
     it('deve deletar o endereço com sucesso', async () => {
       mockDb = makeDrizzleMock(undefined);
-      mockDb.where.mockResolvedValueOnce([mockAddress]).mockResolvedValueOnce(undefined);
+      mockDb.where
+        .mockResolvedValueOnce([mockAddress])
+        .mockResolvedValueOnce(undefined);
       service = await buildModule();
 
       await expect(

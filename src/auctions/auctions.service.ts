@@ -117,7 +117,9 @@ export class AuctionsService {
       .where(eq(schema.listings.id, auction.listingId));
 
     if (listing?.sellerId === bidderId) {
-      throw new ForbiddenException('Você não pode dar lances no seu próprio leilão');
+      throw new ForbiddenException(
+        'Você não pode dar lances no seu próprio leilão',
+      );
     }
 
     // Validação do valor do lance

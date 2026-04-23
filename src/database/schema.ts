@@ -300,8 +300,13 @@ export const disputes = sqliteTable('disputes', {
 // ─── Wallets ─────────────────────────────────────────────────────────────────
 // Carteira interna de cada usuário/vendedor
 export const wallets = sqliteTable('wallets', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  userId: text('user_id').notNull().unique().references(() => users.id, { onDelete: 'cascade' }),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
   balanceInCents: integer('balance_in_cents').notNull().default(0), // Saldo disponível
   pendingInCents: integer('pending_in_cents').notNull().default(0), // Fica retido em 'hold'
   ...timestamps,
@@ -310,29 +315,35 @@ export const wallets = sqliteTable('wallets', {
 // ─── Wallet Transactions ─────────────────────────────────────────────────────
 // Ledger atômico e append-only das operações financeiras na plataforma
 export const walletTransactions = sqliteTable('wallet_transactions', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  walletId: text('wallet_id').notNull().references(() => wallets.id, { onDelete: 'cascade' }),
-  
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  walletId: text('wallet_id')
+    .notNull()
+    .references(() => wallets.id, { onDelete: 'cascade' }),
+
   // credit = deposito manual ou venda efetivada
   // debit  = compra ou saque
   // hold   = dinheiro retido da venda enquanto o item não chega
   type: text('type').notNull(),
-  
+
   amountInCents: integer('amount_in_cents').notNull(), // Sempre positivo; o tipo define o balanço
   status: text('status').notNull().default('completed'), // pending | completed | failed | reversed
-  
+
   // Metadados
   orderId: text('order_id').references(() => orders.id),
   stripeEventId: text('stripe_event_id'),
   description: text('description'),
-  
+
   ...timestamps,
 });
 
 // ─── Stripe Webhook Events ───────────────────────────────────────────────────
 // Usado para garantir idempotência ao processar eventos
 export const webhookEvents = sqliteTable('webhook_events', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
   stripeEventId: text('stripe_event_id').notNull().unique(),
   type: text('type').notNull(), // ex: checkout.session.completed
   status: text('status').notNull().default('pending'), // pending | processed | failed
@@ -343,7 +354,9 @@ export const webhookEvents = sqliteTable('webhook_events', {
 // ─── Withdrawal Requests ─────────────────────────────────────────────────────
 // Solicitações de saque de sellers via Stripe Connect Express
 export const withdrawalRequests = sqliteTable('withdrawal_requests', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
   userId: text('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),

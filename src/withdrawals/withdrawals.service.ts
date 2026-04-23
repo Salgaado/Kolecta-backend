@@ -146,7 +146,9 @@ export class WithdrawalsService {
       .where(eq(schema.withdrawalRequests.stripePayoutId, payout.id));
 
     if (!withdrawal) {
-      this.logger.warn(`Nenhum saque encontrado para stripePayoutId=${payout.id}`);
+      this.logger.warn(
+        `Nenhum saque encontrado para stripePayoutId=${payout.id}`,
+      );
       return;
     }
 
@@ -176,12 +178,16 @@ export class WithdrawalsService {
       .where(eq(schema.withdrawalRequests.stripePayoutId, payout.id));
 
     if (!withdrawal) {
-      this.logger.warn(`Nenhum saque encontrado para stripePayoutId=${payout.id}`);
+      this.logger.warn(
+        `Nenhum saque encontrado para stripePayoutId=${payout.id}`,
+      );
       return;
     }
 
     // Reverter o débito na wallet
-    const wallet = await this.walletService.getOrCreateWallet(withdrawal.userId);
+    const wallet = await this.walletService.getOrCreateWallet(
+      withdrawal.userId,
+    );
 
     await this.db.transaction(async (tx: any) => {
       await tx
