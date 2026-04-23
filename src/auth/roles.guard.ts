@@ -49,7 +49,7 @@ export class RolesGuard implements CanActivate {
     }
 
     // 3. Buscar role atual no Turso (fonte de verdade)
-    const user = await this.usersService.findById(userId);
+    const user = await this.usersService.findOrCreate(userId);
 
     this.logger.debug(
       `[RolesGuard] userId=${userId} | role=${user.role} | required=${requiredRoles.join(',')}`,

@@ -33,6 +33,63 @@ export class UsersService {
     return result[0];
   }
 
+  // ─── Buscar ou criar usuário (auto-provision) ──────────────────────────────
+  // Se o webhook do Clerk não disparou, cria o registro mínimo para destravar.
+
+  async findOrCreate(id: string): Promise<UserRecord> {
+    const result = await this.db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, id))
+      .limit(1);
+
+    if (result.length) {
+      return result[0];
+    }
+
+    // Usuário não existe — criar registro mínimo
+    this.logger.warn(`[findOrCreate] Auto-provisionando usuário: ${id}`);
+
+    try {
+      // Tenta obter dados do Clerk via SDK
+      const clerkUser = await this.fetchClerkUser(id);
+      const email = clerkUser?.emailAddresses?.[0]?.emailAddress ?? `${id}@placeholder.kolecta`;
+      const name = [clerkUser?.firstName, clerkUser?.lastName].filter(Boolean).join(' ') || 'Novo Usuário';
+
+      await this.db.insert(schema.users).values({ id, email, name });
+      this.logger.log(`[findOrCreate] Usuário criado no Turso: ${id} | ${email}`);
+    } catch (err) {
+      // Se falhar ao buscar do Clerk, cria com dados mínimos
+      this.logger.warn(`[findOrCreate] Fallback (sem dados do Clerk): ${err.message}`);
+      await this.db.insert(schema.users).values({
+        id,
+        email: `${id}@placeholder.kolecta`,
+        name: 'Novo Usuário',
+      });
+    }
+
+    return this.findById(id);
+  }
+
+  // ─── Buscar dados do Clerk via API ──────────────────────────────────────────
+
+  private async fetchClerkUser(userId: string): Promise<any> {
+    const secretKey = process.env.CLERK_SECRET_KEY;
+    if (!secretKey) {
+      throw new Error('CLERK_SECRET_KEY não configurada');
+    }
+
+    const response = await fetch(`https://api.clerk.com/v1/users/${userId}`, {
+      headers: { Authorization: `Bearer ${secretKey}` },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Clerk API retornou ${response.status}`);
+    }
+
+    return response.json();
+  }
+
   // ─── Atualizar dados do perfil ────────────────────────────────────────────
 
   async update(id: string, dto: UpdateUserDto): Promise<UserRecord> {
