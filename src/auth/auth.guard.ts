@@ -5,31 +5,28 @@ import {
   UnauthorizedException,
   Logger,
 } from '@nestjs/common';
-import { Observable } from 'rxjs';
+import { getAuth } from '@clerk/express';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
   private readonly logger = new Logger('AuthGuard');
 
-  canActivate(
-    context: ExecutionContext,
-  ): boolean | Promise<boolean> | Observable<boolean> {
+  canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
 
-    // O middleware do clerk injeta os dados do auth (@clerk/express)
-    const auth = request.auth;
+    // @clerk/express v2 — usar getAuth() ao invés de req.auth
+    const auth = getAuth(request);
 
-    // ── DEBUG TEMPORÁRIO (remover depois) ──────────────────────
-    const hasAuthHeader = !!request.headers?.authorization;
-    this.logger.warn(
-      `[DEBUG] path=${request.url} | hasAuthHeader=${hasAuthHeader} | auth=${JSON.stringify(auth ?? 'undefined')} | NODE_ENV=${process.env.NODE_ENV} | hasClerkSecret=${!!process.env.CLERK_SECRET_KEY}`,
-    );
-    // ── FIM DEBUG ──────────────────────────────────────────────
+    // Injetar auth no request para que RolesGuard e controllers possam usar
+    request.auth = auth;
 
-    if (!auth || !auth.userId) {
+    if (!auth?.userId) {
+      this.logger.warn(
+        `[401] path=${request.url} | userId=${auth?.userId ?? 'null'} | sessionId=${auth?.sessionId ?? 'null'}`,
+      );
       throw new UnauthorizedException('Sua sessão expirou ou é inválida');
     }
 
-    return true; // Autenticado via Clerk
+    return true;
   }
 }
