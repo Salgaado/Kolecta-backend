@@ -3,14 +3,11 @@ import {
   CanActivate,
   ExecutionContext,
   UnauthorizedException,
-  Logger,
 } from '@nestjs/common';
 import { getAuth } from '@clerk/express';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
-  private readonly logger = new Logger('AuthGuard');
-
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
 
@@ -21,9 +18,6 @@ export class AuthGuard implements CanActivate {
     request.auth = auth;
 
     if (!auth?.userId) {
-      this.logger.warn(
-        `[401] path=${request.url} | userId=${auth?.userId ?? 'null'} | sessionId=${auth?.sessionId ?? 'null'}`,
-      );
       throw new UnauthorizedException('Sua sessão expirou ou é inválida');
     }
 
