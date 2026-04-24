@@ -29,7 +29,7 @@ export class UsersController {
   async getMe(@Req() req: Request) {
     const userId = (req as any).auth.userId as string;
     this.logger.log(`[GET /me] userId: ${userId}`);
-    const user = await this.usersService.findById(userId);
+    const user = await this.usersService.findOrCreate(userId);
     return { data: user };
   }
 
