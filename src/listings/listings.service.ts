@@ -209,4 +209,30 @@ export class ListingsService {
 
     return this.findById(id);
   }
+
+  // ── Toggle pause (vendedor) ───────────────────────────────────────────────
+
+  async togglePause(
+    id: string,
+    sellerId: string,
+  ): Promise<ListingRecord> {
+    const listing = await this.findById(id);
+
+    if (listing.sellerId !== sellerId) {
+      throw new ForbiddenException(
+        'Você não tem permissão para alterar este anúncio.',
+      );
+    }
+
+    const newStatus = listing.status === 'paused' ? 'active' : 'paused';
+
+    await this.db
+      .update(schema.listings)
+      .set({ status: newStatus, updatedAt: new Date() })
+      .where(eq(schema.listings.id, id));
+
+    this.logger.log(`[togglePause] Anúncio ${id}: ${listing.status} → ${newStatus}`);
+
+    return this.findById(id);
+  }
 }

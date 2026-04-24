@@ -116,6 +116,17 @@ export class ListingsController {
     return { data: listing };
   }
 
+  // ── PATCH /api/listings/:id/toggle-pause — Vendedor: pausar/reativar ────
+
+  @Patch(':id/toggle-pause')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  async togglePause(@Param('id') id: string, @Req() req: Request) {
+    const sellerId = (req as any).auth.userId as string;
+    const listing = await this.listingsService.togglePause(id, sellerId);
+    return { data: listing };
+  }
+
   // ── DELETE /api/listings/:id — Remover anúncio ─────────────────────────
 
   @Delete(':id')
