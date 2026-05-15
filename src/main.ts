@@ -10,7 +10,7 @@ async function bootstrap() {
 
   // CORS para o MVP (Permitir requests do Front local ou prod)
   app.enableCors({
-    origin: ['https://kolecta.com.br', 'https://kolecta.vercel.app', 'http://localhost:5173'],
+    origin: ['https://kolecta.com.br', 'https://kolecta.vercel.app', 'http://localhost:5173', 'http://localhost:8080'],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type, Accept, Authorization, x-dev-user-id',
     credentials: true,

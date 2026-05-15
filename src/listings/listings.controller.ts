@@ -12,7 +12,11 @@ import {
   HttpCode,
   HttpStatus,
   Logger,
+  UseInterceptors,
+  UploadedFile,
+  HttpException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { ListingsService } from './listings.service';
 import type { CreateListingDto, UpdateListingDto } from './listings.service';
@@ -69,6 +73,38 @@ export class ListingsController {
     const sellerId = (req as any).auth.userId as string;
     const listings = await this.listingsService.findBySeller(sellerId);
     return { data: listings };
+  }
+
+  // ── POST /api/listings/import — Importar lote de anúncios ────────────────
+
+  @Post('import')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  @UseInterceptors(FileInterceptor('file'))
+  @HttpCode(HttpStatus.ACCEPTED)
+  async importListings(@Req() req: Request, @UploadedFile() file: Express.Multer.File) {
+    const sellerId = (req as any).auth.userId as string;
+    if (!file) throw new HttpException('Arquivo não fornecido', HttpStatus.BAD_REQUEST);
+    const job = await this.listingsService.startImportJob(sellerId, file);
+    return { data: job };
+  }
+
+  // ── GET /api/listings/import/template — Template de importação ──────────
+
+  @Get('import/template')
+  async getImportTemplate() {
+    return this.listingsService.getImportTemplate();
+  }
+
+  // ── GET /api/listings/import/:jobId — Status do lote de importação ──────
+
+  @Get('import/:jobId')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  async getImportJob(@Req() req: Request, @Param('jobId') jobId: string) {
+    const sellerId = (req as any).auth.userId as string;
+    const job = await this.listingsService.getImportJob(sellerId, jobId);
+    return { data: job };
   }
 
   // ── GET /api/listings/:id — Público: detalhe de um anúncio ──────────────

@@ -68,13 +68,15 @@ export class OrdersService {
           .set({ status: 'pending_payment' })
           .where(eq(schema.listings.id, listing.id));
 
+        const price: number = listing.priceInCents ?? 0;
+
         const [newOrder] = await tx
           .insert(schema.orders)
           .values({
             buyerId,
             sellerId: listing.sellerId,
             listingId: listing.id,
-            totalInCents: listing.priceInCents ?? 0,
+            totalInCents: price,
             status: 'pending',
           })
           .returning();
@@ -115,7 +117,7 @@ export class OrdersService {
       );
     }
 
-    const totalInCents = listing.priceInCents ?? 0;
+    const totalInCents: number = listing.priceInCents ?? 0;
     let walletDeducted = 0;
     let chargeAmount = totalInCents;
 
@@ -187,7 +189,7 @@ export class OrdersService {
     }
 
     // Cria o PaymentIntent para o valor restante
-    const paymentIntent = await this.stripeService.stripe.paymentIntents.create(
+    const paymentIntent = await this.stripeService.stripeClient.paymentIntents.create(
       {
         amount: chargeAmount,
         currency: 'brl',
@@ -335,10 +337,23 @@ export class OrdersService {
       return;
     }
 
+    // Calcular taxas conforme fluxo canônico
+    const platformFeePercent = parseInt(process.env.PLATFORM_FEE_PERCENT ?? '10', 10);
+    const platformFeeInCents = Math.round(order.totalInCents * platformFeePercent / 100);
+    // Estimativa da taxa Stripe (~3.99% + R$0.39 para BR, simplificado como ~4%)
+    const stripeFeeInCents = Math.round(order.totalInCents * 0.04);
+    const sellerNetInCents = order.totalInCents - platformFeeInCents - stripeFeeInCents;
+
     await this.db.transaction(async (tx: any) => {
       await tx
         .update(schema.orders)
-        .set({ status: 'paid', stripePaymentId })
+        .set({
+          status: 'paid',
+          stripePaymentId,
+          sellerNetInCents,
+          platformFeeInCents,
+          stripeFeeInCents,
+        })
         .where(eq(schema.orders.id, orderId));
 
       await tx
@@ -347,15 +362,103 @@ export class OrdersService {
         .where(eq(schema.listings.id, order.listingId));
     });
 
+    // Creditar valor líquido como saldo retido (held_balance) para o vendedor
+    const sellerWallet = await this.walletService.getOrCreateWallet(order.sellerId);
     await this.walletService.hold(
-      order.sellerId,
-      order.totalInCents,
-      `Pagamento Confirmado (Pedido #${order.id.slice(0, 8)})`,
+      sellerWallet.id,
+      sellerNetInCents,
+      `Venda #${order.id.slice(0, 8)} — saldo retido (líquido: ${(sellerNetInCents / 100).toFixed(2)} BRL)`,
       order.id,
     );
 
     this.logger.log(
-      `✅ Pedido ${order.id} confirmado. Hold de ${order.totalInCents / 100} BRL aplicado ao vendedor ${order.sellerId}.`,
+      `✅ Pedido ${order.id} confirmado. Hold de ${sellerNetInCents / 100} BRL (bruto: ${order.totalInCents / 100}, taxa plataforma: ${platformFeeInCents / 100}, taxa stripe: ${stripeFeeInCents / 100})`,
     );
   }
+
+  // ── Vendedor marca como entregue → inicia timer 48h ───────────────────────
+
+  async markAsDelivered(sellerId: string, orderId: string) {
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+
+    if (!order) throw new NotFoundException('Pedido não encontrado');
+    if (order.sellerId !== sellerId) {
+      throw new ForbiddenException('Acesso negado para este pedido');
+    }
+    if (order.status !== 'shipped' && order.status !== 'paid') {
+      throw new BadRequestException(
+        `Pedido não pode ser marcado como entregue. Status atual: ${order.status}`,
+      );
+    }
+
+    const now = new Date();
+    const autoReleaseAt = new Date(now.getTime() + 48 * 60 * 60 * 1000); // +48 horas
+
+    const [updated] = await this.db
+      .update(schema.orders)
+      .set({
+        status: 'delivered',
+        deliveredAt: now,
+        autoReleaseAt,
+      })
+      .where(eq(schema.orders.id, orderId))
+      .returning();
+
+    this.logger.log(
+      `📦 Pedido ${orderId} marcado como entregue. Auto-release em ${autoReleaseAt.toISOString()}`,
+    );
+
+    return updated;
+  }
+
+  // ── Comprador confirma recebimento → libera saldo do vendedor ─────────────
+
+  async confirmDelivery(buyerId: string, orderId: string) {
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+
+    if (!order) throw new NotFoundException('Pedido não encontrado');
+    if (order.buyerId !== buyerId) {
+      throw new ForbiddenException('Apenas o comprador pode confirmar recebimento');
+    }
+    if (order.status !== 'delivered' && order.status !== 'shipped') {
+      throw new BadRequestException(
+        `Pedido não pode ser confirmado. Status atual: ${order.status}`,
+      );
+    }
+
+    const now = new Date();
+    const sellerNetInCents = order.sellerNetInCents || order.totalInCents;
+
+    // Liberar saldo retido do vendedor → saldo disponível
+    const sellerWallet = await this.walletService.getOrCreateWallet(order.sellerId);
+    await this.walletService.release(
+      sellerWallet.id,
+      sellerNetInCents,
+      `Liberação — Comprador confirmou recebimento (Pedido #${order.id.slice(0, 8)})`,
+      order.id,
+    );
+
+    const [updated] = await this.db
+      .update(schema.orders)
+      .set({
+        status: 'completed',
+        buyerConfirmedAt: now,
+        completedAt: now,
+      })
+      .where(eq(schema.orders.id, orderId))
+      .returning();
+
+    this.logger.log(
+      `✅ Pedido ${orderId} completado. Saldo de ${sellerNetInCents / 100} BRL liberado para o vendedor ${order.sellerId}`,
+    );
+
+    return updated;
+  }
 }
+

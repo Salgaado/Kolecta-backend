@@ -70,4 +70,26 @@ export class OrdersController {
     );
     return { data: order };
   }
+
+  // Vendedor marca pedido como entregue → inicia timer de 48h
+  @Patch(':id/deliver')
+  @Roles('user', 'admin')
+  async markDelivered(@Req() req: any, @Param('id') id: string) {
+    const order = await this.ordersService.markAsDelivered(
+      req.auth.userId,
+      id,
+    );
+    return { data: order };
+  }
+
+  // Comprador confirma recebimento → libera saldo retido do vendedor
+  @Post(':id/confirm-delivery')
+  @Roles('user', 'admin')
+  async confirmDelivery(@Req() req: any, @Param('id') id: string) {
+    const order = await this.ordersService.confirmDelivery(
+      req.auth.userId,
+      id,
+    );
+    return { data: order };
+  }
 }

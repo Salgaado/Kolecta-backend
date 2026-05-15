@@ -15,7 +15,7 @@ export class DepositsService {
   async createDepositSession(userId: string, amountInCents: number) {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:8080';
 
-    const session = await this.stripeService.stripe.checkout.sessions.create({
+    const session = await this.stripeService.stripeClient.checkout.sessions.create({
       payment_method_types: ['card', 'pix'],
       mode: 'payment',
       line_items: [

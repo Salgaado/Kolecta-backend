@@ -17,10 +17,14 @@ import { FavoritesModule } from './favorites/favorites.module';
 import { WithdrawalsModule } from './withdrawals/withdrawals.module';
 import { AuctionsModule } from './auctions/auctions.module';
 import { DevAuthMiddleware } from './auth/dev-auth.middleware';
-
+import { ShippingModule } from './shipping/shipping.module';
+import { MessagesModule } from './messages/messages.module';
+import { SellersModule } from './sellers/sellers.module';
+import { ScheduleModule } from '@nestjs/schedule';
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
+    ScheduleModule.forRoot(),
     // ── Stripe ──────────────────────────────────────────
     StripeCoreModule,
     DepositsModule,
@@ -38,6 +42,9 @@ import { DevAuthMiddleware } from './auth/dev-auth.middleware';
     WalletModule,
     AddressesModule,
     FavoritesModule,
+    ShippingModule,
+    MessagesModule,
+    SellersModule,
   ],
   controllers: [AppController],
   providers: [AppService],

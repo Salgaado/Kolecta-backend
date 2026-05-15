@@ -65,7 +65,7 @@ export class WithdrawalsService {
     }
 
     // Regra 3: Verificar se a conta Express está habilitada para saques
-    const account = await this.stripeService.stripe.accounts.retrieve(
+    const account = await this.stripeService.stripeClient.accounts.retrieve(
       sellerProfile.stripeAccountId,
     );
 
@@ -100,34 +100,35 @@ export class WithdrawalsService {
         walletId: wallet.id,
         type: 'debit',
         amountInCents,
-        status: 'pending',
-        description: `Saque solicitado via Stripe Connect`,
+        status: 'completed',
+        description: `Saque para Stripe Express`,
       });
 
-      // Criar o payout no Stripe Connect
-      const payout = await this.stripeService.stripe.payouts.create(
-        {
-          amount: amountInCents,
-          currency: 'brl',
-          description: `Saque Kolecta — ${userId.slice(0, 8)}`,
+      // Criar o Transfer no Stripe para o seller
+      const transfer = await this.stripeService.stripeClient.transfers.create({
+        amount: amountInCents,
+        currency: 'brl',
+        destination: sellerProfile.stripeAccountId!,
+        description: `Saque Kolecta — ${userId.slice(0, 8)}`,
+        metadata: {
+          userId,
         },
-        { stripeAccount: sellerProfile.stripeAccountId! },
-      );
+      });
 
-      // Registrar o saque no banco
+      // Registrar o saque no banco como CONCLUÍDO (pois transfer é instantâneo)
       const [withdrawal] = await tx
         .insert(schema.withdrawalRequests)
         .values({
           userId,
           amountInCents,
-          status: 'processing',
-          stripePayoutId: payout.id,
+          status: 'paid',
+          stripePayoutId: transfer.id, // Armazenando o ID do transfer aqui
           stripeAccountId: sellerProfile.stripeAccountId,
         })
         .returning();
 
       this.logger.log(
-        `✅ Saque ${withdrawal.id} criado. Payout Stripe: ${payout.id} | Seller: ${userId}`,
+        `✅ Saque ${withdrawal.id} concluído via Transfer Stripe: ${transfer.id} | Seller: ${userId}`,
       );
 
       return withdrawal;

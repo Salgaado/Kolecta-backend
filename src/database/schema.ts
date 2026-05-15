@@ -36,6 +36,15 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
   bio: text('bio'),
   // ID da conta Stripe Connect do vendedor
   stripeAccountId: text('stripe_account_id'),
+  // Status do onboarding: not_started | pending | complete
+  stripeOnboardingStatus: text('stripe_onboarding_status').default('not_started'),
+  // Flags vindas da API Stripe V2
+  stripeChargesEnabled: integer('stripe_charges_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(false),
+  stripePayoutsEnabled: integer('stripe_payouts_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(false),
   // false = aguardando verificação | true = verificado pela equipe
   isVerified: integer('is_verified', { mode: 'boolean' })
     .notNull()
@@ -208,6 +217,26 @@ export const orders = sqliteTable('orders', {
   // Código de rastreamento do envio
   trackingCode: text('tracking_code'),
 
+  // ── Controle Financeiro ──
+  // Valor líquido que o vendedor recebe (após taxas)
+  sellerNetInCents: integer('seller_net_in_cents'),
+  // Taxa da plataforma Kolecta em centavos
+  platformFeeInCents: integer('platform_fee_in_cents'),
+  // Taxa do Stripe em centavos (estimada)
+  stripeFeeInCents: integer('stripe_fee_in_cents'),
+
+  // ── Controle de pagamento (para híbrido) ──
+  walletAmountInCents: integer('wallet_amount_in_cents').default(0),
+  externalAmountInCents: integer('external_amount_in_cents').default(0),
+  // wallet | external | hybrid
+  paymentMethod: text('payment_method'),
+
+  // ── Controle de Entrega e Liberação ──
+  deliveredAt: integer('delivered_at', { mode: 'timestamp' }),
+  buyerConfirmedAt: integer('buyer_confirmed_at', { mode: 'timestamp' }),
+  autoReleaseAt: integer('auto_release_at', { mode: 'timestamp' }),
+  completedAt: integer('completed_at', { mode: 'timestamp' }),
+
   ...timestamps,
 });
 
@@ -229,22 +258,38 @@ export const favorites = sqliteTable('favorites', {
     .$defaultFn(() => new Date()),
 });
 
+// ─── Conversations ───────────────────────────────────────────────────────────
+// Agrupamento de mensagens por negociação (comprador + vendedor + anúncio)
+
+export const conversations = sqliteTable('conversations', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  listingId: text('listing_id')
+    .notNull()
+    .references(() => listings.id, { onDelete: 'cascade' }),
+  buyerId: text('buyer_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  sellerId: text('seller_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  ...timestamps,
+});
+
 // ─── Messages ────────────────────────────────────────────────────────────────
-// Mensagens entre comprador e vendedor
+// Mensagens dentro de uma conversa
 
 export const messages = sqliteTable('messages', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
+  conversationId: text('conversation_id')
+    .notNull()
+    .references(() => conversations.id, { onDelete: 'cascade' }),
   senderId: text('sender_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  receiverId: text('receiver_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  // Contexto opcional: mensagem vinculada a um anúncio ou pedido
-  listingId: text('listing_id').references(() => listings.id),
-  orderId: text('order_id').references(() => orders.id),
   content: text('content').notNull(),
   readAt: integer('read_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' })
@@ -307,8 +352,9 @@ export const wallets = sqliteTable('wallets', {
     .notNull()
     .unique()
     .references(() => users.id, { onDelete: 'cascade' }),
-  balanceInCents: integer('balance_in_cents').notNull().default(0), // Saldo disponível
-  pendingInCents: integer('pending_in_cents').notNull().default(0), // Fica retido em 'hold'
+  balanceInCents: integer('balance_in_cents').notNull().default(0),   // available_balance — saldo disponível
+  pendingInCents: integer('pending_in_cents').notNull().default(0),   // held_balance — vendas retidas
+  withdrawalPendingInCents: integer('withdrawal_pending_in_cents').notNull().default(0), // saques em processamento
   ...timestamps,
 });
 
@@ -373,6 +419,29 @@ export const withdrawalRequests = sqliteTable('withdrawal_requests', {
 
   // Motivo de falha (se status = failed)
   failureReason: text('failure_reason'),
+
+  ...timestamps,
+});
+
+// ─── Import Jobs ─────────────────────────────────────────────────────────────
+// Jobs de importação em lote de anúncios via planilha (CSV/XLSX)
+export const importJobs = sqliteTable('import_jobs', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+
+  // processing | completed | failed | completed_with_errors
+  status: text('status').notNull().default('processing'),
+
+  totalRows: integer('total_rows').notNull().default(0),
+  processedRows: integer('processed_rows').notNull().default(0),
+  failedRows: integer('failed_rows').notNull().default(0),
+
+  // JSON stringificado contendo array de erros: [{"row": 2, "error": "Invalid price"}]
+  errors: text('errors'),
 
   ...timestamps,
 });

@@ -9,6 +9,7 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq, desc, and, getTableColumns, like } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
+import * as Papa from 'papaparse';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -234,5 +235,126 @@ export class ListingsService {
     this.logger.log(`[togglePause] Anúncio ${id}: ${listing.status} → ${newStatus}`);
 
     return this.findById(id);
+  }
+
+  // ── Importação em lote (CSV/XLSX) ────────────────────────────────────────
+
+  async startImportJob(sellerId: string, file: Express.Multer.File) {
+    const jobId = crypto.randomUUID();
+
+    // Cria o registro no banco informando status 'processing'
+    await this.db.insert(schema.importJobs).values({
+      id: jobId,
+      userId: sellerId,
+      status: 'processing',
+    });
+
+    // Inicia o processamento pseudo-background
+    // Importante: No NestJS, para não bloquear o response, não usamos await aqui.
+    this.processImportFile(jobId, sellerId, file).catch(err => {
+      this.logger.error(`Erro ao processar job ${jobId}`, err);
+    });
+
+    return { jobId, status: 'processing', message: 'Importação iniciada' };
+  }
+
+  private async processImportFile(jobId: string, sellerId: string, file: Express.Multer.File) {
+    try {
+      const csvData = file.buffer.toString('utf-8');
+      
+      const parsed = Papa.parse(csvData, {
+        header: true,
+        skipEmptyLines: true,
+      });
+
+      const rows = parsed.data as any[];
+      let processed = 0;
+      let failed = 0;
+      const errors = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const rowNumber = i + 2; // Cabeçalho é 1
+
+        try {
+          if (!row.title) throw new Error('Título é obrigatório');
+          if (!row.price) throw new Error('Preço é obrigatório');
+          if (!row.condition) throw new Error('Condição é obrigatória');
+
+          const priceInCents = Math.round(parseFloat(row.price) * 100);
+          if (isNaN(priceInCents)) throw new Error('Preço inválido');
+
+          // Validação da condição (aceitar os definidos no DB)
+          const validConditions = ['lacrado', 'novo', 'mint', 'usado', 'novo-lacrado', 'novo-sem-caixa', 'usado-conservado', 'usado-com-marcas'];
+          const condition = row.condition.toLowerCase();
+          if (!validConditions.includes(condition)) {
+            throw new Error(`Condição inválida. Esperado: ${validConditions.join(', ')}`);
+          }
+
+          // O schema pede status draft | pending_review | active | sold | cancelled
+          // O SKILL.md pede que importados entrem como pending_review ou pending. O schema tem pending_review.
+          await this.db.insert(schema.listings).values({
+            id: crypto.randomUUID(),
+            sellerId,
+            title: row.title,
+            description: row.description || '',
+            condition: condition,
+            type: 'direct',
+            priceInCents,
+            images: row.images ? JSON.stringify(row.images.split(',')) : null,
+            status: 'pending_review',
+          });
+
+          processed++;
+        } catch (err: any) {
+          failed++;
+          errors.push({ row: rowNumber, error: err.message });
+        }
+      }
+
+      const finalStatus = failed > 0 ? (processed > 0 ? 'completed_with_errors' : 'failed') : 'completed';
+
+      await this.db.update(schema.importJobs).set({
+        status: finalStatus,
+        totalRows: rows.length,
+        processedRows: processed,
+        failedRows: failed,
+        errors: JSON.stringify(errors),
+        updatedAt: new Date(),
+      }).where(eq(schema.importJobs.id, jobId));
+
+    } catch (globalError: any) {
+      await this.db.update(schema.importJobs).set({
+        status: 'failed',
+        errors: JSON.stringify([{ row: 0, error: `Erro fatal no processamento: ${globalError.message}` }]),
+        updatedAt: new Date(),
+      }).where(eq(schema.importJobs.id, jobId));
+    }
+  }
+
+  async getImportJob(sellerId: string, jobId: string) {
+    const [job] = await this.db.select()
+      .from(schema.importJobs)
+      .where(
+        and(
+          eq(schema.importJobs.id, jobId),
+          eq(schema.importJobs.userId, sellerId)
+        )
+      ).limit(1);
+
+    if (!job) throw new NotFoundException('Job não encontrado');
+
+    return {
+      ...job,
+      errors: job.errors ? JSON.parse(job.errors) : [],
+    };
+  }
+
+  async getImportTemplate() {
+    const csvHeader = 'title,description,price,category_slug,condition,images,stock_quantity\n';
+    const csvExample = 'Action Figure Batman,"Boneco muito conservado",150.00,,usado,"http://img1.com,http://img2.com",1\n';
+    return {
+      templateUrl: 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvHeader + csvExample)
+    };
   }
 }

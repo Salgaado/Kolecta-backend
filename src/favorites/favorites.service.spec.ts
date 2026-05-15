@@ -31,7 +31,7 @@ describe('FavoritesService', () => {
       values: jest.fn().mockReturnThis(),
       returning: jest.fn().mockReturnThis(),
       delete: jest.fn().mockReturnThis(),
-      then: jest.fn().mockImplementation(function (resolve) {
+      then: jest.fn().mockImplementation(function (resolve: (value: any) => void) {
         return Promise.resolve(this.results).then(resolve);
       }),
     };
@@ -59,7 +59,7 @@ describe('FavoritesService', () => {
     it('deve remover favorito (toggle OFF) se já existir', async () => {
       const mockDb = makeMockDb();
       let calls = 0;
-      mockDb.then.mockImplementation(function (resolve) {
+      mockDb.then.mockImplementation(function (resolve: (value: any) => void) {
         calls++;
         const res = calls === 1 ? [mockListing] : (calls === 2 ? [mockFavorite] : undefined);
         return Promise.resolve(res).then(resolve);
@@ -73,7 +73,7 @@ describe('FavoritesService', () => {
     it('deve adicionar favorito (toggle ON) se não existir', async () => {
       const mockDb = makeMockDb();
       let calls = 0;
-      mockDb.then.mockImplementation(function (resolve) {
+      mockDb.then.mockImplementation(function (resolve: (value: any) => void) {
         calls++;
         const res = calls === 1 ? [mockListing] : (calls === 2 ? [] : [mockFavorite]);
         return Promise.resolve(res).then(resolve);
@@ -96,7 +96,7 @@ describe('FavoritesService', () => {
     it('deve remover favorito com sucesso', async () => {
       const mockDb = makeMockDb();
       let calls = 0;
-      mockDb.then.mockImplementation(function (resolve) {
+      mockDb.then.mockImplementation(function (resolve: (value: any) => void) {
         calls++;
         const res = calls === 1 ? [mockFavorite] : undefined;
         return Promise.resolve(res).then(resolve);

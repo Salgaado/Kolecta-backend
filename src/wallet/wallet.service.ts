@@ -25,6 +25,7 @@ export class WalletService {
           userId,
           balanceInCents: 0,
           pendingInCents: 0,
+          withdrawalPendingInCents: 0,
         })
         .returning();
       wallet = newWallet;
@@ -32,6 +33,8 @@ export class WalletService {
 
     return wallet;
   }
+
+  // ── Credit — adiciona saldo disponível (depósito, estorno, etc.) ───────────
 
   async credit(
     walletId: string,
@@ -64,6 +67,8 @@ export class WalletService {
       return { success: true, newBalance };
     });
   }
+
+  // ── Debit — subtrai saldo disponível (compra, saque) ───────────────────────
 
   async debit(
     walletId: string,
@@ -100,6 +105,8 @@ export class WalletService {
     });
   }
 
+  // ── Hold — retém saldo de venda (held_balance / pendingInCents) ────────────
+
   async hold(
     walletId: string,
     amountInCents: number,
@@ -121,7 +128,7 @@ export class WalletService {
 
       await tx.insert(schema.walletTransactions).values({
         walletId,
-        type: 'hold',
+        type: 'sale_hold_credit',
         amountInCents,
         status: 'pending',
         description,
@@ -131,6 +138,49 @@ export class WalletService {
       return { success: true, newPending };
     });
   }
+
+  // ── Release — move saldo de held (pending) → available (balance) ───────────
+  // Chamado quando o comprador confirma recebimento ou após 48h automáticas
+
+  async release(
+    walletId: string,
+    amountInCents: number,
+    description: string,
+    orderId?: string,
+  ) {
+    return this.db.transaction(async (tx: any) => {
+      const wallet = await tx.query.wallets.findFirst({
+        where: eq(schema.wallets.id, walletId),
+      });
+
+      if (!wallet) throw new NotFoundException('Wallet not found');
+      if (wallet.pendingInCents < amountInCents) {
+        throw new BadRequestException('Insufficient held balance for release');
+      }
+
+      // Mover de pending → available
+      await tx
+        .update(schema.wallets)
+        .set({
+          pendingInCents: wallet.pendingInCents - amountInCents,
+          balanceInCents: wallet.balanceInCents + amountInCents,
+        })
+        .where(eq(schema.wallets.id, walletId));
+
+      await tx.insert(schema.walletTransactions).values({
+        walletId,
+        type: 'sale_release',
+        amountInCents,
+        status: 'completed',
+        description,
+        orderId,
+      });
+
+      return { success: true };
+    });
+  }
+
+  // ── Listar transações do usuário ──────────────────────────────────────────
 
   async getTransactions(userId: string) {
     const wallet = await this.getOrCreateWallet(userId);
