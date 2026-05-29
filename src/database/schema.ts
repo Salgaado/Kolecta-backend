@@ -423,6 +423,23 @@ export const withdrawalRequests = sqliteTable('withdrawal_requests', {
   ...timestamps,
 });
 
+// ─── Bling Connections ───────────────────────────────────────────────────────
+// Tokens OAuth v3 do Bling por seller — opcional e por conta
+export const blingConnections = sqliteTable('bling_connections', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  accessToken: text('access_token').notNull(),
+  refreshToken: text('refresh_token').notNull(),
+  // Unix timestamp em segundos de quando o access_token expira
+  expiresAt: integer('expires_at').notNull(),
+  ...timestamps,
+});
+
 // ─── Import Jobs ─────────────────────────────────────────────────────────────
 // Jobs de importação em lote de anúncios via planilha (CSV/XLSX)
 export const importJobs = sqliteTable('import_jobs', {

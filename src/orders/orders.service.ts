@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { WalletService } from '../wallet/wallet.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
@@ -24,6 +25,7 @@ export class OrdersService {
     private readonly db: LibSQLDatabase<typeof schema>,
     private readonly walletService: WalletService,
     private readonly stripeService: StripeService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   // ── Create orders (legacy — sem PaymentIntent) ─────────────────────────────
@@ -374,6 +376,27 @@ export class OrdersService {
     this.logger.log(
       `✅ Pedido ${order.id} confirmado. Hold de ${sellerNetInCents / 100} BRL (bruto: ${order.totalInCents / 100}, taxa plataforma: ${platformFeeInCents / 100}, taxa stripe: ${stripeFeeInCents / 100})`,
     );
+
+    // Busca dados do comprador e listing para o evento
+    const [buyer] = await this.db
+      .select({ name: schema.users.name, email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.id, order.buyerId));
+
+    const [listing] = await this.db
+      .select({ title: schema.listings.title })
+      .from(schema.listings)
+      .where(eq(schema.listings.id, order.listingId));
+
+    this.eventEmitter.emit('order.paid', {
+      orderId: order.id,
+      sellerId: order.sellerId,
+      buyerId: order.buyerId,
+      buyerName: buyer?.name ?? null,
+      buyerEmail: buyer?.email ?? '',
+      listingTitle: listing?.title ?? 'Item Kolecta',
+      totalInCents: order.totalInCents,
+    });
   }
 
   // ── Vendedor marca como entregue → inicia timer 48h ───────────────────────

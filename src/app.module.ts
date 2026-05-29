@@ -22,6 +22,7 @@ import { MessagesModule } from './messages/messages.module';
 import { SellersModule } from './sellers/sellers.module';
 import { MediaModule } from './media/media.module';
 import { AdminModule } from './admin/admin.module';
+import { BlingModule } from './bling/bling.module';
 import { ScheduleModule } from '@nestjs/schedule';
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     SellersModule,
     MediaModule,
     AdminModule,
+    BlingModule,
   ],
   controllers: [AppController],
   providers: [AppService],
