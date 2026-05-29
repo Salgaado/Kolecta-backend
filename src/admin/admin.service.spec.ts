@@ -1,0 +1,490 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { AdminService } from './admin.service';
+import { DATABASE_CONNECTION } from '../database/database.module';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
+
+// ── Fixtures ──────────────────────────────────────────────────────────────────
+
+const mockUser = {
+  id: 'user_001',
+  email: 'admin@kolecta.com',
+  name: 'Admin',
+  role: 'admin',
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+const mockSellerProfile = {
+  id: 'profile_001',
+  userId: 'user_002',
+  bio: 'Vendedor de colecionáveis',
+  stripeAccountId: null,
+  stripeOnboardingStatus: 'not_started',
+  stripeChargesEnabled: false,
+  stripePayoutsEnabled: false,
+  isVerified: false,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+const mockDispute = {
+  id: 'dispute_001',
+  orderId: 'order_001',
+  reporterId: 'user_003',
+  reason: 'Item não chegou',
+  description: 'O item não foi entregue após 30 dias',
+  status: 'open',
+  resolvedAt: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+const mockListing = {
+  id: 'listing_001',
+  sellerId: 'user_002',
+  title: 'Hot Wheels RLC Exclusivo',
+  condition: 'lacrado',
+  type: 'direct',
+  status: 'active',
+  priceInCents: 15000,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+// ── Drizzle mock builder ───────────────────────────────────────────────────────
+//
+// Estratégia de terminais:
+//   SELECT chains:  select → from → [where|orderBy|limit|offset] → resolve
+//   UPDATE chains:  update → set → where → returning → resolve
+//
+// `where` retorna `chain` por padrão para suportar update().set().where().returning()
+// Para SELECTs que terminam em `.where()`, use mockResolvedValueOnce nos testes.
+// Para SELECTs que terminam em `.orderBy()`, `.limit()` ou `.offset()`, esses resolvem.
+
+const makeDrizzleMock = () => {
+  const chain: any = {};
+  chain.select = jest.fn().mockReturnValue(chain);
+  chain.from = jest.fn().mockReturnValue(chain);
+  // where retorna chain por padrão (para suportar update chain)
+  // Testes de SELECT que terminam em where devem usar mockResolvedValueOnce
+  chain.where = jest.fn().mockReturnValue(chain);
+  chain.orderBy = jest.fn().mockReturnValue(chain);
+  chain.limit = jest.fn().mockReturnValue(chain);
+  chain.offset = jest.fn().mockResolvedValue([mockUser]);
+  chain.insert = jest.fn().mockReturnValue(chain);
+  chain.values = jest.fn().mockReturnValue(chain);
+  chain.returning = jest.fn().mockResolvedValue([mockUser]);
+  chain.update = jest.fn().mockReturnValue(chain);
+  chain.set = jest.fn().mockReturnValue(chain);
+  return chain;
+};
+
+// ── Suite principal ───────────────────────────────────────────────────────────
+
+describe('AdminService', () => {
+  let service: AdminService;
+  let mockDb: any;
+
+  const buildModule = async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: DATABASE_CONNECTION, useValue: mockDb },
+      ],
+    }).compile();
+
+    return module.get<AdminService>(AdminService);
+  };
+
+  // ── getStats ──────────────────────────────────────────────────────────────
+  //
+  // getStats faz Promise.all de 5 queries:
+  //   [0] select(count).from(users)                      — terminal: from()
+  //   [1] select(count).from(listings)                   — terminal: from()
+  //   [2] select(count).from(orders)                     — terminal: from()
+  //   [3] select(sum).from(orders).where(status=completed) — terminal: where()
+  //   [4] select(count).from(disputes).where(status=open)  — terminal: where()
+  //
+  // Como os terminais são diferentes, usamos mockResolvedValueOnce para `from`
+  // nas 3 primeiras chamadas (que não têm .where) e para `where` nas 2 últimas.
+
+  describe('getStats', () => {
+    it('deve retornar o shape correto com contagens e receita', async () => {
+      mockDb = makeDrizzleMock();
+      // queries [0],[1],[2] terminam em from()
+      mockDb.from
+        .mockResolvedValueOnce([{ total: 42 }])  // users count
+        .mockResolvedValueOnce([{ total: 7 }])   // listings count
+        .mockResolvedValueOnce([{ total: 3 }])   // orders count — para where() mais abaixo
+        .mockReturnValue(mockDb);                 // fallback: retorna chain para queries com .where()
+      // queries [3],[4] terminam em where()
+      mockDb.where
+        .mockResolvedValueOnce([{ total: 50000 }]) // revenue (orders where completed)
+        .mockResolvedValueOnce([{ total: 2 }]);     // open disputes
+
+      service = await buildModule();
+      const stats = await service.getStats();
+
+      expect(stats).toHaveProperty('totalUsers');
+      expect(stats).toHaveProperty('totalListings');
+      expect(stats).toHaveProperty('totalOrders');
+      expect(stats).toHaveProperty('totalRevenueInCents');
+      expect(stats).toHaveProperty('openDisputes');
+      expect(stats.totalUsers).toBe(42);
+      expect(stats.totalListings).toBe(7);
+    });
+
+    it('deve retornar zeros quando todas as tabelas estão vazias', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.from
+        .mockResolvedValueOnce([{ total: 0 }])
+        .mockResolvedValueOnce([{ total: 0 }])
+        .mockResolvedValueOnce([{ total: 0 }])
+        .mockReturnValue(mockDb);
+      mockDb.where
+        .mockResolvedValueOnce([{ total: null }]) // revenue null → deve ser 0
+        .mockResolvedValueOnce([{ total: 0 }]);   // disputes
+
+      service = await buildModule();
+      const stats = await service.getStats();
+
+      expect(stats.totalRevenueInCents).toBe(0);
+      expect(stats.openDisputes).toBe(0);
+    });
+
+    it('deve retornar totalRevenueInCents como número', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.from
+        .mockResolvedValueOnce([{ total: 5 }])
+        .mockResolvedValueOnce([{ total: 10 }])
+        .mockResolvedValueOnce([{ total: 2 }])
+        .mockReturnValue(mockDb);
+      mockDb.where
+        .mockResolvedValueOnce([{ total: '99999' }]) // sum retorna string no SQLite
+        .mockResolvedValueOnce([{ total: 1 }]);
+
+      service = await buildModule();
+      const stats = await service.getStats();
+
+      expect(typeof stats.totalRevenueInCents).toBe('number');
+      expect(stats.totalRevenueInCents).toBe(99999);
+    });
+  });
+
+  // ── listUsers ─────────────────────────────────────────────────────────────
+
+  describe('listUsers', () => {
+    it('deve retornar array de usuários paginados', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.offset.mockResolvedValue([mockUser, { ...mockUser, id: 'user_002' }]);
+      service = await buildModule();
+
+      const result = await service.listUsers(50, 0);
+
+      expect(Array.isArray(result)).toBe(true);
+      expect(result.length).toBe(2);
+      expect(mockDb.limit).toHaveBeenCalled();
+      expect(mockDb.offset).toHaveBeenCalled();
+    });
+
+    it('deve usar limit e offset corretos', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.offset.mockResolvedValue([]);
+      service = await buildModule();
+
+      await service.listUsers(10, 20);
+
+      expect(mockDb.limit).toHaveBeenCalledWith(10);
+      expect(mockDb.offset).toHaveBeenCalledWith(20);
+    });
+  });
+
+  // ── updateUserRole ────────────────────────────────────────────────────────
+
+  describe('updateUserRole', () => {
+    it('deve lançar NotFoundException se usuário não existe', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]); // usuário não encontrado
+      service = await buildModule();
+
+      await expect(
+        service.updateUserRole('nope', { role: 'admin' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('deve retornar usuário atualizado quando encontrado', async () => {
+      mockDb = makeDrizzleMock();
+      const updatedUser = { ...mockUser, role: 'admin' };
+
+      // Primeira chamada: SELECT .where() → resolve com [mockUser]
+      // Segunda chamada: UPDATE .where() → retorna chain (padrão) para permitir .returning()
+      mockDb.where.mockResolvedValueOnce([mockUser]);
+
+      // returning do update resolve com usuário atualizado
+      mockDb.returning.mockResolvedValueOnce([updatedUser]);
+
+      service = await buildModule();
+      const result = await service.updateUserRole('user_001', { role: 'admin' });
+
+      expect(result).toEqual(updatedUser);
+    });
+  });
+
+  // ── listSellers ───────────────────────────────────────────────────────────
+
+  describe('listSellers', () => {
+    it('deve retornar todos os sellers quando verified não é fornecido', async () => {
+      const verifiedProfile = { ...mockSellerProfile, isVerified: true };
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([mockSellerProfile, verifiedProfile]);
+      service = await buildModule();
+
+      const result = await service.listSellers();
+
+      expect(result.length).toBe(2);
+    });
+
+    it('deve retornar apenas sellers verificados quando verified=true', async () => {
+      const verifiedProfile = { ...mockSellerProfile, id: 'profile_002', isVerified: true };
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([mockSellerProfile, verifiedProfile]);
+      service = await buildModule();
+
+      const result = await service.listSellers(true);
+
+      expect(result.length).toBe(1);
+      expect(result[0].isVerified).toBe(true);
+    });
+
+    it('deve retornar apenas sellers não verificados quando verified=false', async () => {
+      const verifiedProfile = { ...mockSellerProfile, id: 'profile_002', isVerified: true };
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([mockSellerProfile, verifiedProfile]);
+      service = await buildModule();
+
+      const result = await service.listSellers(false);
+
+      expect(result.length).toBe(1);
+      expect(result[0].isVerified).toBe(false);
+    });
+  });
+
+  // ── verifySeller ──────────────────────────────────────────────────────────
+
+  describe('verifySeller', () => {
+    it('deve lançar NotFoundException se perfil não existe', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]); // perfil não encontrado
+      service = await buildModule();
+
+      await expect(
+        service.verifySeller('profile_nope', true),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('deve atualizar isVerified para true quando perfil existe', async () => {
+      const updatedProfile = { ...mockSellerProfile, isVerified: true };
+      mockDb = makeDrizzleMock();
+      // SELECT: where resolves com perfil; UPDATE: where retorna chain (padrão)
+      mockDb.where.mockResolvedValueOnce([mockSellerProfile]);
+      mockDb.returning.mockResolvedValueOnce([updatedProfile]);
+      service = await buildModule();
+
+      const result = await service.verifySeller('profile_001', true);
+
+      expect(result.isVerified).toBe(true);
+    });
+
+    it('deve atualizar isVerified para false (remoção de verificação)', async () => {
+      const profileVerified = { ...mockSellerProfile, isVerified: true };
+      const updatedProfile = { ...profileVerified, isVerified: false };
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([profileVerified]);
+      mockDb.returning.mockResolvedValueOnce([updatedProfile]);
+      service = await buildModule();
+
+      const result = await service.verifySeller('profile_001', false);
+
+      expect(result.isVerified).toBe(false);
+    });
+  });
+
+  // ── listDisputes ──────────────────────────────────────────────────────────
+
+  describe('listDisputes', () => {
+    it('deve retornar todas as disputas quando status não é fornecido', async () => {
+      const resolvedDispute = { ...mockDispute, id: 'dispute_002', status: 'resolved' };
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([mockDispute, resolvedDispute]);
+      service = await buildModule();
+
+      const result = await service.listDisputes();
+
+      expect(result.length).toBe(2);
+    });
+
+    it('deve retornar apenas disputas abertas quando status="open"', async () => {
+      const resolvedDispute = { ...mockDispute, id: 'dispute_002', status: 'resolved' };
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([mockDispute, resolvedDispute]);
+      service = await buildModule();
+
+      const result = await service.listDisputes('open');
+
+      expect(result.length).toBe(1);
+      expect(result[0].status).toBe('open');
+    });
+
+    it('deve retornar array vazio se não há disputas com o status informado', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([mockDispute]); // só tem 'open'
+      service = await buildModule();
+
+      const result = await service.listDisputes('resolved');
+
+      expect(result).toEqual([]);
+    });
+  });
+
+  // ── resolveDispute ────────────────────────────────────────────────────────
+
+  describe('resolveDispute', () => {
+    it('deve lançar NotFoundException se disputa não existe', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]); // disputa não encontrada
+      service = await buildModule();
+
+      await expect(
+        service.resolveDispute('dispute_nope', { status: 'resolved' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('deve lançar BadRequestException se disputa já está "resolved"', async () => {
+      const resolvedDispute = { ...mockDispute, status: 'resolved' };
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([resolvedDispute]);
+      service = await buildModule();
+
+      await expect(
+        service.resolveDispute('dispute_001', { status: 'closed' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('deve lançar BadRequestException se disputa já está "closed"', async () => {
+      const closedDispute = { ...mockDispute, status: 'closed' };
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([closedDispute]);
+      service = await buildModule();
+
+      await expect(
+        service.resolveDispute('dispute_001', { status: 'resolved' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('deve atualizar status e retornar disputa resolvida', async () => {
+      const updatedDispute = { ...mockDispute, status: 'resolved', resolvedAt: new Date() };
+      mockDb = makeDrizzleMock();
+      // SELECT: where resolve com disputa aberta; UPDATE: where retorna chain (padrão)
+      mockDb.where.mockResolvedValueOnce([mockDispute]);
+      mockDb.returning.mockResolvedValueOnce([updatedDispute]);
+      service = await buildModule();
+
+      const result = await service.resolveDispute('dispute_001', { status: 'resolved' });
+
+      expect(result.status).toBe('resolved');
+      expect(result.resolvedAt).toBeDefined();
+    });
+
+    it('deve atualizar para "under_review" sem setar resolvedAt', async () => {
+      const updatedDispute = { ...mockDispute, status: 'under_review', resolvedAt: null };
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([mockDispute]);
+      mockDb.returning.mockResolvedValueOnce([updatedDispute]);
+      service = await buildModule();
+
+      const result = await service.resolveDispute('dispute_001', { status: 'under_review' });
+
+      expect(result.status).toBe('under_review');
+      expect(result.resolvedAt).toBeNull();
+    });
+  });
+
+  // ── listListings ──────────────────────────────────────────────────────────
+
+  describe('listListings', () => {
+    it('deve retornar listings paginados', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.offset.mockResolvedValue([mockListing]);
+      service = await buildModule();
+
+      const result = await service.listListings();
+
+      expect(Array.isArray(result)).toBe(true);
+      expect(result[0].id).toBe('listing_001');
+    });
+
+    it('deve filtrar por status quando fornecido', async () => {
+      const draftListing = { ...mockListing, id: 'listing_002', status: 'draft' };
+      mockDb = makeDrizzleMock();
+      mockDb.offset.mockResolvedValue([mockListing, draftListing]);
+      service = await buildModule();
+
+      const result = await service.listListings('active');
+
+      expect(result.length).toBe(1);
+      expect(result[0].status).toBe('active');
+    });
+
+    it('deve retornar todos os listings quando status não é fornecido', async () => {
+      const draftListing = { ...mockListing, id: 'listing_002', status: 'draft' };
+      mockDb = makeDrizzleMock();
+      mockDb.offset.mockResolvedValue([mockListing, draftListing]);
+      service = await buildModule();
+
+      const result = await service.listListings();
+
+      expect(result.length).toBe(2);
+    });
+  });
+
+  // ── updateListingStatus ───────────────────────────────────────────────────
+
+  describe('updateListingStatus', () => {
+    it('deve lançar NotFoundException se anúncio não existe', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]); // listing não encontrado
+      service = await buildModule();
+
+      await expect(
+        service.updateListingStatus('listing_nope', 'active'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('deve retornar anúncio atualizado quando encontrado', async () => {
+      const updatedListing = { ...mockListing, status: 'cancelled' };
+      mockDb = makeDrizzleMock();
+      // SELECT: where resolve com listing; UPDATE: where retorna chain (padrão)
+      mockDb.where.mockResolvedValueOnce([mockListing]);
+      mockDb.returning.mockResolvedValueOnce([updatedListing]);
+      service = await buildModule();
+
+      const result = await service.updateListingStatus('listing_001', 'cancelled');
+
+      expect(result.status).toBe('cancelled');
+    });
+
+    it('deve chamar update com o status correto', async () => {
+      const updatedListing = { ...mockListing, status: 'sold' };
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([mockListing]);
+      mockDb.returning.mockResolvedValueOnce([updatedListing]);
+      service = await buildModule();
+
+      await service.updateListingStatus('listing_001', 'sold');
+
+      expect(mockDb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'sold' }),
+      );
+    });
+  });
+});

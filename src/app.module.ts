@@ -20,6 +20,8 @@ import { DevAuthMiddleware } from './auth/dev-auth.middleware';
 import { ShippingModule } from './shipping/shipping.module';
 import { MessagesModule } from './messages/messages.module';
 import { SellersModule } from './sellers/sellers.module';
+import { MediaModule } from './media/media.module';
+import { AdminModule } from './admin/admin.module';
 import { ScheduleModule } from '@nestjs/schedule';
 @Module({
   imports: [
@@ -45,6 +47,8 @@ import { ScheduleModule } from '@nestjs/schedule';
     ShippingModule,
     MessagesModule,
     SellersModule,
+    MediaModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

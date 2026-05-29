@@ -46,6 +46,16 @@ export class AuctionsController {
     return { data: bids };
   }
 
+  // ── GET /api/auctions/seller/mine — Seller: meus leilões ─────────────────
+
+  @Get('seller/mine')
+  @UseGuards(AuthGuard)
+  async findSellerAuctions(@Req() req: Request) {
+    const sellerId = (req as any).auth.userId as string;
+    const auctions = await this.auctionsService.findSellerAuctions(sellerId);
+    return { data: auctions };
+  }
+
   // ── POST /api/auctions — Seller: criar leilão ────────────────────────────
 
   @Post()
@@ -56,6 +66,18 @@ export class AuctionsController {
     const sellerId = (req as any).auth.userId as string;
     const auction = await this.auctionsService.create(sellerId, dto);
     return { data: auction };
+  }
+
+  // ── POST /api/auctions/:id/end — Seller/Admin: encerrar leilão ──────────
+
+  @Post(':id/end')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  @HttpCode(HttpStatus.OK)
+  async endAuction(@Req() req: Request, @Param('id') id: string) {
+    const userId = (req as any).auth.userId as string;
+    const result = await this.auctionsService.endAuction(id, userId);
+    return { data: result };
   }
 
   // ── POST /api/auctions/:id/bids — Comprador: dar lance ─────────────────

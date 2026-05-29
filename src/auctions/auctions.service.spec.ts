@@ -1,11 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuctionsService } from './auctions.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { WalletService } from '../wallet/wallet.service';
 import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+
+const mockWalletService = {
+  creditSeller: jest.fn(),
+  holdBalance: jest.fn(),
+};
 
 const sellerId = 'seller_001';
 const bidderId = 'buyer_001';
@@ -43,12 +49,20 @@ const mockBid = {
 };
 
 // Builder de mock Drizzle com encadeamento completo
+//
+// Estratégia: `where` retorna `chain` por padrão para suportar o padrão
+//   update().set().where().returning()
+// e também select().from().innerJoin().where().orderBy().
+// Testes que precisam de `where` como terminal usam mockResolvedValueOnce.
 const makeDrizzleMock = () => {
   const chain: any = {};
   chain.select = jest.fn().mockReturnValue(chain);
   chain.from = jest.fn().mockReturnValue(chain);
-  chain.where = jest.fn().mockResolvedValue([mockAuction]);
+  chain.where = jest.fn().mockReturnValue(chain);  // retorna chain por padrão
+  chain.innerJoin = jest.fn().mockReturnValue(chain);
   chain.orderBy = jest.fn().mockResolvedValue([mockBid]);
+  chain.limit = jest.fn().mockReturnValue(chain);
+  chain.offset = jest.fn().mockReturnValue(chain);
   chain.insert = jest.fn().mockReturnValue(chain);
   chain.values = jest.fn().mockReturnValue(chain);
   chain.returning = jest.fn().mockResolvedValue([mockAuction]);
@@ -76,6 +90,7 @@ describe('AuctionsService', () => {
       providers: [
         AuctionsService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
+        { provide: WalletService, useValue: mockWalletService },
       ],
     }).compile();
 
@@ -187,6 +202,179 @@ describe('AuctionsService', () => {
       });
 
       expect(result).toEqual(mockBid);
+    });
+  });
+
+  // ── findSellerAuctions ────────────────────────────────────────────────────
+
+  describe('findSellerAuctions', () => {
+    it('deve retornar array de leilões do seller', async () => {
+      const sellerAuction = { ...mockAuction, sellerId };
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([sellerAuction]);
+      service = await buildModule();
+
+      const result = await service.findSellerAuctions(sellerId);
+
+      expect(Array.isArray(result)).toBe(true);
+      expect(result.length).toBe(1);
+    });
+
+    it('deve chamar innerJoin para buscar dados do listing', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([]);
+      service = await buildModule();
+
+      await service.findSellerAuctions(sellerId);
+
+      expect(mockDb.innerJoin).toHaveBeenCalled();
+    });
+
+    it('deve retornar array vazio se o seller não tem leilões', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.orderBy.mockResolvedValue([]);
+      service = await buildModule();
+
+      const result = await service.findSellerAuctions('seller_sem_leiloes');
+
+      expect(result).toEqual([]);
+    });
+  });
+
+  // ── endAuction ────────────────────────────────────────────────────────────
+
+  describe('endAuction', () => {
+    it('deve lançar NotFoundException se leilão não existe', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([]); // auction não encontrado
+      service = await buildModule();
+
+      await expect(
+        service.endAuction('auction_nope', sellerId),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('deve lançar BadRequestException se leilão não está ativo', async () => {
+      const endedAuction = { ...mockAuction, status: 'ended' };
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([endedAuction]);
+      service = await buildModule();
+
+      await expect(
+        service.endAuction(mockAuctionId, sellerId),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('deve lançar ForbiddenException se requester não é seller nem admin', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([mockAuction])                          // auction ativo
+        .mockResolvedValueOnce([mockListing])                          // listing com sellerId diferente
+        .mockResolvedValueOnce([{ id: 'outro_user', role: 'user' }]); // requester não é admin
+      service = await buildModule();
+
+      await expect(
+        service.endAuction(mockAuctionId, 'outro_user'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('deve encerrar o leilão quando o requester é o seller', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([mockAuction])                   // auction ativo
+        .mockResolvedValueOnce([mockListing])                   // listing pertence ao seller
+        .mockResolvedValueOnce([{ id: sellerId, role: 'user' }]); // requester é o seller
+      service = await buildModule();
+
+      // _closeAuction usa transaction — mockDb.transaction já está configurado
+      await expect(
+        service.endAuction(mockAuctionId, sellerId),
+      ).resolves.not.toThrow();
+
+      expect(mockDb.transaction).toHaveBeenCalled();
+    });
+
+    it('deve encerrar o leilão quando o requester é admin', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([mockAuction])                          // auction ativo
+        .mockResolvedValueOnce([mockListing])                          // listing (seller diferente)
+        .mockResolvedValueOnce([{ id: 'admin_user', role: 'admin' }]); // requester é admin
+      service = await buildModule();
+
+      await expect(
+        service.endAuction(mockAuctionId, 'admin_user'),
+      ).resolves.not.toThrow();
+
+      expect(mockDb.transaction).toHaveBeenCalled();
+    });
+  });
+
+  // ── endExpiredAuctions ────────────────────────────────────────────────────
+
+  describe('endExpiredAuctions', () => {
+    it('deve retornar array vazio se não há leilões expirados', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]); // nenhum leilão expirado
+      service = await buildModule();
+
+      const result = await service.endExpiredAuctions();
+
+      expect(result).toEqual([]);
+    });
+
+    it('deve retornar IDs dos leilões que foram fechados', async () => {
+      const expiredAuction = {
+        ...mockAuction,
+        id: 'auction_expired',
+        endsAt: new Date(Date.now() - 1000), // já expirou
+      };
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([expiredAuction])  // leilões expirados
+        .mockResolvedValueOnce([mockListing]);      // listing do leilão expirado
+      service = await buildModule();
+
+      const result = await service.endExpiredAuctions();
+
+      expect(Array.isArray(result)).toBe(true);
+      expect(result).toContain('auction_expired');
+    });
+
+    it('deve continuar processando mesmo se um leilão falhar', async () => {
+      const expiredAuction1 = { ...mockAuction, id: 'auction_exp_1', endsAt: new Date(Date.now() - 1000) };
+      const expiredAuction2 = { ...mockAuction, id: 'auction_exp_2', endsAt: new Date(Date.now() - 2000) };
+      mockDb = makeDrizzleMock();
+      // Retorna 2 expirados
+      mockDb.where
+        .mockResolvedValueOnce([expiredAuction1, expiredAuction2])
+        .mockResolvedValueOnce([mockListing])  // listing para o primeiro
+        .mockResolvedValueOnce([mockListing]); // listing para o segundo
+
+      // Faz a transaction falhar apenas na primeira chamada
+      let txCallCount = 0;
+      mockDb.transaction = jest.fn().mockImplementation(async (fn: any) => {
+        txCallCount++;
+        if (txCallCount === 1) throw new Error('Falha simulada');
+        const tx: any = {};
+        tx.update = jest.fn().mockReturnValue(tx);
+        tx.set = jest.fn().mockReturnValue(tx);
+        tx.where = jest.fn().mockResolvedValue(undefined);
+        tx.insert = jest.fn().mockReturnValue(tx);
+        tx.values = jest.fn().mockReturnValue(tx);
+        tx.returning = jest.fn().mockResolvedValue([]);
+        return fn(tx);
+      });
+
+      service = await buildModule();
+
+      const result = await service.endExpiredAuctions();
+
+      // Só o segundo deve ter sido fechado com sucesso
+      expect(result).toContain('auction_exp_2');
+      expect(result).not.toContain('auction_exp_1');
     });
   });
 });
