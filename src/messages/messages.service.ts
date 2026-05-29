@@ -132,40 +132,91 @@ export class MessagesService {
       throw new BadRequestException('Você não pode iniciar uma conversa no seu próprio anúncio');
     }
 
-    // Check if conversation already exists
+    // Restrição: exige ao menos uma transação confirmada entre comprador e vendedor para este anúncio
+    const confirmedOrder = await this.db.query.orders.findFirst({
+      where: and(
+        eq(schema.orders.buyerId, userId),
+        eq(schema.orders.listingId, dto.listingId),
+      ),
+    });
+
+    if (!confirmedOrder || !['paid', 'shipped', 'delivered', 'completed'].includes(confirmedOrder.status)) {
+      throw new ForbiddenException(
+        'O chat só está disponível após uma transação confirmada entre comprador e vendedor.',
+      );
+    }
+
+    return this._createOrGetConversation(dto.listingId, userId, listing.sellerId, dto.message);
+  }
+
+  // ── Iniciar ou abrir conversa a partir de um pedido ──────────────────────────
+
+  async startFromOrder(userId: string, orderId: string) {
+    const order = await this.db.query.orders.findFirst({
+      where: eq(schema.orders.id, orderId),
+    });
+
+    if (!order) throw new NotFoundException('Pedido não encontrado');
+
+    if (order.buyerId !== userId && order.sellerId !== userId) {
+      throw new ForbiddenException('Você não tem acesso a este pedido');
+    }
+
+    if (!['paid', 'shipped', 'delivered', 'completed'].includes(order.status)) {
+      throw new ForbiddenException(
+        'O chat só está disponível após o pagamento ser confirmado.',
+      );
+    }
+
+    const { conversationId } = await this._createOrGetConversation(
+      order.listingId,
+      order.buyerId,
+      order.sellerId,
+    );
+
+    return { conversationId };
+  }
+
+  // ── Lógica interna de criação/busca de conversa ───────────────────────────────
+
+  private async _createOrGetConversation(
+    listingId: string,
+    buyerId: string,
+    sellerId: string,
+    firstMessage?: string,
+  ) {
     const existing = await this.db.query.conversations.findFirst({
       where: and(
-        eq(schema.conversations.listingId, dto.listingId),
-        eq(schema.conversations.buyerId, userId),
+        eq(schema.conversations.listingId, listingId),
+        eq(schema.conversations.buyerId, buyerId),
       ),
     });
 
     if (existing) {
-      // Just add message to existing
-      const msg = await this.sendMessage(userId, existing.id, { content: dto.message });
-      return { conversationId: existing.id, message: msg };
+      let message = null;
+      if (firstMessage) {
+        message = await this.sendMessage(buyerId, existing.id, { content: firstMessage });
+      }
+      return { conversationId: existing.id, message };
     }
 
-    // Create new conversation
-    const newConv = await this.db.insert(schema.conversations).values({
-      listingId: dto.listingId,
-      buyerId: userId,
-      sellerId: listing.sellerId,
+    const [newConv] = await this.db.insert(schema.conversations).values({
+      listingId,
+      buyerId,
+      sellerId,
     }).returning();
 
-    const conversationId = newConv[0].id;
+    let message = null;
+    if (firstMessage) {
+      const [msg] = await this.db.insert(schema.messages).values({
+        conversationId: newConv.id,
+        senderId: buyerId,
+        content: firstMessage,
+      }).returning();
+      message = msg;
+    }
 
-    // Create initial message
-    const newMessage = await this.db.insert(schema.messages).values({
-      conversationId,
-      senderId: userId,
-      content: dto.message,
-    }).returning();
-
-    return {
-      conversationId,
-      message: newMessage[0],
-    };
+    return { conversationId: newConv.id, message };
   }
 
   async sendMessage(userId: string, conversationId: string, dto: SendMessageDto) {

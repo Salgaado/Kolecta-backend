@@ -108,7 +108,7 @@ describe('MessagesService', () => {
       });
 
       expect(result.conversationId).toBe('new_conv_123');
-      expect(result.message.id).toBe('new_msg_123');
+      expect(result.message?.id).toBe('new_msg_123');
     });
 
     it('deve lançar erro se tentar criar conversa no próprio anuncio', async () => {

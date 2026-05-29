@@ -16,45 +16,60 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 
 @UseGuards(AuthGuard, RolesGuard)
-@Roles('user', 'admin') // Somente usuários autenticados e com role
-@Controller('api/messages/conversations')
+@Roles('user', 'admin')
+@Controller('api/messages')
 export class MessagesController {
   constructor(private readonly messagesService: MessagesService) {}
 
-  @Get()
+  // ── GET /api/messages/conversations ──────────────────────────────────────────
+
+  @Get('conversations')
   async getConversations(@Req() req: Request) {
-    const userId = (req as any).user?.id;
+    const userId = (req as any).auth.userId as string;
     return this.messagesService.getConversations(userId);
   }
 
-  @Get(':id')
+  // ── GET /api/messages/conversations/:id ──────────────────────────────────────
+
+  @Get('conversations/:id')
   async getConversation(@Param('id') id: string, @Req() req: Request) {
-    const userId = (req as any).user?.id;
-    return this.messagesService.getConversation(id, userId);
+    const userId = (req as any).auth.userId as string;
+    return { data: await this.messagesService.getConversation(id, userId) };
   }
 
-  @Post()
-  async startConversation(
-    @Body() dto: StartConversationDto,
-    @Req() req: Request,
-  ) {
-    const userId = (req as any).user?.id;
-    return this.messagesService.startConversation(userId, dto);
+  // ── POST /api/messages/conversations — iniciar conversa (requer transação) ───
+
+  @Post('conversations')
+  async startConversation(@Body() dto: StartConversationDto, @Req() req: Request) {
+    const userId = (req as any).auth.userId as string;
+    return { data: await this.messagesService.startConversation(userId, dto) };
   }
 
-  @Post(':id')
+  // ── POST /api/messages/from-order/:orderId — abrir/criar chat pelo pedido ────
+
+  @Post('from-order/:orderId')
+  async startFromOrder(@Param('orderId') orderId: string, @Req() req: Request) {
+    const userId = (req as any).auth.userId as string;
+    return { data: await this.messagesService.startFromOrder(userId, orderId) };
+  }
+
+  // ── POST /api/messages/conversations/:id — enviar mensagem ───────────────────
+
+  @Post('conversations/:id')
   async sendMessage(
     @Param('id') id: string,
     @Body() dto: SendMessageDto,
     @Req() req: Request,
   ) {
-    const userId = (req as any).user?.id;
-    return this.messagesService.sendMessage(userId, id, dto);
+    const userId = (req as any).auth.userId as string;
+    return { data: await this.messagesService.sendMessage(userId, id, dto) };
   }
 
-  @Patch(':id/read')
+  // ── PATCH /api/messages/conversations/:id/read ───────────────────────────────
+
+  @Patch('conversations/:id/read')
   async markAsRead(@Param('id') id: string, @Req() req: Request) {
-    const userId = (req as any).user?.id;
+    const userId = (req as any).auth.userId as string;
     return this.messagesService.markAsRead(userId, id);
   }
 }
