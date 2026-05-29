@@ -10,6 +10,7 @@ import { eq, desc, and, getTableColumns, like } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import * as Papa from 'papaparse';
+import * as XLSX from 'xlsx';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -258,16 +259,28 @@ export class ListingsService {
     return { jobId, status: 'processing', message: 'Importação iniciada' };
   }
 
+  private parseFileToRows(file: Express.Multer.File): any[] {
+    const isXlsx =
+      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.originalname?.endsWith('.xlsx') ||
+      file.originalname?.endsWith('.xls');
+
+    if (isXlsx) {
+      const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      return XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    }
+
+    const result = Papa.parse(file.buffer.toString('utf-8'), {
+      header: true,
+      skipEmptyLines: true,
+    });
+    return result.data as any[];
+  }
+
   private async processImportFile(jobId: string, sellerId: string, file: Express.Multer.File) {
     try {
-      const csvData = file.buffer.toString('utf-8');
-      
-      const parsed = Papa.parse(csvData, {
-        header: true,
-        skipEmptyLines: true,
-      });
-
-      const rows = parsed.data as any[];
+      const rows = this.parseFileToRows(file);
       let processed = 0;
       let failed = 0;
       const errors = [];
