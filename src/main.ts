@@ -2,11 +2,21 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { clerkMiddleware } from '@clerk/express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
+
+  // Validação global de DTOs (class-validator). transform converte tipos primitivos
+  // conforme os decorators @Type; whitelist remove propriedades não declaradas no DTO.
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+    }),
+  );
 
   // CORS para o MVP (Permitir requests do Front local ou prod)
   app.enableCors({

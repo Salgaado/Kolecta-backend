@@ -19,7 +19,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { ListingsService } from './listings.service';
-import type { CreateListingDto, UpdateListingDto } from './listings.service';
+import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';

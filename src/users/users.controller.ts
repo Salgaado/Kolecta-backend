@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { UsersService } from './users.service';
-import type { UpdateUserDto } from './users.service';
+import { UpdateUserDto } from './dto/user.dto';
 import { AuthGuard } from '../auth/auth.guard';
 
 @Controller('api/users')

@@ -7,6 +7,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { DepositsService } from './deposits.service';
+import { CreateDepositDto } from './dto/deposit.dto';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -20,7 +21,7 @@ export class DepositsController {
   @Roles('user', 'admin')
   async createDepositSession(
     @Req() req: any,
-    @Body() body: { amountInCents: number },
+    @Body() body: CreateDepositDto,
   ) {
     const userId = req.auth.userId;
 

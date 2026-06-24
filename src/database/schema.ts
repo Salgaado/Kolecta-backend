@@ -1,4 +1,10 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import {
+  sqliteTable,
+  text,
+  integer,
+  real,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -460,5 +466,153 @@ export const importJobs = sqliteTable('import_jobs', {
   // JSON stringificado contendo array de erros: [{"row": 2, "error": "Invalid price"}]
   errors: text('errors'),
 
+  ...timestamps,
+});
+
+// ─── Community ───────────────────────────────────────────────────────────────
+// Hub da comunidade: posts, interações e moderação. O ranking é materializado
+// (coluna `score` recomputada por cron) e os contadores são denormalizados para
+// leitura barata do feed.
+
+export const communityPosts = sqliteTable('community_posts', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  authorId: text('author_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  // collection | product | discussion | guide
+  type: text('type').notNull(),
+  title: text('title').notNull(),
+  body: text('body'),
+  // JSON array stringificado de URLs: '["url1","url2"]'
+  images: text('images'),
+  categoryId: text('category_id').references(() => categories.id),
+  // Preenchido apenas em posts type=product (produto vinculado da plataforma)
+  listingId: text('listing_id').references(() => listings.id),
+  // active | hidden | removed
+  status: text('status').notNull().default('active'),
+
+  // Contadores denormalizados (mantidos pelas interações)
+  likeCount: integer('like_count').notNull().default(0),
+  saveCount: integer('save_count').notNull().default(0),
+  commentCount: integer('comment_count').notNull().default(0),
+  pinCount: integer('pin_count').notNull().default(0),
+
+  // Ranking materializado pelo cron de relevância
+  score: real('score').notNull().default(0),
+  scoreUpdatedAt: integer('score_updated_at', { mode: 'timestamp' }),
+
+  ...timestamps,
+});
+
+export const communityComments = sqliteTable('community_comments', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  postId: text('post_id')
+    .notNull()
+    .references(() => communityPosts.id, { onDelete: 'cascade' }),
+  authorId: text('author_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  body: text('body').notNull(),
+  // active | hidden | removed
+  status: text('status').notNull().default('active'),
+  ...timestamps,
+});
+
+// Um like por (post, usuário) — idempotência garantida no banco
+export const communityPostLikes = sqliteTable(
+  'community_post_likes',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    postId: text('post_id')
+      .notNull()
+      .references(() => communityPosts.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => ({ uniq: uniqueIndex('uq_post_like').on(t.postId, t.userId) }),
+);
+
+// Um save por (post, usuário)
+export const communityPostSaves = sqliteTable(
+  'community_post_saves',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    postId: text('post_id')
+      .notNull()
+      .references(() => communityPosts.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => ({ uniq: uniqueIndex('uq_post_save').on(t.postId, t.userId) }),
+);
+
+// Um pin por (post, usuário) — "merece aparecer mais"; peso maior no ranking
+export const communityPins = sqliteTable(
+  'community_pins',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    postId: text('post_id')
+      .notNull()
+      .references(() => communityPosts.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => ({ uniq: uniqueIndex('uq_post_pin').on(t.postId, t.userId) }),
+);
+
+export const communityReports = sqliteTable('community_reports', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  // post | comment
+  targetType: text('target_type').notNull(),
+  targetId: text('target_id').notNull(),
+  reporterId: text('reporter_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  // spam | scam | fake_product | offensive | off_topic | external_ads | prohibited
+  reason: text('reason').notNull(),
+  description: text('description'),
+  // open | reviewed | dismissed
+  status: text('status').notNull().default('open'),
+  resolvedAt: integer('resolved_at', { mode: 'timestamp' }),
+  ...timestamps,
+});
+
+// Usuário banido de postar/interagir na comunidade
+export const communityBans = sqliteTable('community_bans', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  reason: text('reason'),
+  bannedBy: text('banned_by')
+    .notNull()
+    .references(() => users.id),
   ...timestamps,
 });

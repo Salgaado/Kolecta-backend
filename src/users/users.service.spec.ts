@@ -100,5 +100,24 @@ describe('UsersService', () => {
         service.update('user_nao_existe', { name: 'X' }),
       ).rejects.toThrow(NotFoundException);
     });
+
+    // Defense-in-depth contra privesc: mesmo que `role` burle o ValidationPipe
+    // (whitelist), o service NUNCA pode persistir role via self-service.
+    it('NÃO deve atualizar role mesmo se enviado no payload (anti-privesc)', async () => {
+      selectChain.limit
+        .mockResolvedValueOnce([fakeUser])
+        .mockResolvedValueOnce([fakeUser]);
+
+      await service.update('user_abc', {
+        name: 'João',
+        role: 'admin',
+      } as any);
+
+      const setArg = updateChain.set.mock.calls[0][0];
+      expect(setArg).not.toHaveProperty('role');
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.not.objectContaining({ role: expect.anything() }),
+      );
+    });
   });
 });

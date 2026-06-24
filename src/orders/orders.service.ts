@@ -223,11 +223,44 @@ export class OrdersService {
 
   // ── Queries ────────────────────────────────────────────────────────────────
 
+  // Converte o campo `images` (JSON stringificado ou CSV legado) em array.
+  private parseImages(raw: string | null): string[] {
+    if (!raw) return [];
+    try {
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+  }
+
   async findBuyerOrders(buyerId: string) {
-    return this.db
-      .select()
+    const rows = await this.db
+      .select({
+        order: schema.orders,
+        listingTitle: schema.listings.title,
+        listingImages: schema.listings.images,
+        listingPrice: schema.listings.priceInCents,
+        counterpartName: schema.users.name,
+      })
       .from(schema.orders)
+      .leftJoin(schema.listings, eq(schema.orders.listingId, schema.listings.id))
+      // Para o comprador, a contraparte é o vendedor
+      .leftJoin(schema.users, eq(schema.orders.sellerId, schema.users.id))
       .where(eq(schema.orders.buyerId, buyerId));
+
+    return rows.map((r) => ({
+      ...r.order,
+      listing: {
+        title: r.listingTitle ?? 'Item indisponível',
+        images: this.parseImages(r.listingImages),
+        priceInCents: r.listingPrice ?? r.order.totalInCents,
+      },
+      seller: { id: r.order.sellerId, name: r.counterpartName ?? 'Vendedor' },
+    }));
   }
 
   async findById(orderId: string, userId: string) {
@@ -246,10 +279,29 @@ export class OrdersService {
   }
 
   async findSellerOrders(sellerId: string) {
-    return this.db
-      .select()
+    const rows = await this.db
+      .select({
+        order: schema.orders,
+        listingTitle: schema.listings.title,
+        listingImages: schema.listings.images,
+        listingPrice: schema.listings.priceInCents,
+        counterpartName: schema.users.name,
+      })
       .from(schema.orders)
+      .leftJoin(schema.listings, eq(schema.orders.listingId, schema.listings.id))
+      // Para o vendedor, a contraparte é o comprador
+      .leftJoin(schema.users, eq(schema.orders.buyerId, schema.users.id))
       .where(eq(schema.orders.sellerId, sellerId));
+
+    return rows.map((r) => ({
+      ...r.order,
+      listing: {
+        title: r.listingTitle ?? 'Item indisponível',
+        images: this.parseImages(r.listingImages),
+        priceInCents: r.listingPrice ?? r.order.totalInCents,
+      },
+      buyer: { id: r.order.buyerId, name: r.counterpartName ?? 'Comprador' },
+    }));
   }
 
   async updateOrderStatus(

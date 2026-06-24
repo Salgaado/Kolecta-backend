@@ -3,6 +3,7 @@ import { OrdersService } from './orders.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { WalletService } from '../wallet/wallet.service';
 import { StripeService } from '../stripe/stripe.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   BadRequestException,
   NotFoundException,
@@ -37,6 +38,7 @@ const fakeListingOwn = {
 
 const selectChain = {
   from: jest.fn().mockReturnThis(),
+  leftJoin: jest.fn().mockReturnThis(),
   where: jest.fn(),
 };
 
@@ -96,6 +98,7 @@ describe('OrdersService', () => {
         { provide: DATABASE_CONNECTION, useValue: mockDb },
         { provide: WalletService, useValue: mockWalletService },
         { provide: StripeService, useValue: mockStripeService },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 
@@ -145,6 +148,72 @@ describe('OrdersService', () => {
       expect(mockDb.transaction).toHaveBeenCalled();
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({ id: 'order_123', status: 'pending' });
+    });
+  });
+
+  // ── Queries enriquecidas (join com listing + contraparte) ──────────────────
+  describe('findSellerOrders', () => {
+    it('deve enriquecer pedidos com listing (imagens parseadas) e nome do comprador', async () => {
+      selectChain.where.mockResolvedValueOnce([
+        {
+          order: { id: 'o1', buyerId: 'user_buyer', sellerId: 'user_seller', totalInCents: 50000, status: 'paid' },
+          listingTitle: 'Hot Wheels RLC',
+          listingImages: '["https://img/1.jpg","https://img/2.jpg"]',
+          listingPrice: 50000,
+          counterpartName: 'Lucas Mendes',
+        },
+      ]);
+
+      const result = await service.findSellerOrders('user_seller');
+
+      expect(selectChain.leftJoin).toHaveBeenCalledTimes(2);
+      expect(result[0].listing).toEqual({
+        title: 'Hot Wheels RLC',
+        images: ['https://img/1.jpg', 'https://img/2.jpg'],
+        priceInCents: 50000,
+      });
+      expect(result[0].buyer).toEqual({ id: 'user_buyer', name: 'Lucas Mendes' });
+    });
+
+    it('deve usar fallbacks quando listing/comprador ausentes', async () => {
+      selectChain.where.mockResolvedValueOnce([
+        {
+          order: { id: 'o2', buyerId: 'user_x', sellerId: 'user_seller', totalInCents: 1000, status: 'paid' },
+          listingTitle: null,
+          listingImages: null,
+          listingPrice: null,
+          counterpartName: null,
+        },
+      ]);
+
+      const result = await service.findSellerOrders('user_seller');
+
+      expect(result[0].listing).toEqual({
+        title: 'Item indisponível',
+        images: [],
+        priceInCents: 1000,
+      });
+      expect(result[0].buyer.name).toBe('Comprador');
+    });
+  });
+
+  describe('findBuyerOrders', () => {
+    it('deve enriquecer com listing e nome do vendedor', async () => {
+      selectChain.where.mockResolvedValueOnce([
+        {
+          order: { id: 'o3', buyerId: 'user_buyer', sellerId: 'user_seller', totalInCents: 2000, status: 'paid' },
+          listingTitle: 'Matchbox',
+          listingImages: 'https://img/legacy.jpg',
+          listingPrice: 2000,
+          counterpartName: 'CardHouse',
+        },
+      ]);
+
+      const result = await service.findBuyerOrders('user_buyer');
+
+      // CSV legado também é parseado
+      expect(result[0].listing.images).toEqual(['https://img/legacy.jpg']);
+      expect(result[0].seller).toEqual({ id: 'user_seller', name: 'CardHouse' });
     });
   });
 });

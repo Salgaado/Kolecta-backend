@@ -3,9 +3,11 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
+import { UpdateUserDto } from './dto/user.dto';
 
 export type UserRecord = typeof schema.users.$inferSelect;
-export type UpdateUserDto = { name?: string; role?: string };
+// DTO movido para ./dto/user.dto.ts (classe, p/ o ValidationPipe global).
+export { UpdateUserDto };
 
 @Injectable()
 export class UsersService {
@@ -96,9 +98,14 @@ export class UsersService {
     // Verifica se o usuário existe antes de atualizar
     await this.findById(id);
 
+    // Defense-in-depth: monta o set apenas com campos permitidos no self-service.
+    // `role` NUNCA é alterável por aqui (privesc) — usar /api/admin/users/:id/role.
+    const allowed: { name?: string; updatedAt: Date } = { updatedAt: new Date() };
+    if (dto.name !== undefined) allowed.name = dto.name;
+
     await this.db
       .update(schema.users)
-      .set({ ...dto, updatedAt: new Date() })
+      .set(allowed)
       .where(eq(schema.users.id, id));
 
     this.logger.log(`Usuário atualizado: ${id}`);

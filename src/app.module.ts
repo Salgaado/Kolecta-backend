@@ -20,15 +20,22 @@ import { DevAuthMiddleware } from './auth/dev-auth.middleware';
 import { ShippingModule } from './shipping/shipping.module';
 import { MessagesModule } from './messages/messages.module';
 import { SellersModule } from './sellers/sellers.module';
+import { ReviewsModule } from './reviews/reviews.module';
+import { CategoriesModule } from './categories/categories.module';
+import { CommunityModule } from './community/community.module';
 import { MediaModule } from './media/media.module';
 import { AdminModule } from './admin/admin.module';
 import { BlingModule } from './bling/bling.module';
+import { PagarmeModule } from './pagarme/pagarme.module';
 import { ScheduleModule } from '@nestjs/schedule';
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
-    // ── Stripe ──────────────────────────────────────────
+    // ── Pagamentos ──────────────────────────────────────
+    // Pagar.me (migração em andamento — ver docs/PLAN-pagarme-migration.md)
+    PagarmeModule,
+    // Stripe (legado — em substituição)
     StripeCoreModule,
     DepositsModule,
     ConnectAccountsModule,
@@ -48,6 +55,9 @@ import { ScheduleModule } from '@nestjs/schedule';
     ShippingModule,
     MessagesModule,
     SellersModule,
+    ReviewsModule,
+    CategoriesModule,
+    CommunityModule,
     MediaModule,
     AdminModule,
     BlingModule,

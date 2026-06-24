@@ -38,23 +38,16 @@ const devUsers = [
   },
 ];
 
+// Taxonomia canônica da Kolecta. O `id` é o próprio slug (estável e legível),
+// para que listings.categoryId nunca dependa de ids arbitrários (c1, c2...).
+// Deve permanecer alinhada com o mock do frontend (src/lib/mock-data.ts) e com
+// os campos dinâmicos do CreateListing (keyados por slug).
 const mockCategories = [
-  {
-    id: 'c1',
-    name: 'Carrinhos & Miniaturas',
-    slug: 'carrinhos-miniaturas',
-    icon: '🏎️',
-  },
-  { id: 'c2', name: 'Funko Pop', slug: 'funko-pop', icon: '🎭' },
-  {
-    id: 'c3',
-    name: 'Cards Colecionáveis',
-    slug: 'cards-colecionaveis',
-    icon: '🃏',
-  },
-  { id: 'c4', name: 'Action Figures', slug: 'action-figures', icon: '🦸' },
-  { id: 'c5', name: 'Modelismo', slug: 'modelismo', icon: '✈️' },
-  { id: 'c6', name: 'Vintage & Retrô', slug: 'vintage-retro', icon: '📻' },
+  { id: 'miniaturas-diecast', name: 'Miniaturas & Diecast', slug: 'miniaturas-diecast', icon: '🏎️' },
+  { id: 'cards-colecionaveis', name: 'Cards Colecionáveis', slug: 'cards-colecionaveis', icon: '🃏' },
+  { id: 'action-figures', name: 'Action Figures & Statues', slug: 'action-figures', icon: '🦸' },
+  { id: 'funko-pop', name: 'Funko Pop', slug: 'funko-pop', icon: '🎭' },
+  { id: 'mangas-hqs', name: 'Mangás & HQs', slug: 'mangas-hqs', icon: '📚' },
 ];
 
 async function seed() {

@@ -11,25 +11,13 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import * as Papa from 'papaparse';
 import * as XLSX from 'xlsx';
+import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
-export type CreateListingDto = {
-  title: string;
-  description?: string;
-  categoryId?: string;
-  brand?: string;
-  line?: string;
-  scale?: string;
-  year?: string;
-  edition?: string;
-  condition: string; // lacrado | novo | mint | usado
-  type: 'direct' | 'auction';
-  priceInCents?: number;
-  images?: string; // JSON array stringificado
-};
-
-export type UpdateListingDto = Partial<Omit<CreateListingDto, 'type'>>;
+// DTOs movidos para ./dto/listing.dto.ts (classes, p/ o ValidationPipe global).
+// Re-exportados para manter compatibilidade com importadores existentes.
+export { CreateListingDto, UpdateListingDto };
 
 export type ListingRecord = typeof schema.listings.$inferSelect & {
   sellerName?: string | null;
