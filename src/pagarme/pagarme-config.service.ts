@@ -14,9 +14,10 @@ export class PagarmeConfigService {
     return process.env.PAGARME_SECRET_KEY || '';
   }
 
-  // Sandbox: https://sdx-api.pagar.me/core/v5 | Produção: https://api.pagar.me/core/v5
+  // Host único: api.pagar.me/core/v5 (o antigo sdx-api.pagar.me foi descontinuado).
+  // Teste vs. produção é determinado pela CHAVE, não pelo host.
   get baseUrl(): string {
-    return process.env.PAGARME_BASE_URL || 'https://sdx-api.pagar.me/core/v5';
+    return process.env.PAGARME_BASE_URL || 'https://api.pagar.me/core/v5';
   }
 
   // Credenciais de Basic Auth do endpoint de webhook (definidas no dashboard).

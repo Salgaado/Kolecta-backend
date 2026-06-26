@@ -19,7 +19,7 @@ export class DepositsController {
 
   @Post('deposit')
   @Roles('user', 'admin')
-  async createDepositSession(
+  async createDeposit(
     @Req() req: any,
     @Body() body: CreateDepositDto,
   ) {
@@ -35,9 +35,11 @@ export class DepositsController {
       );
     }
 
-    const result = await this.depositsService.createDepositSession(
+    const result = await this.depositsService.createDeposit(
       userId,
       body.amountInCents,
+      body.cpf,
+      body.phone,
     );
     return { data: result };
   }
