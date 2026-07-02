@@ -15,5 +15,7 @@ services:
         sync: false
       - key: CLERK_SECRET_KEY
         sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
       - key: CLERK_WEBHOOK_SECRET
         sync: false

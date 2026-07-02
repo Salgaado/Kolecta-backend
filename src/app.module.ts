@@ -27,6 +27,8 @@ import { MediaModule } from './media/media.module';
 import { AdminModule } from './admin/admin.module';
 import { BlingModule } from './bling/bling.module';
 import { PagarmeModule } from './pagarme/pagarme.module';
+import { RecipientsModule } from './recipients/recipients.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { ScheduleModule } from '@nestjs/schedule';
 @Module({
   imports: [
@@ -35,6 +37,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     // ── Pagamentos ──────────────────────────────────────
     // Pagar.me (migração em andamento — ver docs/PLAN-pagarme-migration.md)
     PagarmeModule,
+    RecipientsModule,
     // Stripe (legado — em substituição)
     StripeCoreModule,
     DepositsModule,
@@ -61,6 +64,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     MediaModule,
     AdminModule,
     BlingModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

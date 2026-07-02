@@ -55,6 +55,27 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
   isVerified: integer('is_verified', { mode: 'boolean' })
     .notNull()
     .default(false),
+
+  // ─── Pagar.me / KYC (recebedor) ─────────────────────────────────────────────
+  // Aditivo: convive com os campos Stripe acima até o cleanup da migração
+  // (ver docs/PLAN-pagarme-migration.md). KYC obrigatório por BACEN 3.978/20.
+  pagarmeRecipientId: text('pagarme_recipient_id'),
+  // Tipo de pessoa: 'individual' (CPF) | 'company' (CNPJ)
+  recipientType: text('recipient_type'),
+  // CPF/CNPJ — só dígitos. Dado sensível: não logar, mascarar no admin.
+  documentNumber: text('document_number'),
+  // Nome/razão social usado no cadastro do recebedor
+  legalName: text('legal_name'),
+  // Status do recebedor na Pagar.me:
+  // not_started|registration|affiliation|active|refused|suspended|blocked
+  pagarmeRecipientStatus: text('pagarme_recipient_status').default('not_started'),
+  // Derivados do status (active ⇒ pode receber/sacar)
+  canReceive: integer('can_receive', { mode: 'boolean' }).notNull().default(false),
+  canWithdraw: integer('can_withdraw', { mode: 'boolean' })
+    .notNull()
+    .default(false),
+  kycUpdatedAt: integer('kyc_updated_at', { mode: 'timestamp' }),
+
   ...timestamps,
 });
 
@@ -616,3 +637,37 @@ export const communityBans = sqliteTable('community_bans', {
     .references(() => users.id),
   ...timestamps,
 });
+
+// ─── Email Log ───────────────────────────────────────────────────────────────
+// Registro de e-mails transacionais enviados. Serve para:
+//  1. Idempotência — não reenviar o mesmo e-mail se um webhook/evento duplicar
+//     (chave lógica = template + refId + recipient).
+//  2. Auditoria/observabilidade de entrega.
+export const emailLog = sqliteTable(
+  'email_log',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    // Slug do template (ex: 'order-confirmed', 'sale-made')
+    template: text('template').notNull(),
+    // Destinatário (e-mail)
+    recipient: text('recipient').notNull(),
+    // ID do recurso que originou o e-mail (ex: orderId) — para idempotência
+    refId: text('ref_id'),
+    // ID retornado pelo provedor (Resend) — para rastreio
+    providerId: text('provider_id'),
+    // sent | failed | skipped
+    status: text('status').notNull().default('sent'),
+    error: text('error'),
+    ...timestamps,
+  },
+  (t) => ({
+    // Evita reenvio do mesmo template para o mesmo ref/destinatário
+    uniqByRef: uniqueIndex('email_log_template_ref_recipient_idx').on(
+      t.template,
+      t.refId,
+      t.recipient,
+    ),
+  }),
+);

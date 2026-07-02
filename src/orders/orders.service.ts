@@ -13,6 +13,7 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq, inArray } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
 import { StripeService } from '../stripe/stripe.service';
 
@@ -264,18 +265,53 @@ export class OrdersService {
   }
 
   async findById(orderId: string, userId: string) {
-    const [order] = await this.db
-      .select()
+    const buyerUser = alias(schema.users, 'buyer_user');
+    const sellerUser = alias(schema.users, 'seller_user');
+
+    const [row] = await this.db
+      .select({
+        order: schema.orders,
+        listingTitle: schema.listings.title,
+        listingImages: schema.listings.images,
+        listingPrice: schema.listings.priceInCents,
+        listingCondition: schema.listings.condition,
+        buyerName: buyerUser.name,
+        sellerName: sellerUser.name,
+        address: schema.addresses,
+      })
       .from(schema.orders)
+      .leftJoin(
+        schema.listings,
+        eq(schema.orders.listingId, schema.listings.id),
+      )
+      .leftJoin(buyerUser, eq(schema.orders.buyerId, buyerUser.id))
+      .leftJoin(sellerUser, eq(schema.orders.sellerId, sellerUser.id))
+      .leftJoin(
+        schema.addresses,
+        eq(schema.orders.addressId, schema.addresses.id),
+      )
       .where(eq(schema.orders.id, orderId));
 
-    if (!order) throw new NotFoundException('Pedido não encontrado');
+    if (!row) throw new NotFoundException('Pedido não encontrado');
+
+    const { order } = row;
 
     if (order.buyerId !== userId && order.sellerId !== userId) {
       throw new ForbiddenException('Acesso negado a este pedido');
     }
 
-    return order;
+    return {
+      ...order,
+      listing: {
+        title: row.listingTitle ?? 'Item indisponível',
+        images: this.parseImages(row.listingImages),
+        priceInCents: row.listingPrice ?? order.totalInCents,
+        condition: row.listingCondition ?? null,
+      },
+      buyer: { id: order.buyerId, name: row.buyerName ?? 'Comprador' },
+      seller: { id: order.sellerId, name: row.sellerName ?? 'Vendedor' },
+      address: row.address ?? null,
+    };
   }
 
   async findSellerOrders(sellerId: string) {
