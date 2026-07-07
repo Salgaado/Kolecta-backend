@@ -4,11 +4,17 @@ services:
     env: node
     region: ohio
     plan: free
-    buildCommand: npm install && npx nest build
+    # --include=dev força as devDependencies (nest, typescript) mesmo com
+    # NODE_ENV=production, senão o `nest build` quebra por falta do @nestjs/cli.
+    buildCommand: npm install --include=dev && npx nest build
     startCommand: npm run start:prod
     envVars:
       - key: PORT
         value: 3000
+      # Runtime em produção: desativa o DevAuthMiddleware (mock de auth via
+      # header x-dev-user-id). SEM isto = bypass de autenticação em prod.
+      - key: NODE_ENV
+        value: production
       - key: TURSO_DATABASE_URL
         sync: false
       - key: TURSO_AUTH_TOKEN
