@@ -31,10 +31,25 @@ export class OrdersService {
 
   // ── Create orders (legacy — sem PaymentIntent) ─────────────────────────────
 
+  /**
+   * Persiste o CPF do comprador (só dígitos) em `users.cpf` para reuso nas
+   * transações Pagar.me. Dado sensível (LGPD): não é logado. No-op se ausente.
+   */
+  private async persistBuyerCpf(buyerId: string, cpf?: string) {
+    if (!cpf) return;
+    const digits = cpf.replace(/\D/g, '');
+    await this.db
+      .update(schema.users)
+      .set({ cpf: digits, updatedAt: new Date() })
+      .where(eq(schema.users.id, buyerId));
+  }
+
   async createOrders(buyerId: string, dto: CreateOrderDto) {
     if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException('O carrinho está vazio');
     }
+
+    await this.persistBuyerCpf(buyerId, dto.buyerCpf);
 
     const listingIds = dto.items.map((i) => i.listingId);
 
@@ -97,6 +112,8 @@ export class OrdersService {
     if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException('O carrinho está vazio');
     }
+
+    await this.persistBuyerCpf(buyerId, dto.buyerCpf);
 
     // Apenas 1 item por chamada no MVP (um PaymentIntent por vendedor)
     const listingId = dto.items[0].listingId;

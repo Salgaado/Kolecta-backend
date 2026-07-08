@@ -8,6 +8,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { IsCpf } from '../../common/validators/is-cpf.validator';
 
 export class OrderItemDto {
   @IsString()
@@ -29,6 +30,12 @@ export class CreateOrderDto {
   @IsBoolean()
   @IsOptional()
   useWalletBalance?: boolean;
+
+  // CPF do comprador (exigido pela Pagar.me na transação). Opcional por ora —
+  // o fluxo 100% wallet ainda não obriga; o frontend passa a enviar no checkout.
+  @IsCpf()
+  @IsOptional()
+  buyerCpf?: string;
 }
 
 export class UpdateOrderStatusDto {

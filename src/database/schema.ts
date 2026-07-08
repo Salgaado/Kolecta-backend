@@ -26,6 +26,9 @@ export const users = sqliteTable('users', {
   name: text('name'),
   // user | admin
   role: text('role').notNull().default('user'),
+  // CPF do comprador (só dígitos), capturado no checkout — exigido pela Pagar.me
+  // na transação PIX/cartão. Dado sensível (LGPD): não logar, mascarar na saída.
+  cpf: text('cpf'),
   ...timestamps,
 });
 

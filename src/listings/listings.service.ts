@@ -124,10 +124,34 @@ export class ListingsService {
 
   // ── Criar anúncio ────────────────────────────────────────────────────────
 
+  /**
+   * Gate de KYC: só permite publicar se o recebedor do vendedor estiver apto
+   * (`sellerProfiles.canReceive`). Atrás da flag `ENFORCE_SELLER_KYC` (default
+   * OFF) porque hoje nenhum vendedor concluiu KYC (recebedores bloqueados no
+   * suporte Pagar.me) — ligar a flag só quando o fluxo de recebedores estiver ativo.
+   */
+  private async assertCanSell(sellerId: string): Promise<void> {
+    if (process.env.ENFORCE_SELLER_KYC !== 'true') return;
+
+    const [profile] = await this.db
+      .select({ canReceive: schema.sellerProfiles.canReceive })
+      .from(schema.sellerProfiles)
+      .where(eq(schema.sellerProfiles.userId, sellerId))
+      .limit(1);
+
+    if (!profile?.canReceive) {
+      throw new ForbiddenException(
+        'Conclua a verificação de identidade (KYC) para publicar anúncios.',
+      );
+    }
+  }
+
   async create(
     sellerId: string,
     dto: CreateListingDto,
   ): Promise<ListingRecord> {
+    await this.assertCanSell(sellerId);
+
     const id = crypto.randomUUID();
 
     await this.db.insert(schema.listings).values({

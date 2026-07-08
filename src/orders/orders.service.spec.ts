@@ -149,6 +149,19 @@ describe('OrdersService', () => {
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({ id: 'order_123', status: 'pending' });
     });
+
+    it('persiste o CPF do comprador (só dígitos) quando informado', async () => {
+      selectChain.where.mockResolvedValueOnce([fakeListingActive]);
+
+      await service.createOrders('user_buyer', {
+        items: [{ listingId: 'listing_001' }],
+        buyerCpf: '529.982.247-25', // CPF válido (com máscara)
+      });
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ cpf: '52998224725' }),
+      );
+    });
   });
 
   // ── Queries enriquecidas (join com listing + contraparte) ──────────────────

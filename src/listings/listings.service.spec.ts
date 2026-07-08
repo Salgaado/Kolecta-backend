@@ -95,15 +95,43 @@ describe('ListingsService', () => {
 
   // ── create ─────────────────────────────────────────────────────────────────
   describe('create', () => {
-    it('deve inserir e retornar o novo listing', async () => {
+    afterEach(() => {
+      delete process.env.ENFORCE_SELLER_KYC;
+    });
+
+    const dto = {
+      title: 'Hot Wheels RLC Skyline',
+      condition: 'lacrado',
+      type: 'direct' as const,
+      priceInCents: 50000,
+    };
+
+    it('deve inserir e retornar o novo listing (gate OFF por padrão)', async () => {
       selectChain.limit.mockResolvedValueOnce([fakeListing]);
 
-      const result = await service.create('user_seller', {
-        title: 'Hot Wheels RLC Skyline',
-        condition: 'lacrado',
-        type: 'direct',
-        priceInCents: 50000,
-      });
+      const result = await service.create('user_seller', dto);
+
+      expect(insertChain.values).toHaveBeenCalled();
+      expect(result).toEqual(fakeListing);
+    });
+
+    it('com ENFORCE_SELLER_KYC=true e canReceive=false → ForbiddenException', async () => {
+      process.env.ENFORCE_SELLER_KYC = 'true';
+      selectChain.limit.mockResolvedValueOnce([{ canReceive: false }]);
+
+      await expect(service.create('user_seller', dto)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(insertChain.values).not.toHaveBeenCalled();
+    });
+
+    it('com ENFORCE_SELLER_KYC=true e canReceive=true → cria normalmente', async () => {
+      process.env.ENFORCE_SELLER_KYC = 'true';
+      selectChain.limit
+        .mockResolvedValueOnce([{ canReceive: true }]) // gate
+        .mockResolvedValueOnce([fakeListing]); // findById pós-insert
+
+      const result = await service.create('user_seller', dto);
 
       expect(insertChain.values).toHaveBeenCalled();
       expect(result).toEqual(fakeListing);
