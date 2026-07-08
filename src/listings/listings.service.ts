@@ -147,11 +147,33 @@ export class ListingsService {
     }
   }
 
+  /**
+   * Exige que o vendedor tenha um endereço cadastrado na plataforma (tabela
+   * `addresses`, a mesma de "Minha Conta → Endereços"). Esse endereço é usado
+   * como ORIGEM do frete na cotação/etiqueta (ver ShippingService.resolveOriginCep),
+   * então sem ele não dá pra cotar envio de verdade.
+   */
+  private async assertHasOriginAddress(sellerId: string): Promise<void> {
+    const [addr] = await this.db
+      .select({ id: schema.addresses.id })
+      .from(schema.addresses)
+      .where(eq(schema.addresses.userId, sellerId))
+      .limit(1);
+
+    if (!addr) {
+      throw new BadRequestException(
+        'Cadastre um endereço em "Minha Conta → Endereços" antes de anunciar. ' +
+          'Ele será usado como origem do frete.',
+      );
+    }
+  }
+
   async create(
     sellerId: string,
     dto: CreateListingDto,
   ): Promise<ListingRecord> {
     await this.assertCanSell(sellerId);
+    await this.assertHasOriginAddress(sellerId);
 
     const id = crypto.randomUUID();
 
@@ -323,6 +345,9 @@ export class ListingsService {
   // ── Importação em lote (CSV/XLSX) ────────────────────────────────────────
 
   async startImportJob(sellerId: string, file: Express.Multer.File) {
+    // Mesmo gate do fluxo unitário: sem endereço de origem, não dá pra cotar frete.
+    await this.assertHasOriginAddress(sellerId);
+
     const jobId = crypto.randomUUID();
 
     // Cria o registro no banco informando status 'processing'

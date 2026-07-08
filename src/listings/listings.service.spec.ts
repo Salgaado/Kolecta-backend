@@ -116,12 +116,23 @@ describe('ListingsService', () => {
     };
 
     it('deve inserir e retornar o novo listing (gate OFF por padrão)', async () => {
-      selectChain.limit.mockResolvedValueOnce([fakeListing]);
+      selectChain.limit
+        .mockResolvedValueOnce([{ id: 'addr_1' }]) // assertHasOriginAddress
+        .mockResolvedValueOnce([fakeListing]); // findById pós-insert
 
       const result = await service.create('user_seller', dto);
 
       expect(insertChain.values).toHaveBeenCalled();
       expect(result).toEqual(fakeListing);
+    });
+
+    it('sem endereço de origem cadastrado → BadRequestException', async () => {
+      selectChain.limit.mockResolvedValueOnce([]); // nenhum endereço
+
+      await expect(service.create('user_seller', dto)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(insertChain.values).not.toHaveBeenCalled();
     });
 
     it('com ENFORCE_SELLER_KYC=true e canReceive=false → ForbiddenException', async () => {
@@ -137,7 +148,8 @@ describe('ListingsService', () => {
     it('com ENFORCE_SELLER_KYC=true e canReceive=true → cria normalmente', async () => {
       process.env.ENFORCE_SELLER_KYC = 'true';
       selectChain.limit
-        .mockResolvedValueOnce([{ canReceive: true }]) // gate
+        .mockResolvedValueOnce([{ canReceive: true }]) // assertCanSell
+        .mockResolvedValueOnce([{ id: 'addr_1' }]) // assertHasOriginAddress
         .mockResolvedValueOnce([fakeListing]); // findById pós-insert
 
       const result = await service.create('user_seller', dto);
@@ -147,7 +159,9 @@ describe('ListingsService', () => {
     });
 
     it('type=auction cria o listing E a linha de auction (relógio parado)', async () => {
-      selectChain.limit.mockResolvedValueOnce([{ ...fakeListing, type: 'auction' }]);
+      selectChain.limit
+        .mockResolvedValueOnce([{ id: 'addr_1' }]) // assertHasOriginAddress
+        .mockResolvedValueOnce([{ ...fakeListing, type: 'auction' }]); // findById
 
       await service.create('user_seller', {
         title: 'Leilão X',
@@ -163,6 +177,8 @@ describe('ListingsService', () => {
     });
 
     it('type=auction sem startingBidInCents → BadRequestException', async () => {
+      selectChain.limit.mockResolvedValueOnce([{ id: 'addr_1' }]); // passa o gate de endereço
+
       await expect(
         service.create('user_seller', {
           title: 'Leilão sem lance',
