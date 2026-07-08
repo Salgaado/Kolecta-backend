@@ -155,3 +155,73 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
     expect(httpPost).not.toHaveBeenCalled();
   });
 });
+
+describe('ShippingService — cotação (POST /shipment/calculate)', () => {
+  let httpPost: jest.Mock;
+  let http: HttpService;
+  let db: ReturnType<typeof makeDb>;
+
+  beforeEach(() => {
+    process.env.MELHOR_ENVIO_API_URL = BASE;
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+    delete process.env.SHIPPING_ORIGIN_CEP;
+    httpPost = jest.fn();
+    http = { post: httpPost } as unknown as HttpService;
+    db = makeDb();
+  });
+
+  it('resolve origem pelo endereço do vendedor (via listing) e aplica defaults de pacote', async () => {
+    db.query.listings.findFirst.mockResolvedValue({ sellerId: 'seller-1' });
+    db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
+    httpPost.mockReturnValue(
+      of({
+        data: [
+          {
+            company: { name: 'Correios' },
+            name: 'PAC',
+            price: '25.90',
+            delivery_time: 7,
+            id: 1,
+          },
+        ],
+      }),
+    );
+    const service = new ShippingService(http, db as any);
+
+    const result = await service.quoteShipping({
+      to_cep: '01001-000',
+      listing_id: 'lst-1',
+    } as any);
+
+    const [url, payload] = httpPost.mock.calls[0];
+    expect(url).toBe(`${BASE}/shipment/calculate`);
+    expect(payload.from.postal_code).toBe('22000000'); // origem do vendedor
+    expect(payload.to.postal_code).toBe('01001000');
+    expect(payload.package.weight).toBe(0.3); // default de colecionável
+    expect(payload.package.width).toBe(16);
+    expect(result.options[0]).toMatchObject({
+      carrier: 'Correios',
+      service: 'PAC',
+      price: 25.9,
+    });
+  });
+
+  it('sem token → mock', async () => {
+    delete process.env.MELHOR_ENVIO_TOKEN;
+    const service = new ShippingService(http, db as any);
+
+    const result = await service.quoteShipping({ to_cep: '01001000' } as any);
+
+    expect(httpPost).not.toHaveBeenCalled();
+    expect(result.options.length).toBeGreaterThan(0);
+  });
+
+  it('sem origem resolvível → mock (não cota)', async () => {
+    const service = new ShippingService(http, db as any);
+
+    const result = await service.quoteShipping({ to_cep: '01001000' } as any);
+
+    expect(httpPost).not.toHaveBeenCalled();
+    expect(result.options.length).toBeGreaterThan(0);
+  });
+});

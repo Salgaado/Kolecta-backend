@@ -9,33 +9,48 @@ import {
 import { Type } from 'class-transformer';
 
 export class QuoteShippingDto {
+  /**
+   * CEP de origem (vendedor). Opcional: quando ausente, o serviço resolve pelo
+   * endereço do vendedor (via `listing_id`) e, em último caso, por
+   * `SHIPPING_ORIGIN_CEP`.
+   */
   @IsString()
   @Length(8, 9)
-  from_cep: string;
+  @IsOptional()
+  from_cep?: string;
 
   @IsString()
   @Length(8, 9)
   to_cep: string;
 
+  /**
+   * Peso/dimensões do pacote. Opcionais: os listings ainda não persistem essas
+   * medidas, então o serviço aplica defaults (`SHIPPING_DEFAULT_*` ou um pacote
+   * típico de colecionável) quando não informados.
+   */
   @IsNumber()
-  @Min(0.1)
+  @Min(0.05)
   @Type(() => Number)
-  weight_kg: number;
+  @IsOptional()
+  weight_kg?: number;
 
   @IsNumber()
   @Min(1)
   @Type(() => Number)
-  height_cm: number;
+  @IsOptional()
+  height_cm?: number;
 
   @IsNumber()
   @Min(1)
   @Type(() => Number)
-  width_cm: number;
+  @IsOptional()
+  width_cm?: number;
 
   @IsNumber()
   @Min(1)
   @Type(() => Number)
-  length_cm: number;
+  @IsOptional()
+  length_cm?: number;
 
   @IsString()
   @IsOptional()

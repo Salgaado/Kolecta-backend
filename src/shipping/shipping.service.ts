@@ -37,16 +37,25 @@ export class ShippingService {
       return this.getMockShippingQuote();
     }
 
+    // Origem: request > endereço do vendedor (via listing) > env. Sem origem,
+    // não dá pra cotar de verdade → cai no mock (o front trata como "a calcular").
+    const fromCep =
+      data.from_cep?.replace(/\D/g, '') ||
+      (await this.resolveOriginCep(data.listing_id));
+    if (!fromCep) {
+      this.logger.warn(
+        'CEP de origem indisponível (sem from_cep, endereço do vendedor ou SHIPPING_ORIGIN_CEP). Retornando mock.',
+      );
+      return this.getMockShippingQuote();
+    }
+
+    const pkg = this.resolvePackage(data);
+
     try {
       const payload = {
-        from: { postal_code: data.from_cep.replace(/\D/g, '') },
+        from: { postal_code: fromCep },
         to: { postal_code: data.to_cep.replace(/\D/g, '') },
-        package: {
-          weight: data.weight_kg,
-          width: data.width_cm,
-          height: data.height_cm,
-          length: data.length_cm,
-        },
+        package: pkg,
       };
 
       const response = await firstValueFrom(
@@ -216,6 +225,48 @@ export class ShippingService {
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Resolve o CEP de origem do envio quando o request não o informa: usa o
+   * endereço do vendedor dono do anúncio (preferindo o marcado como padrão) e,
+   * como último recurso, o `SHIPPING_ORIGIN_CEP` do ambiente.
+   */
+  private async resolveOriginCep(listingId?: string): Promise<string | null> {
+    if (listingId) {
+      const listing = await this.db.query.listings.findFirst({
+        where: eq(schema.listings.id, listingId),
+      });
+      if (listing) {
+        const addr = await this.db.query.addresses.findFirst({
+          where: eq(schema.addresses.userId, listing.sellerId),
+          orderBy: (a, { desc }) => [desc(a.isDefault)],
+        });
+        if (addr?.zip) return addr.zip.replace(/\D/g, '');
+      }
+    }
+    const envCep = process.env.SHIPPING_ORIGIN_CEP?.replace(/\D/g, '');
+    return envCep || null;
+  }
+
+  /**
+   * Peso/dimensões do pacote a cotar. Os listings ainda não persistem essas
+   * medidas (ver follow-ups do plano), então aplicamos o que veio no request e,
+   * na falta, defaults por ambiente ou um pacote típico de colecionável
+   * (0,3 kg · 16×12×6 cm).
+   */
+  private resolvePackage(data: QuoteShippingDto) {
+    const pick = (v: number | undefined, envKey: string, fallback: number) => {
+      if (typeof v === 'number' && !Number.isNaN(v)) return v;
+      const env = Number(process.env[envKey]);
+      return Number.isFinite(env) && env > 0 ? env : fallback;
+    };
+    return {
+      weight: pick(data.weight_kg, 'SHIPPING_DEFAULT_WEIGHT_KG', 0.3),
+      width: pick(data.width_cm, 'SHIPPING_DEFAULT_WIDTH_CM', 16),
+      height: pick(data.height_cm, 'SHIPPING_DEFAULT_HEIGHT_CM', 6),
+      length: pick(data.length_cm, 'SHIPPING_DEFAULT_LENGTH_CM', 12),
+    };
+  }
 
   private authHeaders() {
     return {
