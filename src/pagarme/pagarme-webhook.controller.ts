@@ -188,13 +188,13 @@ export class PagarmeWebhookController {
     const user = this.config.webhookUser;
     const password = this.config.webhookPassword;
 
-    // Sem credenciais configuradas → modo dev: loga aviso e libera.
-    // Em produção, configure PAGARME_WEBHOOK_USER/PASSWORD no .env e no dashboard.
+    // Sem credenciais configuradas → recusa (fail-closed).
+    // Configure PAGARME_WEBHOOK_USER/PASSWORD no .env e no dashboard da Pagar.me.
     if (!user || !password) {
-      this.logger.warn(
-        'PAGARME_WEBHOOK_USER/PASSWORD não configurados — validação de Basic Auth desativada (DEV).',
+      this.logger.error(
+        'PAGARME_WEBHOOK_USER/PASSWORD não configurados — webhook recusado (fail-closed).',
       );
-      return true;
+      return false;
     }
 
     if (!authHeader?.startsWith('Basic ')) return false;

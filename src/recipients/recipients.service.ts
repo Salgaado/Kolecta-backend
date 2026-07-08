@@ -5,7 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { eq } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -144,6 +144,24 @@ export class RecipientsService {
   }
 
   // ── Sync vindo do webhook recipient.updated ────────────────────────────────
+
+  /**
+   * Escuta o evento emitido pelo webhook unificado (`PagarmeWebhookController`
+   * em `pagarme/`) para `recipient.created`/`recipient.updated`. Usamos evento
+   * (e não injeção direta do controller) porque `RecipientsModule` importa
+   * `PagarmeModule` — chamar este service de dentro do webhook criaria
+   * dependência circular. O payload é o `data` do evento Pagar.me.
+   */
+  @OnEvent('pagarme.recipient.updated')
+  async onRecipientUpdated(data: { id?: string; status?: string }): Promise<void> {
+    if (!data?.id || !data?.status) {
+      this.logger.warn(
+        'Evento pagarme.recipient.updated sem id/status no payload — ignorado.',
+      );
+      return;
+    }
+    await this.syncRecipientStatus(data.id, data.status);
+  }
 
   async syncRecipientStatus(
     recipientId: string,

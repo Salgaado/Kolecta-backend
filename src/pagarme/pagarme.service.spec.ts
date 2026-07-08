@@ -13,7 +13,7 @@ describe('PagarmeService', () => {
 
   beforeAll(() => {
     process.env.PAGARME_SECRET_KEY = 'sk_test_abc';
-    process.env.PAGARME_BASE_URL = 'https://sdx-api.pagar.me/core/v5';
+    process.env.PAGARME_BASE_URL = 'https://api.pagar.me/core/v5';
   });
 
   beforeEach(async () => {
@@ -38,7 +38,7 @@ describe('PagarmeService', () => {
     expect(result).toEqual({ id: 'or_1' });
     const cfg = httpRequest.mock.calls[0][0];
     expect(cfg.method).toBe('POST');
-    expect(cfg.url).toBe('https://sdx-api.pagar.me/core/v5/orders');
+    expect(cfg.url).toBe('https://api.pagar.me/core/v5/orders');
     expect(cfg.data).toEqual({ foo: 'bar' });
     expect(cfg.headers['User-Agent']).toBe('pagarme-skill-generated/1.0');
     expect(cfg.headers['Idempotency-Key']).toBe('order-1');
@@ -53,7 +53,7 @@ describe('PagarmeService', () => {
     expect(result).toEqual([{ id: 'rp_1' }]);
     const cfg = httpRequest.mock.calls[0][0];
     expect(cfg.method).toBe('GET');
-    expect(cfg.url).toBe('https://sdx-api.pagar.me/core/v5/recipients');
+    expect(cfg.url).toBe('https://api.pagar.me/core/v5/recipients');
     expect(cfg.params).toEqual({ page: 1 });
     expect(cfg.headers['Idempotency-Key']).toBeUndefined();
   });
@@ -64,7 +64,7 @@ describe('PagarmeService', () => {
     await service.get('recipients/rp_1');
 
     expect(httpRequest.mock.calls[0][0].url).toBe(
-      'https://sdx-api.pagar.me/core/v5/recipients/rp_1',
+      'https://api.pagar.me/core/v5/recipients/rp_1',
     );
   });
 
