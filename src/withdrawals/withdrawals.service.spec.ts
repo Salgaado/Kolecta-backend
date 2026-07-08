@@ -53,15 +53,16 @@ const makeDb = () => ({
 });
 
 const mockStripeService = {
-  stripe: {
+  // O serviço usa `stripeClient` e cria Transfers (não Payouts) — mudança de 29/05.
+  stripeClient: {
     accounts: {
       retrieve: jest.fn().mockResolvedValue({
         charges_enabled: true,
         payouts_enabled: true,
       }),
     },
-    payouts: {
-      create: jest.fn().mockResolvedValue({ id: 'po_test_001' }),
+    transfers: {
+      create: jest.fn().mockResolvedValue({ id: 'tr_test_001' }),
     },
   },
 };
@@ -119,7 +120,7 @@ describe('WithdrawalsService', () => {
 
     it('deve lançar BadRequestException se conta Stripe não está habilitada', async () => {
       mockDb.where.mockResolvedValueOnce([mockSellerProfile]);
-      mockStripeService.stripe.accounts.retrieve.mockResolvedValueOnce({
+      mockStripeService.stripeClient.accounts.retrieve.mockResolvedValueOnce({
         charges_enabled: false,
         payouts_enabled: false,
       });
@@ -131,7 +132,7 @@ describe('WithdrawalsService', () => {
 
     it('deve lançar BadRequestException se saldo disponível é insuficiente', async () => {
       mockDb.where.mockResolvedValueOnce([mockSellerProfile]);
-      mockStripeService.stripe.accounts.retrieve.mockResolvedValueOnce({
+      mockStripeService.stripeClient.accounts.retrieve.mockResolvedValueOnce({
         charges_enabled: true,
         payouts_enabled: true,
       });
@@ -147,13 +148,13 @@ describe('WithdrawalsService', () => {
 
     it('deve criar saque com sucesso e retornar o withdrawal', async () => {
       mockDb.where.mockResolvedValueOnce([mockSellerProfile]);
-      mockStripeService.stripe.accounts.retrieve.mockResolvedValueOnce({
+      mockStripeService.stripeClient.accounts.retrieve.mockResolvedValueOnce({
         charges_enabled: true,
         payouts_enabled: true,
       });
       mockWalletService.getOrCreateWallet.mockResolvedValueOnce(mockWallet);
-      mockStripeService.stripe.payouts.create.mockResolvedValueOnce({
-        id: 'po_test_001',
+      mockStripeService.stripeClient.transfers.create.mockResolvedValueOnce({
+        id: 'tr_test_001',
       });
 
       const result = await service.requestWithdrawal(mockUserId, {

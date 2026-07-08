@@ -1,7 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { MessagesService } from './messages.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
-import { NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 
 const fakeConversation = {
   id: 'conv_123',
@@ -14,7 +18,7 @@ const fakeConversation = {
     id: 'listing_123',
     title: 'Anuncio Teste',
     sellerId: 'seller_123',
-  }
+  },
 };
 
 const fakeMessage = {
@@ -37,7 +41,11 @@ const queryMock = {
   },
   listings: {
     findFirst: jest.fn(),
-  }
+  },
+  // Gating de chat (29/05): exige transação confirmada
+  orders: {
+    findFirst: jest.fn(),
+  },
 };
 
 const insertChain = {
@@ -50,8 +58,23 @@ const updateChain = {
   where: jest.fn().mockResolvedValue(undefined),
 };
 
+// getConversations usa this.db.select().from().leftJoin()...; cada select é uma
+// cadeia thenable que resolve para o resultado enfileirado.
+function selectChain(result: unknown) {
+  const chain: any = {
+    from: jest.fn(() => chain),
+    leftJoin: jest.fn(() => chain),
+    where: jest.fn(() => chain),
+    orderBy: jest.fn(() => chain),
+    limit: jest.fn(() => chain),
+    then: (resolve: (v: unknown) => void) => resolve(result),
+  };
+  return chain;
+}
+
 const mockDb = {
   query: queryMock,
+  select: jest.fn(),
   insert: () => insertChain,
   update: () => updateChain,
 };
@@ -78,9 +101,20 @@ describe('MessagesService', () => {
 
   describe('getConversations', () => {
     it('deve retornar as conversas do usuário', async () => {
-      queryMock.conversations.findMany.mockResolvedValueOnce([fakeConversation]);
-      queryMock.messages.findMany.mockResolvedValueOnce([]); // unread messages
-      queryMock.messages.findFirst.mockResolvedValueOnce(fakeMessage); // latest message
+      // 1º select = query principal (com joins); 2º = não lidas; 3º = última msg
+      mockDb.select
+        .mockReturnValueOnce(
+          selectChain([
+            {
+              conversation: fakeConversation,
+              listing: fakeConversation.listing,
+              buyer: { id: 'buyer_123' },
+              seller: { id: 'seller_123' },
+            },
+          ]),
+        )
+        .mockReturnValueOnce(selectChain([])) // unread
+        .mockReturnValueOnce(selectChain([fakeMessage])); // latest
 
       const result = await service.getConversations('buyer_123');
 
@@ -96,19 +130,39 @@ describe('MessagesService', () => {
         id: 'listing_123',
         sellerId: 'seller_123',
       });
+      // Gating: transação confirmada entre comprador e vendedor
+      queryMock.orders.findFirst.mockResolvedValueOnce({
+        id: 'order_1',
+        status: 'paid',
+      });
       queryMock.conversations.findFirst.mockResolvedValueOnce(null);
-      
+
       insertChain.returning
         .mockResolvedValueOnce([{ id: 'new_conv_123' }]) // conv
         .mockResolvedValueOnce([{ id: 'new_msg_123', content: 'Oi' }]); // msg
 
       const result = await service.startConversation('buyer_123', {
         listingId: 'listing_123',
-        message: 'Oi'
+        message: 'Oi',
       });
 
       expect(result.conversationId).toBe('new_conv_123');
       expect(result.message?.id).toBe('new_msg_123');
+    });
+
+    it('deve lançar Forbidden sem transação confirmada', async () => {
+      queryMock.listings.findFirst.mockResolvedValueOnce({
+        id: 'listing_123',
+        sellerId: 'seller_123',
+      });
+      queryMock.orders.findFirst.mockResolvedValueOnce(undefined); // sem pedido
+
+      await expect(
+        service.startConversation('buyer_123', {
+          listingId: 'listing_123',
+          message: 'Oi',
+        }),
+      ).rejects.toThrow(ForbiddenException);
     });
 
     it('deve lançar erro se tentar criar conversa no próprio anuncio', async () => {
@@ -120,8 +174,8 @@ describe('MessagesService', () => {
       await expect(
         service.startConversation('seller_123', {
           listingId: 'listing_123',
-          message: 'Oi'
-        })
+          message: 'Oi',
+        }),
       ).rejects.toThrow(BadRequestException);
     });
   });
@@ -129,9 +183,13 @@ describe('MessagesService', () => {
   describe('sendMessage', () => {
     it('deve inserir a mensagem na conversa existente', async () => {
       queryMock.conversations.findFirst.mockResolvedValueOnce(fakeConversation);
-      insertChain.returning.mockResolvedValueOnce([{ id: 'new_msg_123', content: 'Nova' }]);
+      insertChain.returning.mockResolvedValueOnce([
+        { id: 'new_msg_123', content: 'Nova' },
+      ]);
 
-      const result = await service.sendMessage('buyer_123', 'conv_123', { content: 'Nova' });
+      const result = await service.sendMessage('buyer_123', 'conv_123', {
+        content: 'Nova',
+      });
 
       expect(result.id).toBe('new_msg_123');
       expect(updateChain.set).toHaveBeenCalled(); // update conversation updatedAt
@@ -141,7 +199,7 @@ describe('MessagesService', () => {
       queryMock.conversations.findFirst.mockResolvedValueOnce(fakeConversation);
 
       await expect(
-        service.sendMessage('hacker_999', 'conv_123', { content: 'Hack' })
+        service.sendMessage('hacker_999', 'conv_123', { content: 'Hack' }),
       ).rejects.toThrow(ForbiddenException);
     });
   });
