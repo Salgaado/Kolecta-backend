@@ -55,6 +55,33 @@ export class CreateListingDto {
   @Type(() => Number)
   priceInCents?: number;
 
+  // ── Configuração de leilão (obrigatória quando type='auction') ──
+  // O leilão nasce "parado" (endsAt=null) e o relógio só começa quando o admin
+  // ativa o anúncio (ver ListingsService.updateStatus).
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  startingBidInCents?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  minIncrementInCents?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  reservePriceInCents?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  durationHours?: number;
+
   // JSON array stringificado: '["url1","url2"]'
   @IsOptional()
   @IsString()

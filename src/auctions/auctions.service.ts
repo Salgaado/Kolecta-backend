@@ -6,7 +6,7 @@ import {
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { eq, and, desc, lte } from 'drizzle-orm';
+import { eq, and, desc, lte, isNotNull } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
@@ -50,7 +50,14 @@ export class AuctionsService {
       .select(this.auctionListingSelect)
       .from(schema.auctions)
       .innerJoin(schema.listings, eq(schema.auctions.listingId, schema.listings.id))
-      .where(eq(schema.auctions.status, 'active'));
+      // endsAt não-nulo = leilão já iniciado (o admin ativou o anúncio);
+      // leilões "parados" (anúncio em draft) não aparecem publicamente.
+      .where(
+        and(
+          eq(schema.auctions.status, 'active'),
+          isNotNull(schema.auctions.endsAt),
+        ),
+      );
   }
 
   // ── Detalhe de um leilão ─────────────────────────────────────────────────

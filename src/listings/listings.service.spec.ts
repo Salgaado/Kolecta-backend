@@ -1,7 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ListingsService } from './listings.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
-import { NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 import * as schema from '../database/schema';
 
 // ─── Mock DB ──────────────────────────────────────────────────────────────────
@@ -48,11 +52,16 @@ const insertChain = {
   values: jest.fn().mockResolvedValue(undefined),
 };
 
+// Transação (create): registra em qual tabela cada insert foi feito.
+const txInsert = jest.fn(() => insertChain);
+const mockTx = { insert: txInsert };
+
 const mockDb = {
   select: () => selectChain,
   update: () => updateChain,
   delete: () => deleteChain,
   insert: () => insertChain,
+  transaction: jest.fn(async (cb: (tx: typeof mockTx) => unknown) => cb(mockTx)),
 };
 
 // ─── Suite ────────────────────────────────────────────────────────────────────
@@ -136,6 +145,32 @@ describe('ListingsService', () => {
       expect(insertChain.values).toHaveBeenCalled();
       expect(result).toEqual(fakeListing);
     });
+
+    it('type=auction cria o listing E a linha de auction (relógio parado)', async () => {
+      selectChain.limit.mockResolvedValueOnce([{ ...fakeListing, type: 'auction' }]);
+
+      await service.create('user_seller', {
+        title: 'Leilão X',
+        condition: 'lacrado',
+        type: 'auction',
+        startingBidInCents: 100000,
+        durationHours: 72,
+      });
+
+      const insertedTables = txInsert.mock.calls.map((c) => c[0]);
+      expect(insertedTables).toContain(schema.listings);
+      expect(insertedTables).toContain(schema.auctions);
+    });
+
+    it('type=auction sem startingBidInCents → BadRequestException', async () => {
+      await expect(
+        service.create('user_seller', {
+          title: 'Leilão sem lance',
+          condition: 'lacrado',
+          type: 'auction',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
   });
 
   // ── update ─────────────────────────────────────────────────────────────────
@@ -193,6 +228,20 @@ describe('ListingsService', () => {
 
       expect(updateChain.set).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'active' }),
+      );
+    });
+
+    it('ao ativar um anúncio de leilão, inicia o relógio (endsAt)', async () => {
+      const auctionListing = { ...fakeListing, type: 'auction' };
+      selectChain.limit
+        .mockResolvedValueOnce([auctionListing]) // findById inicial
+        .mockResolvedValueOnce([{ id: 'auc_1', endsAt: null, durationHours: 48 }]) // busca auction
+        .mockResolvedValueOnce([auctionListing]); // findById final
+
+      await service.updateStatus('listing_001', 'active');
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ endsAt: expect.any(Date) }),
       );
     });
   });

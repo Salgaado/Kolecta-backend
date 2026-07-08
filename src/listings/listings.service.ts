@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq, desc, and, getTableColumns, like } from 'drizzle-orm';
@@ -154,14 +155,46 @@ export class ListingsService {
 
     const id = crypto.randomUUID();
 
-    await this.db.insert(schema.listings).values({
-      id,
-      sellerId,
-      ...dto,
-      status: 'draft',
+    // Separa a config de leilão dos campos do listing (não são colunas de listings).
+    const {
+      startingBidInCents,
+      minIncrementInCents,
+      reservePriceInCents,
+      durationHours,
+      ...listingData
+    } = dto;
+
+    if (dto.type === 'auction' && startingBidInCents == null) {
+      throw new BadRequestException(
+        'Leilão exige um lance inicial (startingBidInCents).',
+      );
+    }
+
+    await this.db.transaction(async (tx) => {
+      await tx.insert(schema.listings).values({
+        id,
+        sellerId,
+        ...listingData,
+        status: 'draft',
+      });
+
+      if (dto.type === 'auction') {
+        // endsAt omitido = null → leilão "parado"; o relógio começa na ativação
+        // pelo admin (ver updateStatus → startAuctionClockIfPending).
+        await tx.insert(schema.auctions).values({
+          listingId: id,
+          startingBidInCents: startingBidInCents!,
+          minIncrementInCents: minIncrementInCents ?? 1000,
+          reservePriceInCents: reservePriceInCents ?? null,
+          durationHours: durationHours ?? 48,
+          status: 'active',
+        });
+      }
     });
 
-    this.logger.log(`[create] Anúncio criado: ${id} por sellerId: ${sellerId}`);
+    this.logger.log(
+      `[create] Anúncio criado: ${id} por sellerId: ${sellerId}${dto.type === 'auction' ? ' (+ leilão parado)' : ''}`,
+    );
 
     return this.findById(id);
   }
@@ -212,7 +245,7 @@ export class ListingsService {
   // ── Atualizar status (admin/sistema) ─────────────────────────────────────
 
   async updateStatus(id: string, status: string): Promise<ListingRecord> {
-    await this.findById(id); // garante existência
+    const listing = await this.findById(id); // garante existência
 
     await this.db
       .update(schema.listings)
@@ -221,7 +254,44 @@ export class ListingsService {
 
     this.logger.log(`[updateStatus] Anúncio ${id} → status: ${status}`);
 
+    // Auto-inicia o leilão quando o admin ativa um anúncio de leilão ainda parado.
+    if (status === 'active' && listing.type === 'auction') {
+      await this.startAuctionClockIfPending(id);
+    }
+
     return this.findById(id);
+  }
+
+  /**
+   * Inicia o cronômetro do leilão vinculado (endsAt = agora + durationHours) na
+   * primeira vez que o anúncio vira `active`. Idempotente: se `endsAt` já estiver
+   * setado (leilão já iniciado), não faz nada.
+   */
+  private async startAuctionClockIfPending(listingId: string): Promise<void> {
+    const [auction] = await this.db
+      .select({
+        id: schema.auctions.id,
+        endsAt: schema.auctions.endsAt,
+        durationHours: schema.auctions.durationHours,
+      })
+      .from(schema.auctions)
+      .where(eq(schema.auctions.listingId, listingId))
+      .limit(1);
+
+    if (!auction || auction.endsAt) return; // sem leilão ou já iniciado
+
+    const endsAt = new Date(
+      Date.now() + (auction.durationHours ?? 48) * 60 * 60 * 1000,
+    );
+
+    await this.db
+      .update(schema.auctions)
+      .set({ endsAt, status: 'active', updatedAt: new Date() })
+      .where(eq(schema.auctions.id, auction.id));
+
+    this.logger.log(
+      `[updateStatus] Leilão do anúncio ${listingId} iniciado — termina em ${endsAt.toISOString()}`,
+    );
   }
 
   // ── Toggle pause (vendedor) ───────────────────────────────────────────────
