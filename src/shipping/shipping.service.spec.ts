@@ -206,6 +206,57 @@ describe('ShippingService — cotação (POST /shipment/calculate)', () => {
     });
   });
 
+  it('usa peso/dimensões persistidos no anúncio quando existem', async () => {
+    db.query.listings.findFirst.mockResolvedValue({
+      sellerId: 'seller-1',
+      weightGrams: 800,
+      widthCm: 25,
+      heightCm: 15,
+      lengthCm: 40,
+    });
+    db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
+    httpPost.mockReturnValue(of({ data: [] }));
+    const service = new ShippingService(http, db as any);
+
+    await service.quoteShipping({
+      to_cep: '01001000',
+      listing_id: 'lst-1',
+    } as any);
+
+    const payload = httpPost.mock.calls[0][1];
+    expect(payload.package).toEqual({
+      weight: 0.8, // 800 g → 0,8 kg
+      width: 25,
+      height: 15,
+      length: 40,
+    });
+  });
+
+  it('request sobrepõe as medidas do anúncio', async () => {
+    db.query.listings.findFirst.mockResolvedValue({
+      sellerId: 'seller-1',
+      weightGrams: 800,
+      widthCm: 25,
+      heightCm: 15,
+      lengthCm: 40,
+    });
+    db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
+    httpPost.mockReturnValue(of({ data: [] }));
+    const service = new ShippingService(http, db as any);
+
+    await service.quoteShipping({
+      to_cep: '01001000',
+      listing_id: 'lst-1',
+      weight_kg: 2,
+      width_cm: 50,
+    } as any);
+
+    const payload = httpPost.mock.calls[0][1];
+    expect(payload.package.weight).toBe(2); // request vence
+    expect(payload.package.width).toBe(50); // request vence
+    expect(payload.package.height).toBe(15); // anúncio preenche o resto
+  });
+
   it('sem token → mock', async () => {
     delete process.env.MELHOR_ENVIO_TOKEN;
     const service = new ShippingService(http, db as any);

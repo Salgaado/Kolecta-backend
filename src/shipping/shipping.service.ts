@@ -37,11 +37,20 @@ export class ShippingService {
       return this.getMockShippingQuote();
     }
 
+    // Carrega o anúncio uma vez: dele saem a origem (endereço do vendedor) e o
+    // pacote persistido (peso/dimensões).
+    const listing =
+      (data.listing_id
+        ? await this.db.query.listings.findFirst({
+            where: eq(schema.listings.id, data.listing_id),
+          })
+        : null) ?? null;
+
     // Origem: request > endereço do vendedor (via listing) > env. Sem origem,
     // não dá pra cotar de verdade → cai no mock (o front trata como "a calcular").
     const fromCep =
       data.from_cep?.replace(/\D/g, '') ||
-      (await this.resolveOriginCep(data.listing_id));
+      (await this.resolveOriginCep(listing));
     if (!fromCep) {
       this.logger.warn(
         'CEP de origem indisponível (sem from_cep, endereço do vendedor ou SHIPPING_ORIGIN_CEP). Retornando mock.',
@@ -49,7 +58,7 @@ export class ShippingService {
       return this.getMockShippingQuote();
     }
 
-    const pkg = this.resolvePackage(data);
+    const pkg = this.resolvePackage(data, listing);
 
     try {
       const payload = {
@@ -231,40 +240,48 @@ export class ShippingService {
    * endereço do vendedor dono do anúncio (preferindo o marcado como padrão) e,
    * como último recurso, o `SHIPPING_ORIGIN_CEP` do ambiente.
    */
-  private async resolveOriginCep(listingId?: string): Promise<string | null> {
-    if (listingId) {
-      const listing = await this.db.query.listings.findFirst({
-        where: eq(schema.listings.id, listingId),
+  private async resolveOriginCep(
+    listing: typeof schema.listings.$inferSelect | null,
+  ): Promise<string | null> {
+    if (listing) {
+      const addr = await this.db.query.addresses.findFirst({
+        where: eq(schema.addresses.userId, listing.sellerId),
+        orderBy: (a, { desc }) => [desc(a.isDefault)],
       });
-      if (listing) {
-        const addr = await this.db.query.addresses.findFirst({
-          where: eq(schema.addresses.userId, listing.sellerId),
-          orderBy: (a, { desc }) => [desc(a.isDefault)],
-        });
-        if (addr?.zip) return addr.zip.replace(/\D/g, '');
-      }
+      if (addr?.zip) return addr.zip.replace(/\D/g, '');
     }
     const envCep = process.env.SHIPPING_ORIGIN_CEP?.replace(/\D/g, '');
     return envCep || null;
   }
 
   /**
-   * Peso/dimensões do pacote a cotar. Os listings ainda não persistem essas
-   * medidas (ver follow-ups do plano), então aplicamos o que veio no request e,
-   * na falta, defaults por ambiente ou um pacote típico de colecionável
-   * (0,3 kg · 16×12×6 cm).
+   * Peso/dimensões do pacote a cotar. Precedência: valor do request > medidas
+   * persistidas no anúncio > default por ambiente (`SHIPPING_DEFAULT_*`) >
+   * pacote típico de colecionável (0,3 kg · 16×12×6 cm). Peso do anúncio é
+   * armazenado em gramas (convertido para kg aqui).
    */
-  private resolvePackage(data: QuoteShippingDto) {
-    const pick = (v: number | undefined, envKey: string, fallback: number) => {
-      if (typeof v === 'number' && !Number.isNaN(v)) return v;
+  private resolvePackage(
+    data: QuoteShippingDto,
+    listing: typeof schema.listings.$inferSelect | null,
+  ) {
+    const pick = (
+      reqVal: number | undefined,
+      listingVal: number | null | undefined,
+      envKey: string,
+      fallback: number,
+    ) => {
+      if (typeof reqVal === 'number' && !Number.isNaN(reqVal)) return reqVal;
+      if (typeof listingVal === 'number' && listingVal > 0) return listingVal;
       const env = Number(process.env[envKey]);
       return Number.isFinite(env) && env > 0 ? env : fallback;
     };
+    const listingWeightKg =
+      listing?.weightGrams != null ? listing.weightGrams / 1000 : undefined;
     return {
-      weight: pick(data.weight_kg, 'SHIPPING_DEFAULT_WEIGHT_KG', 0.3),
-      width: pick(data.width_cm, 'SHIPPING_DEFAULT_WIDTH_CM', 16),
-      height: pick(data.height_cm, 'SHIPPING_DEFAULT_HEIGHT_CM', 6),
-      length: pick(data.length_cm, 'SHIPPING_DEFAULT_LENGTH_CM', 12),
+      weight: pick(data.weight_kg, listingWeightKg, 'SHIPPING_DEFAULT_WEIGHT_KG', 0.3),
+      width: pick(data.width_cm, listing?.widthCm, 'SHIPPING_DEFAULT_WIDTH_CM', 16),
+      height: pick(data.height_cm, listing?.heightCm, 'SHIPPING_DEFAULT_HEIGHT_CM', 6),
+      length: pick(data.length_cm, listing?.lengthCm, 'SHIPPING_DEFAULT_LENGTH_CM', 12),
     };
   }
 

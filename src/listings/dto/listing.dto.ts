@@ -86,6 +86,31 @@ export class CreateListingDto {
   @IsOptional()
   @IsString()
   images?: string;
+
+  // ── Dados de envio (frete) ── peso em gramas, dimensões em cm.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  weightGrams?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  widthCm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  heightCm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  lengthCm?: number;
 }
 
 // Atualização: todos os campos opcionais, exceto `type` (não pode mudar o tipo do anúncio).
@@ -137,4 +162,29 @@ export class UpdateListingDto {
   @IsOptional()
   @IsString()
   images?: string;
+
+  // ── Dados de envio (frete) ── peso em gramas, dimensões em cm.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  weightGrams?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  widthCm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  heightCm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  lengthCm?: number;
 }

@@ -132,6 +132,15 @@ export const listings = sqliteTable('listings', {
   // draft | pending_review | active | sold | cancelled
   status: text('status').notNull().default('draft'),
 
+  // ── Dados de envio (frete) ──
+  // Peso e dimensões do pacote, usados na cotação/etiqueta do Melhor Envio.
+  // Nullable: quando ausentes, o ShippingService aplica defaults por ambiente
+  // ou de colecionável. Peso em gramas (inteiro); dimensões em centímetros.
+  weightGrams: integer('weight_grams'),
+  widthCm: integer('width_cm'),
+  heightCm: integer('height_cm'),
+  lengthCm: integer('length_cm'),
+
   ...timestamps,
 });
 
