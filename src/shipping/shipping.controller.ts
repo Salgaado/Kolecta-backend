@@ -13,6 +13,6 @@ export class ShippingController {
 
   @Post('label')
   async generateLabel(@Body() dto: GenerateLabelDto) {
-    return this.shippingService.generateLabel(dto.order_id);
+    return this.shippingService.generateLabel(dto);
   }
 }
