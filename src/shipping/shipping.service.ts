@@ -6,6 +6,7 @@ import {
   Inject,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
@@ -102,11 +103,11 @@ export class ShippingService {
    * Diferente da cotação, aqui NÃO há fallback mock: falta de token ou de dados
    * falha de forma visível (a etiqueta é uma ação, não uma leitura).
    */
-  async generateLabel(dto: GenerateLabelDto) {
-    return this.createCart(dto);
+  async generateLabel(dto: GenerateLabelDto, sellerId?: string) {
+    return this.createCart(dto, sellerId);
   }
 
-  private async createCart(dto: GenerateLabelDto) {
+  private async createCart(dto: GenerateLabelDto, sellerId?: string) {
     if (!this.token) {
       throw new HttpException(
         'Integração de etiqueta indisponível: MELHOR_ENVIO_TOKEN não configurado.',
@@ -120,6 +121,12 @@ export class ShippingService {
     });
     if (!order) {
       throw new NotFoundException(`Pedido ${dto.order_id} não encontrado.`);
+    }
+    // Só o vendedor dono do pedido pode gerar a etiqueta dele.
+    if (sellerId && order.sellerId !== sellerId) {
+      throw new ForbiddenException(
+        'Você não tem permissão para gerar a etiqueta deste pedido.',
+      );
     }
     if (!order.addressId) {
       throw new BadRequestException(

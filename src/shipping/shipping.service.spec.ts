@@ -1,6 +1,10 @@
 import { of } from 'rxjs';
 import { HttpService } from '@nestjs/axios';
-import { HttpException, NotFoundException } from '@nestjs/common';
+import {
+  HttpException,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { ShippingService } from './shipping.service';
 import { GenerateLabelDto } from './dto/shipping.dto';
 
@@ -153,6 +157,26 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
       NotFoundException,
     );
     expect(httpPost).not.toHaveBeenCalled();
+  });
+
+  it('vendedor que não é dono do pedido → ForbiddenException', async () => {
+    db.query.orders.findFirst.mockResolvedValue(order); // sellerId: 'seller-1'
+    const service = new ShippingService(http, db as any);
+
+    await expect(
+      service.generateLabel(dto, 'outro-vendedor'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(httpPost).not.toHaveBeenCalled();
+  });
+
+  it('vendedor dono do pedido → gera normalmente', async () => {
+    seedHappyPath(); // order.sellerId === 'seller-1'
+    const service = new ShippingService(http, db as any);
+
+    const result = await service.generateLabel(dto, 'seller-1');
+
+    expect(httpPost).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
   });
 });
 
