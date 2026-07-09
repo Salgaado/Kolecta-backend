@@ -4,12 +4,14 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { UpdateUserRoleDto, ResolveDisputeDto } from './dto/admin.dto';
+import { ListingsService } from '../listings/listings.service';
 
 @Injectable()
 export class AdminService {
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
+    private readonly listingsService: ListingsService,
   ) {}
 
   // ── GET /api/admin/stats ─────────────────────────────────────────────────
@@ -162,19 +164,9 @@ export class AdminService {
   // ── PATCH /api/admin/listings/:id/status ────────────────────────────────
 
   async updateListingStatus(listingId: string, status: string) {
-    const [listing] = await this.db
-      .select()
-      .from(schema.listings)
-      .where(eq(schema.listings.id, listingId));
-
-    if (!listing) throw new NotFoundException('Anúncio não encontrado');
-
-    const [updated] = await this.db
-      .update(schema.listings)
-      .set({ status, updatedAt: new Date() })
-      .where(eq(schema.listings.id, listingId))
-      .returning();
-
-    return updated;
+    // Delega ao ListingsService (fonte única): além de atualizar o status, ele
+    // inicia o relógio do leilão quando um anúncio de leilão é ativado
+    // (startAuctionClockIfPending). Fazer o update aqui direto pularia isso.
+    return this.listingsService.updateStatus(listingId, status);
   }
 }

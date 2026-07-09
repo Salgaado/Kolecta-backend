@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AdminService } from './admin.service';
+import { ListingsService } from '../listings/listings.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 
@@ -84,12 +85,15 @@ const makeDrizzleMock = () => {
 describe('AdminService', () => {
   let service: AdminService;
   let mockDb: any;
+  let listingsService: { updateStatus: jest.Mock };
 
   const buildModule = async () => {
+    listingsService = { updateStatus: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
+        { provide: ListingsService, useValue: listingsService },
       ],
     }).compile();
 
@@ -450,41 +454,28 @@ describe('AdminService', () => {
   // ── updateListingStatus ───────────────────────────────────────────────────
 
   describe('updateListingStatus', () => {
-    it('deve lançar NotFoundException se anúncio não existe', async () => {
+    it('delega ao ListingsService.updateStatus (inicia relógio do leilão na ativação)', async () => {
+      const updatedListing = { ...mockListing, status: 'active' };
       mockDb = makeDrizzleMock();
-      mockDb.where.mockResolvedValueOnce([]); // listing não encontrado
       service = await buildModule();
+      listingsService.updateStatus.mockResolvedValueOnce(updatedListing);
+
+      const result = await service.updateListingStatus('listing_001', 'active');
+
+      expect(listingsService.updateStatus).toHaveBeenCalledWith('listing_001', 'active');
+      expect(result.status).toBe('active');
+    });
+
+    it('propaga NotFoundException do ListingsService', async () => {
+      mockDb = makeDrizzleMock();
+      service = await buildModule();
+      listingsService.updateStatus.mockRejectedValueOnce(
+        new NotFoundException('Anúncio não encontrado'),
+      );
 
       await expect(
         service.updateListingStatus('listing_nope', 'active'),
       ).rejects.toThrow(NotFoundException);
-    });
-
-    it('deve retornar anúncio atualizado quando encontrado', async () => {
-      const updatedListing = { ...mockListing, status: 'cancelled' };
-      mockDb = makeDrizzleMock();
-      // SELECT: where resolve com listing; UPDATE: where retorna chain (padrão)
-      mockDb.where.mockResolvedValueOnce([mockListing]);
-      mockDb.returning.mockResolvedValueOnce([updatedListing]);
-      service = await buildModule();
-
-      const result = await service.updateListingStatus('listing_001', 'cancelled');
-
-      expect(result.status).toBe('cancelled');
-    });
-
-    it('deve chamar update com o status correto', async () => {
-      const updatedListing = { ...mockListing, status: 'sold' };
-      mockDb = makeDrizzleMock();
-      mockDb.where.mockResolvedValueOnce([mockListing]);
-      mockDb.returning.mockResolvedValueOnce([updatedListing]);
-      service = await buildModule();
-
-      await service.updateListingStatus('listing_001', 'sold');
-
-      expect(mockDb.set).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'sold' }),
-      );
     });
   });
 });
