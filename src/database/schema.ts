@@ -29,6 +29,15 @@ export const users = sqliteTable('users', {
   // CPF do comprador (só dígitos), capturado no checkout — exigido pela Pagar.me
   // na transação PIX/cartão. Dado sensível (LGPD): não logar, mascarar na saída.
   cpf: text('cpf'),
+
+  // ─── Consentimento legal (Termos + LGPD) ────────────────────────────────────
+  // Aceite registrado no cadastro (modal T10). LGPD exige consentimento
+  // demonstrável: guardamos a versão dos termos e QUANDO cada aceite ocorreu.
+  // null = usuário anterior ao gate de consentimento.
+  termsVersion: text('terms_version'),
+  termsAcceptedAt: integer('terms_accepted_at', { mode: 'timestamp' }),
+  lgpdAcceptedAt: integer('lgpd_accepted_at', { mode: 'timestamp' }),
+
   ...timestamps,
 });
 
@@ -79,6 +88,72 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
     .default(false),
   kycUpdatedAt: integer('kyc_updated_at', { mode: 'timestamp' }),
 
+  // ─── Programa Membro Fundador (pré-lançamento) ──────────────────────────────
+  // Benefício de LOJISTA. Requisito: 5 anúncios enviados antes do lançamento
+  // (25/07/2026). Ver docs/PLAN-programa-fundadores.md.
+  // Numeração: 0 = Artminis | 1..50 = evento/convite | 51..100 = landing.
+  // null = não é fundador. O número, uma vez atribuído, é PERMANENTE (nunca se perde).
+  founderNumber: integer('founder_number'),
+  // none    = não participa
+  // pending = cadastrou mas ainda não tem 5 anúncios
+  // active  = virou fundador (>= 5 anúncios): taxa 9% + créditos correndo
+  // lapsed  = perdeu taxa/créditos por inatividade (mantém número e selo)
+  founderStatus: text('founder_status').notNull().default('none'),
+  // Momento em que atingiu 'active'. Base para os 6 meses da taxa de 9%.
+  founderSince: integer('founder_since', { mode: 'timestamp' }),
+  // Último instante em que o fundador tinha algum anúncio ativo — usado pelo
+  // job de manutenção (regra dos 15 dias) para decidir active -> lapsed.
+  founderLastActiveListingAt: integer('founder_last_active_listing_at', {
+    mode: 'timestamp',
+  }),
+
+  ...timestamps,
+}, (t) => ({
+  // Backstop de concorrência: dois fundadores nunca podem ter o mesmo número.
+  // NULLs são distintos no SQLite, então não-fundadores (founderNumber = null)
+  // não colidem.
+  uqFounderNumber: uniqueIndex('uq_seller_founder_number').on(t.founderNumber),
+}));
+
+// ─── Founder Invite Codes ────────────────────────────────────────────────────
+// Códigos do evento presencial. Cada código reserva um número da faixa 1..50.
+// Resgatar um código atribui aquele número ao usuário (fora da faixa da landing,
+// que só usa 51+). Ver docs/PLAN-programa-fundadores.md (T3).
+
+export const founderInviteCodes = sqliteTable('founder_invite_codes', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  // Código legível impresso/entregue no evento (ex: KOLECTA-FND-014)
+  code: text('code').notNull().unique(),
+  // Número reservado da faixa presencial (1..50) — único por código
+  founderNumber: integer('founder_number').notNull().unique(),
+  // null enquanto não resgatado
+  redeemedByUserId: text('redeemed_by_user_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
+  redeemedAt: integer('redeemed_at', { mode: 'timestamp' }),
+  ...timestamps,
+});
+
+// ─── Founder Highlight Credits ───────────────────────────────────────────────
+// Carteira de créditos de destaque do fundador. Ao virar 'active' recebe 5
+// créditos (1 crédito = 1 anúncio em destaque por 7 dias), validade 6 meses.
+// Não acumulam, não transferem. Consumo integra com o sistema de destaque
+// (a definir se há backend próprio). Ver docs/PLAN-programa-fundadores.md (T5).
+
+export const founderCredits = sqliteTable('founder_credits', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  creditsTotal: integer('credits_total').notNull().default(0),
+  creditsUsed: integer('credits_used').notNull().default(0),
+  // Créditos não usados expiram nesta data (founderSince + 6 meses)
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
   ...timestamps,
 });
 

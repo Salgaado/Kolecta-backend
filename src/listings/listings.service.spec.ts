@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ListingsService } from './listings.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { FounderService } from '../founder/founder.service';
 import {
   NotFoundException,
   ForbiddenException,
@@ -76,6 +77,10 @@ describe('ListingsService', () => {
       providers: [
         ListingsService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
+        {
+          provide: FounderService,
+          useValue: { evaluate: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
 

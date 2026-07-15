@@ -29,6 +29,7 @@ import { BlingModule } from './bling/bling.module';
 import { PagarmeModule } from './pagarme/pagarme.module';
 import { RecipientsModule } from './recipients/recipients.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { FounderModule } from './founder/founder.module';
 import { ScheduleModule } from '@nestjs/schedule';
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     AdminModule,
     BlingModule,
     NotificationsModule,
+    FounderModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -5,9 +5,10 @@ import { CloseAuctionsCron } from './close-auctions.cron';
 import { DatabaseModule } from '../database/database.module';
 import { AuthModule } from '../auth/auth.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { FounderModule } from '../founder/founder.module';
 
 @Module({
-  imports: [DatabaseModule, AuthModule, WalletModule],
+  imports: [DatabaseModule, AuthModule, WalletModule, FounderModule],
   controllers: [AuctionsController],
   providers: [AuctionsService, CloseAuctionsCron],
   exports: [AuctionsService],

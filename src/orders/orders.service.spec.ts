@@ -4,6 +4,7 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import { WalletService } from '../wallet/wallet.service';
 import { StripeService } from '../stripe/stripe.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { FounderService } from '../founder/founder.service';
 import {
   BadRequestException,
   NotFoundException,
@@ -99,6 +100,10 @@ describe('OrdersService', () => {
         { provide: WalletService, useValue: mockWalletService },
         { provide: StripeService, useValue: mockStripeService },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        {
+          provide: FounderService,
+          useValue: { resolveCommissionPercent: jest.fn().mockResolvedValue(11) },
+        },
       ],
     }).compile();
 

@@ -11,6 +11,7 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { WalletService } from '../wallet/wallet.service';
+import { FounderService } from '../founder/founder.service';
 import { CreateAuctionDto, PlaceBidDto } from './dto/auction.dto';
 
 @Injectable()
@@ -21,6 +22,7 @@ export class AuctionsService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
     private readonly walletService: WalletService,
+    private readonly founderService: FounderService,
   ) {}
 
   private readonly auctionListingSelect = {
@@ -310,7 +312,10 @@ export class AuctionsService {
   // ── Lógica interna de fechamento ─────────────────────────────────────────
 
   private async _closeAuction(auction: typeof schema.auctions.$inferSelect, listing: typeof schema.listings.$inferSelect | undefined) {
-    const platformFeePercent = parseInt(process.env.PLATFORM_FEE_PERCENT ?? '10', 10);
+    // Comissão efetiva do vendedor (aplica taxa de fundador quando cabível).
+    const platformFeePercent = listing?.sellerId
+      ? await this.founderService.resolveCommissionPercent(listing.sellerId)
+      : parseInt(process.env.PLATFORM_FEE_PERCENT ?? '11', 10);
 
     await this.db.transaction(async (tx: any) => {
       await tx

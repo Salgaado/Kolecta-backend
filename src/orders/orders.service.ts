@@ -16,6 +16,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
 import { StripeService } from '../stripe/stripe.service';
+import { FounderService } from '../founder/founder.service';
 
 @Injectable()
 export class OrdersService {
@@ -27,6 +28,7 @@ export class OrdersService {
     private readonly walletService: WalletService,
     private readonly stripeService: StripeService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly founderService: FounderService,
   ) {}
 
   // ── Create orders (legacy — sem PaymentIntent) ─────────────────────────────
@@ -444,8 +446,11 @@ export class OrdersService {
       return;
     }
 
-    // Calcular taxas conforme fluxo canônico
-    const platformFeePercent = parseInt(process.env.PLATFORM_FEE_PERCENT ?? '10', 10);
+    // Calcular taxas conforme fluxo canônico.
+    // Comissão efetiva resolve a taxa de fundador (9% por 6 meses) quando aplicável.
+    const platformFeePercent = await this.founderService.resolveCommissionPercent(
+      order.sellerId,
+    );
     const platformFeeInCents = Math.round(order.totalInCents * platformFeePercent / 100);
     // Estimativa da taxa Stripe (~3.99% + R$0.39 para BR, simplificado como ~4%)
     const stripeFeeInCents = Math.round(order.totalInCents * 0.04);

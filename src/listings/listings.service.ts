@@ -13,6 +13,8 @@ import * as schema from '../database/schema';
 import * as Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
+import { FounderService } from '../founder/founder.service';
+import { SUBMITTED_LISTING_STATUSES } from '../founder/founder.constants';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -33,6 +35,7 @@ export class ListingsService {
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
+    private readonly founderService: FounderService,
   ) {}
 
   // ── Buscar por ID ────────────────────────────────────────────────────────
@@ -279,6 +282,18 @@ export class ListingsService {
     // Auto-inicia o leilão quando o admin ativa um anúncio de leilão ainda parado.
     if (status === 'active' && listing.type === 'auction') {
       await this.startAuctionClockIfPending(id);
+    }
+
+    // Anúncio entrou em estado "enviado" → reavalia qualificação de fundador do
+    // vendedor (idempotente). Não pode quebrar a atualização de status.
+    if ((SUBMITTED_LISTING_STATUSES as readonly string[]).includes(status)) {
+      this.founderService
+        .evaluate(listing.sellerId)
+        .catch((err) =>
+          this.logger.error(
+            `[updateStatus] Falha ao reavaliar fundador de ${listing.sellerId}: ${err.message}`,
+          ),
+        );
     }
 
     return this.findById(id);

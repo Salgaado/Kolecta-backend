@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AuctionsService } from './auctions.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { WalletService } from '../wallet/wallet.service';
+import { FounderService } from '../founder/founder.service';
 import {
   NotFoundException,
   BadRequestException,
@@ -91,6 +92,10 @@ describe('AuctionsService', () => {
         AuctionsService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
         { provide: WalletService, useValue: mockWalletService },
+        {
+          provide: FounderService,
+          useValue: { resolveCommissionPercent: jest.fn().mockResolvedValue(11) },
+        },
       ],
     }).compile();
 
