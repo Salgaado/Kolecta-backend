@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Patch,
+  Post,
   Body,
   Req,
   UseGuards,
@@ -12,6 +13,7 @@ import {
 import type { Request } from 'express';
 import { UsersService } from './users.service';
 import { UpdateUserDto } from './dto/user.dto';
+import { RecordConsentDto } from './dto/consent.dto';
 import { AuthGuard } from '../auth/auth.guard';
 
 @Controller('api/users')
@@ -43,6 +45,19 @@ export class UsersController {
     const userId = (req as any).auth.userId as string;
     this.logger.log(`[PATCH /me] userId: ${userId}`);
     const user = await this.usersService.update(userId, dto);
+    return { data: user };
+  }
+
+  /**
+   * POST /api/users/me/consent
+   * Registra o aceite de Termos + LGPD feito no cadastro (T10). Idempotente.
+   */
+  @Post('me/consent')
+  @HttpCode(HttpStatus.OK)
+  async recordConsent(@Req() req: Request, @Body() dto: RecordConsentDto) {
+    const userId = (req as any).auth.userId as string;
+    this.logger.log(`[POST /me/consent] userId: ${userId}`);
+    const user = await this.usersService.recordConsent(userId, dto);
     return { data: user };
   }
 }

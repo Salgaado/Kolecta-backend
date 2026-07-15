@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { UpdateUserDto } from './dto/user.dto';
+import { RecordConsentDto } from './dto/consent.dto';
 
 export type UserRecord = typeof schema.users.$inferSelect;
 // DTO movido para ./dto/user.dto.ts (classe, p/ o ValidationPipe global).
@@ -109,6 +110,33 @@ export class UsersService {
       .where(eq(schema.users.id, id));
 
     this.logger.log(`Usuário atualizado: ${id}`);
+
+    return this.findById(id);
+  }
+
+  // ─── Registrar consentimento legal (Termos + LGPD) ──────────────────────────
+  // Idempotente: só grava se ainda não houver aceite registrado para o usuário,
+  // preservando o primeiro consentimento (o juridicamente relevante).
+
+  async recordConsent(id: string, dto: RecordConsentDto): Promise<UserRecord> {
+    const user = await this.findOrCreate(id);
+
+    if (user.termsAcceptedAt) {
+      // Já consentiu antes — não sobrescreve o registro original.
+      return user;
+    }
+
+    await this.db
+      .update(schema.users)
+      .set({
+        termsVersion: dto.termsVersion,
+        termsAcceptedAt: new Date(dto.termsAcceptedAt),
+        lgpdAcceptedAt: new Date(dto.lgpdAcceptedAt),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.users.id, id));
+
+    this.logger.log(`Consentimento registrado: ${id} (v${dto.termsVersion})`);
 
     return this.findById(id);
   }
