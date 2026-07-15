@@ -216,6 +216,14 @@ export const listings = sqliteTable('listings', {
   heightCm: integer('height_cm'),
   lengthCm: integer('length_cm'),
 
+  // ── Destaque (vitrine) ──
+  // Anúncio em destaque até `featuredUntil` (null/passado = não destacado). Hoje
+  // a única origem é o crédito de fundador (7 dias por crédito). `featuredSource`
+  // rastreia a origem para futuros destaques pagos. Ver docs/PLAN-programa-fundadores.md (T5).
+  featuredUntil: integer('featured_until', { mode: 'timestamp' }),
+  // founder_credit | admin | (futuro: paid)
+  featuredSource: text('featured_source'),
+
   ...timestamps,
 });
 

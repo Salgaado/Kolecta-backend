@@ -7,7 +7,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { eq, desc, and, getTableColumns, like } from 'drizzle-orm';
+import { eq, desc, and, getTableColumns, like, sql } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import * as Papa from 'papaparse';
@@ -80,8 +80,13 @@ export class ListingsService {
       );
     }
 
+    // Destaques ativos primeiro (featuredUntil no futuro), depois mais recentes.
+    const nowSeconds = Math.floor(Date.now() / 1000);
     return query
-      .orderBy(desc(schema.listings.createdAt))
+      .orderBy(
+        sql`CASE WHEN ${schema.listings.featuredUntil} > ${nowSeconds} THEN 0 ELSE 1 END`,
+        desc(schema.listings.createdAt),
+      )
       .limit(limit)
       .offset(offset);
   }

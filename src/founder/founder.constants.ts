@@ -16,6 +16,9 @@ export const INVITE_RANGE = { min: 1, max: 50 } as const;
 /** Créditos de destaque concedidos ao virar 'active'. */
 export const FOUNDER_HIGHLIGHT_CREDITS = 5;
 
+/** Dias que 1 crédito mantém o anúncio em destaque. */
+export const FOUNDER_HIGHLIGHT_DAYS = 7;
+
 /** Duração dos benefícios (taxa 9% + créditos) a partir de founderSince. */
 export const FOUNDER_BENEFIT_MONTHS = 6;
 

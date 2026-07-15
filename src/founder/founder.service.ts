@@ -4,6 +4,7 @@ import {
   Logger,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
@@ -16,6 +17,7 @@ import {
   LANDING_RANGE,
   INVITE_RANGE,
   FOUNDER_HIGHLIGHT_CREDITS,
+  FOUNDER_HIGHLIGHT_DAYS,
   FOUNDER_BENEFIT_MONTHS,
   FOUNDER_COMMISSION_PERCENT,
   FOUNDER_LAPSE_DAYS,
@@ -219,6 +221,95 @@ export class FounderService {
       creditsUsed: 0,
       expiresAt,
     });
+  }
+
+  /**
+   * Consome 1 crédito de destaque do fundador e coloca o anúncio em destaque por
+   * FOUNDER_HIGHLIGHT_DAYS dias. Só fundador `active`, dono do anúncio, com
+   * crédito disponível e não expirado. Atômico (débito + destaque na mesma tx).
+   */
+  async useCredit(userId: string, listingId: string) {
+    const [profile] = await this.db
+      .select()
+      .from(schema.sellerProfiles)
+      .where(eq(schema.sellerProfiles.userId, userId));
+
+    if (!profile || profile.founderStatus !== 'active') {
+      throw new ForbiddenException(
+        'Apenas fundadores ativos podem usar créditos de destaque.',
+      );
+    }
+
+    const [credits] = await this.db
+      .select()
+      .from(schema.founderCredits)
+      .where(eq(schema.founderCredits.userId, userId));
+
+    if (!credits) {
+      throw new NotFoundException('Você não tem carteira de créditos.');
+    }
+    if (credits.expiresAt && this.base() >= new Date(credits.expiresAt)) {
+      throw new BadRequestException('Seus créditos de destaque expiraram.');
+    }
+    const available = credits.creditsTotal - credits.creditsUsed;
+    if (available <= 0) {
+      throw new BadRequestException('Você não tem créditos de destaque disponíveis.');
+    }
+
+    const [listing] = await this.db
+      .select()
+      .from(schema.listings)
+      .where(eq(schema.listings.id, listingId));
+
+    if (!listing) throw new NotFoundException('Anúncio não encontrado.');
+    if (listing.sellerId !== userId) {
+      throw new ForbiddenException('Este anúncio não é seu.');
+    }
+    if (listing.status !== ACTIVE_LISTING_STATUS) {
+      throw new BadRequestException('Só é possível destacar um anúncio ativo.');
+    }
+
+    const now = this.base();
+    const featuredUntil = new Date(
+      now.getTime() + FOUNDER_HIGHLIGHT_DAYS * 86_400_000,
+    );
+
+    await this.db.transaction(async (tx) => {
+      // Débito condicionado ao saldo atual (trava contra duplo-gasto concorrente).
+      const debited = await tx
+        .update(schema.founderCredits)
+        .set({ creditsUsed: credits.creditsUsed + 1, updatedAt: now })
+        .where(
+          and(
+            eq(schema.founderCredits.userId, userId),
+            eq(schema.founderCredits.creditsUsed, credits.creditsUsed),
+          ),
+        )
+        .returning();
+
+      if (debited.length === 0) {
+        throw new ConflictException('Crédito já consumido. Tente novamente.');
+      }
+
+      await tx
+        .update(schema.listings)
+        .set({
+          featuredUntil,
+          featuredSource: 'founder_credit',
+          updatedAt: now,
+        })
+        .where(eq(schema.listings.id, listingId));
+    });
+
+    this.logger.log(
+      `✨ Destaque: ${userId} usou 1 crédito em ${listingId} (até ${featuredUntil.toISOString()}).`,
+    );
+
+    return {
+      listingId,
+      featuredUntil,
+      creditsAvailable: available - 1,
+    };
   }
 
   // ── T3: Resgate de código de convite (faixa 1..50) ───────────────────────────
