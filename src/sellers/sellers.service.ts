@@ -73,6 +73,154 @@ export class SellersService {
     };
   }
 
+  // ─── Perfil autenticado do próprio vendedor (api/seller) ────────────────────
+
+  /** Garante que exista uma linha de seller_profiles para o usuário. */
+  private async ensureProfile(userId: string) {
+    const existing = await this.db
+      .select()
+      .from(sellerProfiles)
+      .where(eq(sellerProfiles.userId, userId))
+      .get();
+    if (existing) return existing;
+
+    await this.db.insert(sellerProfiles).values({ userId }).run();
+    return this.db
+      .select()
+      .from(sellerProfiles)
+      .where(eq(sellerProfiles.userId, userId))
+      .get();
+  }
+
+  private safeJsonArray(raw: string | null): string[] {
+    if (!raw) return [];
+    try {
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** GET /api/seller/profile — dados da loja + conta do vendedor logado. */
+  async getMyProfile(userId: string) {
+    const profile = await this.ensureProfile(userId);
+    const user = await this.db
+      .select({
+        name: users.name,
+        email: users.email,
+        createdAt: users.createdAt,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .get();
+
+    let notificationPrefs: Record<string, { email?: boolean; push?: boolean }> = {};
+    if (profile?.notificationPrefs) {
+      try {
+        notificationPrefs = JSON.parse(profile.notificationPrefs);
+      } catch {
+        notificationPrefs = {};
+      }
+    }
+
+    return {
+      storeName: profile?.storeName ?? null,
+      bio: profile?.bio ?? null,
+      city: profile?.city ?? null,
+      state: profile?.state ?? null,
+      website: profile?.website ?? null,
+      categories: this.safeJsonArray(profile?.categories ?? null),
+      isVerified: profile?.isVerified ?? false,
+      policies: {
+        shipping: profile?.policyShipping ?? null,
+        returns: profile?.policyReturns ?? null,
+        payment: profile?.policyPayment ?? null,
+        acceptOffers: profile?.acceptOffers ?? false,
+        maxDiscountPercent: profile?.maxDiscountPercent ?? null,
+      },
+      notificationPrefs,
+      account: {
+        name: user?.name ?? null,
+        email: user?.email ?? null,
+        createdAt: user?.createdAt ?? null,
+      },
+    };
+  }
+
+  async updateMyProfile(
+    userId: string,
+    dto: {
+      storeName?: string;
+      bio?: string;
+      city?: string;
+      state?: string;
+      website?: string;
+      categories?: string[];
+    },
+  ) {
+    await this.ensureProfile(userId);
+    const patch: Record<string, unknown> = {};
+    if (dto.storeName !== undefined) patch.storeName = dto.storeName;
+    if (dto.bio !== undefined) patch.bio = dto.bio;
+    if (dto.city !== undefined) patch.city = dto.city;
+    if (dto.state !== undefined) patch.state = dto.state;
+    if (dto.website !== undefined) patch.website = dto.website;
+    if (dto.categories !== undefined)
+      patch.categories = JSON.stringify(dto.categories);
+
+    if (Object.keys(patch).length > 0) {
+      await this.db
+        .update(sellerProfiles)
+        .set(patch)
+        .where(eq(sellerProfiles.userId, userId))
+        .run();
+    }
+    return this.getMyProfile(userId);
+  }
+
+  async updateMyPolicies(
+    userId: string,
+    dto: {
+      shipping?: string;
+      returns?: string;
+      payment?: string;
+      acceptOffers?: boolean;
+      maxDiscountPercent?: number;
+    },
+  ) {
+    await this.ensureProfile(userId);
+    const patch: Record<string, unknown> = {};
+    if (dto.shipping !== undefined) patch.policyShipping = dto.shipping;
+    if (dto.returns !== undefined) patch.policyReturns = dto.returns;
+    if (dto.payment !== undefined) patch.policyPayment = dto.payment;
+    if (dto.acceptOffers !== undefined) patch.acceptOffers = dto.acceptOffers;
+    if (dto.maxDiscountPercent !== undefined)
+      patch.maxDiscountPercent = dto.maxDiscountPercent;
+
+    if (Object.keys(patch).length > 0) {
+      await this.db
+        .update(sellerProfiles)
+        .set(patch)
+        .where(eq(sellerProfiles.userId, userId))
+        .run();
+    }
+    return this.getMyProfile(userId);
+  }
+
+  async updateMyNotificationPrefs(
+    userId: string,
+    prefs: Record<string, { email?: boolean; push?: boolean }>,
+  ) {
+    await this.ensureProfile(userId);
+    await this.db
+      .update(sellerProfiles)
+      .set({ notificationPrefs: JSON.stringify(prefs ?? {}) })
+      .where(eq(sellerProfiles.userId, userId))
+      .run();
+    return this.getMyProfile(userId);
+  }
+
   async getSellerListings(
     id: string,
     page: number = 1,

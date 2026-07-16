@@ -107,6 +107,27 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
     mode: 'timestamp',
   }),
 
+  // ─── Perfil público da loja (editável pelo vendedor) ────────────────────────
+  storeName: text('store_name'),
+  city: text('city'),
+  state: text('state'),
+  website: text('website'),
+  // JSON array stringificado das categorias da loja: '["Capacetes","Jaquetas"]'
+  categories: text('categories'),
+
+  // ─── Políticas da loja ──────────────────────────────────────────────────────
+  policyShipping: text('policy_shipping'),
+  policyReturns: text('policy_returns'),
+  policyPayment: text('policy_payment'),
+  // Nullable de propósito: adicionar NOT NULL a uma tabela com linhas força o
+  // drizzle-kit a recriar/truncar no SQLite. O código trata null como false.
+  acceptOffers: integer('accept_offers', { mode: 'boolean' }).default(false),
+  maxDiscountPercent: integer('max_discount_percent'),
+
+  // ─── Preferências de notificação ────────────────────────────────────────────
+  // JSON stringificado: { "newOrder": { "email": true, "push": true }, ... }
+  notificationPrefs: text('notification_prefs'),
+
   ...timestamps,
 }, (t) => ({
   // Backstop de concorrência: dois fundadores nunca podem ter o mesmo número.
@@ -460,7 +481,26 @@ export const disputes = sqliteTable('disputes', {
   description: text('description'),
   // open | under_review | resolved | closed
   status: text('status').notNull().default('open'),
+  // Resolução (quando status = resolved/closed): buyer_favor | seller_favor | no_resolution
+  resolution: text('resolution'),
   resolvedAt: integer('resolved_at', { mode: 'timestamp' }),
+  ...timestamps,
+});
+
+// ─── Dispute Messages (timeline da disputa) ──────────────────────────────────
+// Cada linha é um evento: mensagem de uma parte ou evento de sistema.
+export const disputeMessages = sqliteTable('dispute_messages', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  disputeId: text('dispute_id')
+    .notNull()
+    .references(() => disputes.id, { onDelete: 'cascade' }),
+  // null quando type = 'system'
+  senderId: text('sender_id').references(() => users.id),
+  // 'message' | 'system'
+  type: text('type').notNull().default('message'),
+  content: text('content').notNull(),
   ...timestamps,
 });
 

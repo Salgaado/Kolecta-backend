@@ -20,6 +20,7 @@ import { DevAuthMiddleware } from './auth/dev-auth.middleware';
 import { ShippingModule } from './shipping/shipping.module';
 import { MessagesModule } from './messages/messages.module';
 import { SellersModule } from './sellers/sellers.module';
+import { DisputesModule } from './disputes/disputes.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { CategoriesModule } from './categories/categories.module';
 import { CommunityModule } from './community/community.module';
@@ -59,6 +60,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     ShippingModule,
     MessagesModule,
     SellersModule,
+    DisputesModule,
     ReviewsModule,
     CategoriesModule,
     CommunityModule,
