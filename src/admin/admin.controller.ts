@@ -30,6 +30,33 @@ export class AdminController {
     return { data: await this.adminService.getStats() };
   }
 
+  // ── Agregações (dashboards) ──────────────────────────────────────────────
+
+  @Get('overview')
+  async getOverview() {
+    return { data: await this.adminService.getOverview() };
+  }
+
+  @Get('reports')
+  async getReports() {
+    return { data: await this.adminService.getReports() };
+  }
+
+  @Get('financial')
+  async getFinancial() {
+    return { data: await this.adminService.getFinancial() };
+  }
+
+  @Get('auctions')
+  async getAuctionsMonitor() {
+    return { data: await this.adminService.getAuctionsMonitor() };
+  }
+
+  @Get('sellers/detailed')
+  async listSellersDetailed() {
+    return { data: await this.adminService.listSellersDetailed() };
+  }
+
   // ── GET /api/admin/users ─────────────────────────────────────────────────
 
   @Get('users')
