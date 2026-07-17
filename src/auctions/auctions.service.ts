@@ -4,9 +4,10 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
   Logger,
 } from '@nestjs/common';
-import { eq, and, desc, lte, isNotNull } from 'drizzle-orm';
+import { eq, and, desc, lte, lt, or, isNull, isNotNull } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
@@ -200,7 +201,10 @@ export class AuctionsService {
         this.logger.log(`Anti-sniper ativado: leilão ${auctionId} estendido.`);
       }
 
-      await tx
+      // Guarda de concorrência: só vence quem supera o lance atual. A condição
+      // `current < novo` (ou ainda nulo) impede que dois lances quase simultâneos
+      // façam o menor sobrescrever o maior (o pré-check acima leu fora da tx).
+      const updated = await tx
         .update(schema.auctions)
         .set({
           currentBidInCents: dto.amountInCents,
@@ -208,7 +212,23 @@ export class AuctionsService {
           endsAt: newEndsAt,
           updatedAt: new Date(),
         })
-        .where(eq(schema.auctions.id, auctionId));
+        .where(
+          and(
+            eq(schema.auctions.id, auctionId),
+            or(
+              isNull(schema.auctions.currentBidInCents),
+              lt(schema.auctions.currentBidInCents, dto.amountInCents),
+            ),
+          ),
+        )
+        .returning();
+
+      if (updated.length === 0) {
+        // Outro lance igual/maior chegou primeiro → desfaz o insert (rollback).
+        throw new ConflictException(
+          'Outro lance superou o seu. Atualize e tente novamente.',
+        );
+      }
 
       return bid;
     });

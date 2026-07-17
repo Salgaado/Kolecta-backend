@@ -7,6 +7,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 
 const mockWalletService = {
@@ -73,10 +74,12 @@ const makeDrizzleMock = () => {
     const tx: any = {};
     tx.insert = jest.fn().mockReturnValue(tx);
     tx.values = jest.fn().mockReturnValue(tx);
+    // returning() é usado tanto pelo insert do lance quanto pelo update-guard;
+    // por padrão resolve não-vazio (lance registrado + update aplicado).
     tx.returning = jest.fn().mockResolvedValue([mockBid]);
     tx.update = jest.fn().mockReturnValue(tx);
     tx.set = jest.fn().mockReturnValue(tx);
-    tx.where = jest.fn().mockResolvedValue(undefined);
+    tx.where = jest.fn().mockReturnValue(tx);
     return fn(tx);
   });
   return chain;
@@ -207,6 +210,36 @@ describe('AuctionsService', () => {
       });
 
       expect(result).toEqual(mockBid);
+    });
+
+    it('deve lançar ConflictException se outro lance vencer a corrida (update-guard)', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([mockAuction])
+        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }]);
+
+      // Transaction em que o UPDATE condicional não afeta linhas (returning vazio),
+      // simulando que um lance igual/maior chegou primeiro.
+      mockDb.transaction = jest.fn().mockImplementation(async (fn: any) => {
+        const tx: any = {};
+        tx.insert = jest.fn().mockReturnValue(tx);
+        tx.values = jest.fn().mockReturnValue(tx);
+        tx.update = jest.fn().mockReturnValue(tx);
+        tx.set = jest.fn().mockReturnValue(tx);
+        tx.where = jest.fn().mockReturnValue(tx);
+        // 1ª chamada (insert do lance) → não-vazio; 2ª (update-guard) → vazio
+        tx.returning = jest
+          .fn()
+          .mockResolvedValueOnce([mockBid])
+          .mockResolvedValueOnce([]);
+        return fn(tx);
+      });
+
+      service = await buildModule();
+
+      await expect(
+        service.placeBid(mockAuctionId, bidderId, { amountInCents: 6100 }),
+      ).rejects.toThrow(ConflictException);
     });
   });
 
