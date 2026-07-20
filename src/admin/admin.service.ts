@@ -154,16 +154,21 @@ export class AdminService {
 
   async listListings(status?: string, limit = 50, offset = 0) {
     const rows = await this.db
-      .select()
+      .select({
+        listing: schema.listings,
+        sellerName: schema.users.name,
+      })
       .from(schema.listings)
+      .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .where(status ? eq(schema.listings.status, status) : undefined)
       .orderBy(desc(schema.listings.createdAt))
       .limit(limit)
       .offset(offset);
 
-    if (status) {
-      return rows.filter((l) => l.status === status);
-    }
-    return rows;
+    return rows.map((r) => ({
+      ...r.listing,
+      sellerName: r.sellerName ?? null,
+    }));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
