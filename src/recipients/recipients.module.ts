@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PagarmeModule } from '../pagarme/pagarme.module';
+import { UsersModule } from '../users/users.module';
 import { RecipientsService } from './recipients.service';
 import { RecipientsController } from './recipients.controller';
 
@@ -15,7 +16,8 @@ import { RecipientsController } from './recipients.controller';
  * listener `@OnEvent('pagarme.recipient.updated')` no RecipientsService.
  */
 @Module({
-  imports: [PagarmeModule],
+  // UsersModule é necessário para o RolesGuard resolver UsersService.
+  imports: [PagarmeModule, UsersModule],
   controllers: [RecipientsController],
   providers: [RecipientsService],
   exports: [RecipientsService],
