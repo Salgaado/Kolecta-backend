@@ -1,17 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { WithdrawalsService } from './withdrawals.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
-import { StripeService } from '../stripe/stripe.service';
+import { PagarmeService } from '../pagarme/pagarme.service';
 import { WalletService } from '../wallet/wallet.service';
 import { BadRequestException } from '@nestjs/common';
 
 const mockUserId = 'user_seller_123';
-const mockStripeAccountId = 'acct_test_abc';
+const mockRecipientId = 'rp_test_abc';
 
 const mockSellerProfile = {
   id: 'sp_001',
   userId: mockUserId,
-  stripeAccountId: mockStripeAccountId,
+  pagarmeRecipientId: mockRecipientId,
+  canWithdraw: true,
   isVerified: true,
 };
 
@@ -27,8 +28,7 @@ const mockWithdrawal = {
   userId: mockUserId,
   amountInCents: 5000,
   status: 'processing',
-  stripePayoutId: 'po_test_001',
-  stripeAccountId: mockStripeAccountId,
+  pagarmeRecipientId: mockRecipientId,
 };
 
 const makeDb = () => ({
@@ -40,35 +40,16 @@ const makeDb = () => ({
   returning: jest.fn().mockResolvedValue([mockWithdrawal]),
   update: jest.fn().mockReturnThis(),
   set: jest.fn().mockReturnThis(),
-  transaction: jest.fn().mockImplementation(async (fn: any) =>
-    fn({
-      update: jest.fn().mockReturnThis(),
-      set: jest.fn().mockReturnThis(),
-      where: jest.fn().mockResolvedValue(undefined),
-      insert: jest.fn().mockReturnThis(),
-      values: jest.fn().mockReturnThis(),
-      returning: jest.fn().mockResolvedValue([mockWithdrawal]),
-    }),
-  ),
 });
 
-const mockStripeService = {
-  // O serviço usa `stripeClient` e cria Transfers (não Payouts) — mudança de 29/05.
-  stripeClient: {
-    accounts: {
-      retrieve: jest.fn().mockResolvedValue({
-        charges_enabled: true,
-        payouts_enabled: true,
-      }),
-    },
-    transfers: {
-      create: jest.fn().mockResolvedValue({ id: 'tr_test_001' }),
-    },
-  },
+const mockPagarme = {
+  post: jest.fn().mockResolvedValue({ id: 'tr_test_001', status: 'processing' }),
 };
 
 const mockWalletService = {
   getOrCreateWallet: jest.fn().mockResolvedValue(mockWallet),
+  debit: jest.fn().mockResolvedValue({ success: true }),
+  credit: jest.fn().mockResolvedValue({ success: true }),
 };
 
 describe('WithdrawalsService', () => {
@@ -82,7 +63,7 @@ describe('WithdrawalsService', () => {
       providers: [
         WithdrawalsService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
-        { provide: StripeService, useValue: mockStripeService },
+        { provide: PagarmeService, useValue: mockPagarme },
         { provide: WalletService, useValue: mockWalletService },
       ],
     }).compile();
@@ -110,21 +91,17 @@ describe('WithdrawalsService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('deve lançar BadRequestException se seller não tem conta Stripe Connect', async () => {
-      mockDb.where.mockResolvedValueOnce([]); // sellerProfile not found
-
+    it('deve lançar BadRequestException se seller não tem recebedor Pagar.me', async () => {
+      mockDb.where.mockResolvedValueOnce([]); // sellerProfile não encontrado
       await expect(
         service.requestWithdrawal(mockUserId, { amountInCents: 5000 }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('deve lançar BadRequestException se conta Stripe não está habilitada', async () => {
-      mockDb.where.mockResolvedValueOnce([mockSellerProfile]);
-      mockStripeService.stripeClient.accounts.retrieve.mockResolvedValueOnce({
-        charges_enabled: false,
-        payouts_enabled: false,
-      });
-
+    it('deve lançar BadRequestException se o recebedor não pode sacar (canWithdraw=false)', async () => {
+      mockDb.where.mockResolvedValueOnce([
+        { ...mockSellerProfile, canWithdraw: false },
+      ]);
       await expect(
         service.requestWithdrawal(mockUserId, { amountInCents: 5000 }),
       ).rejects.toThrow(BadRequestException);
@@ -132,36 +109,56 @@ describe('WithdrawalsService', () => {
 
     it('deve lançar BadRequestException se saldo disponível é insuficiente', async () => {
       mockDb.where.mockResolvedValueOnce([mockSellerProfile]);
-      mockStripeService.stripeClient.accounts.retrieve.mockResolvedValueOnce({
-        charges_enabled: true,
-        payouts_enabled: true,
-      });
       mockWalletService.getOrCreateWallet.mockResolvedValueOnce({
         ...mockWallet,
         balanceInCents: 1000, // apenas R$10,00
       });
-
       await expect(
         service.requestWithdrawal(mockUserId, { amountInCents: 5000 }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('deve criar saque com sucesso e retornar o withdrawal', async () => {
+    it('deve criar o saque (processing) e persistir o transfer id', async () => {
       mockDb.where.mockResolvedValueOnce([mockSellerProfile]);
-      mockStripeService.stripeClient.accounts.retrieve.mockResolvedValueOnce({
-        charges_enabled: true,
-        payouts_enabled: true,
-      });
       mockWalletService.getOrCreateWallet.mockResolvedValueOnce(mockWallet);
-      mockStripeService.stripeClient.transfers.create.mockResolvedValueOnce({
-        id: 'tr_test_001',
-      });
 
       const result = await service.requestWithdrawal(mockUserId, {
         amountInCents: 5000,
       });
 
-      expect(result).toEqual(mockWithdrawal);
+      // debitou o disponível e criou o transfer na Pagar.me
+      expect(mockWalletService.debit).toHaveBeenCalledWith(
+        mockWallet.id,
+        5000,
+        expect.any(String),
+      );
+      expect(mockPagarme.post).toHaveBeenCalledWith(
+        '/transfers',
+        expect.objectContaining({
+          amount: 5000,
+          recipient_id: mockRecipientId,
+        }),
+        expect.stringContaining('withdrawal-'),
+      );
+      expect(result.pagarmeTransferId).toBe('tr_test_001');
+      expect(result.status).toBe('processing');
+    });
+
+    it('deve estornar o saldo se a criação do transfer falhar', async () => {
+      mockDb.where.mockResolvedValueOnce([mockSellerProfile]);
+      mockWalletService.getOrCreateWallet.mockResolvedValueOnce(mockWallet);
+      mockPagarme.post.mockRejectedValueOnce(new Error('pagarme 500'));
+
+      await expect(
+        service.requestWithdrawal(mockUserId, { amountInCents: 5000 }),
+      ).rejects.toThrow();
+
+      // estornou o débito
+      expect(mockWalletService.credit).toHaveBeenCalledWith(
+        mockWallet.id,
+        5000,
+        expect.any(String),
+      );
     });
   });
 });

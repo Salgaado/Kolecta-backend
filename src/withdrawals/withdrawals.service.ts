@@ -2,14 +2,14 @@ import {
   Injectable,
   Inject,
   BadRequestException,
-  NotFoundException,
+  BadGatewayException,
   Logger,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { eq } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
-import { StripeService } from '../stripe/stripe.service';
+import { PagarmeService } from '../pagarme/pagarme.service';
 import { WalletService } from '../wallet/wallet.service';
 import * as schema from '../database/schema';
 import { RequestWithdrawalDto } from './dto/withdrawal.dto';
@@ -20,6 +20,20 @@ const WITHDRAWAL_MIN_CENTS = parseInt(
   10,
 );
 
+/** Resposta mínima do POST /transfers da Pagar.me. */
+interface PagarmeTransfer {
+  id: string;
+  status?: string;
+}
+
+/**
+ * Saque do vendedor: move o saldo DISPONÍVEL da wallet (espelho do recebedor
+ * Pagar.me) para a conta bancária cadastrada, via `POST /transfers`.
+ *
+ * Substitui o fluxo Stripe Connect (`transfers.create` + `stripeAccountId`).
+ * O transfer da Pagar.me é ASSÍNCRONO: o saque nasce `processing` e só vira
+ * `paid`/`failed` pelo webhook `transfer.*` (`pagarme.transfer.updated`).
+ */
 @Injectable()
 export class WithdrawalsService {
   private readonly logger = new Logger(WithdrawalsService.name);
@@ -27,7 +41,7 @@ export class WithdrawalsService {
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
-    private readonly stripeService: StripeService,
+    private readonly pagarme: PagarmeService,
     private readonly walletService: WalletService,
   ) {}
 
@@ -45,172 +59,172 @@ export class WithdrawalsService {
   async requestWithdrawal(userId: string, dto: RequestWithdrawalDto) {
     const { amountInCents } = dto;
 
-    // Regra 1: Valor mínimo de R$50,00
+    // Regra 1: valor mínimo
     if (amountInCents < WITHDRAWAL_MIN_CENTS) {
       throw new BadRequestException(
         `O valor mínimo para saque é R$${WITHDRAWAL_MIN_CENTS / 100},00`,
       );
     }
 
-    // Regra 2: Buscar seller_profile para obter stripeAccountId
+    // Regra 2 + gate (5.2): recebedor Pagar.me apto a sacar
     const [sellerProfile] = await this.db
       .select()
       .from(schema.sellerProfiles)
       .where(eq(schema.sellerProfiles.userId, userId));
 
-    if (!sellerProfile?.stripeAccountId) {
+    if (!sellerProfile?.pagarmeRecipientId) {
       throw new BadRequestException(
-        'Conta Stripe Connect não configurada. Conclua o onboarding primeiro.',
+        'Recebedor Pagar.me não configurado. Conclua o cadastro de recebimentos primeiro.',
+      );
+    }
+    if (!sellerProfile.canWithdraw) {
+      throw new BadRequestException(
+        'Sua conta ainda não está habilitada para saques. Conclua a verificação (prova de vida).',
       );
     }
 
-    // Regra 3: Verificar se a conta Express está habilitada para saques
-    const account = await this.stripeService.stripeClient.accounts.retrieve(
-      sellerProfile.stripeAccountId,
-    );
-
-    if (!account.charges_enabled || !account.payouts_enabled) {
-      throw new BadRequestException(
-        'Sua conta Stripe ainda não está verificada para receber saques.',
-      );
-    }
-
-    // Regra 4: Verificar saldo disponível na wallet
+    // Regra 3: saldo disponível na wallet
     const wallet = await this.walletService.getOrCreateWallet(userId);
-
     if (wallet.balanceInCents < amountInCents) {
       throw new BadRequestException(
         'Saldo disponível insuficiente para este saque.',
       );
     }
 
-    // Executar tudo em transação atômica
-    return this.db.transaction(async (tx: any) => {
-      // Debitar da wallet imediatamente (saldo fica em trânsito)
-      await tx
-        .update(schema.wallets)
-        .set({
-          balanceInCents: wallet.balanceInCents - amountInCents,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.wallets.userId, userId));
-
-      // Registrar a transação no ledger
-      await tx.insert(schema.walletTransactions).values({
-        walletId: wallet.id,
-        type: 'debit',
-        amountInCents,
-        status: 'completed',
-        description: `Saque para Stripe Express`,
-      });
-
-      // Criar o Transfer no Stripe para o seller
-      const transfer = await this.stripeService.stripeClient.transfers.create({
-        amount: amountInCents,
-        currency: 'brl',
-        destination: sellerProfile.stripeAccountId!,
-        description: `Saque Kolecta — ${userId.slice(0, 8)}`,
-        metadata: {
-          userId,
-        },
-      });
-
-      // Registrar o saque no banco como CONCLUÍDO (pois transfer é instantâneo)
-      const [withdrawal] = await tx
-        .insert(schema.withdrawalRequests)
-        .values({
-          userId,
-          amountInCents,
-          status: 'paid',
-          stripePayoutId: transfer.id, // Armazenando o ID do transfer aqui
-          stripeAccountId: sellerProfile.stripeAccountId,
-        })
-        .returning();
-
-      this.logger.log(
-        `✅ Saque ${withdrawal.id} concluído via Transfer Stripe: ${transfer.id} | Seller: ${userId}`,
-      );
-
-      return withdrawal;
-    });
-  }
-
-  // ── Webhook: payout.paid → saque concluído ───────────────────────────────
-
-  @OnEvent('stripe.payout.paid')
-  async handlePayoutPaid(payout: any) {
-    this.logger.log(`Processando payout.paid: ${payout.id}`);
-
-    const [withdrawal] = await this.db
-      .select()
-      .from(schema.withdrawalRequests)
-      .where(eq(schema.withdrawalRequests.stripePayoutId, payout.id));
-
-    if (!withdrawal) {
-      this.logger.warn(
-        `Nenhum saque encontrado para stripePayoutId=${payout.id}`,
-      );
-      return;
-    }
-
-    await this.db
-      .update(schema.withdrawalRequests)
-      .set({ status: 'paid', updatedAt: new Date() })
-      .where(eq(schema.withdrawalRequests.id, withdrawal.id));
-
-    // Marcar a transação no ledger como completed
-    await this.db
-      .update(schema.walletTransactions)
-      .set({ status: 'completed' })
-      .where(eq(schema.walletTransactions.walletId, withdrawal.userId));
-
-    this.logger.log(`✅ Saque ${withdrawal.id} confirmado como PAGO.`);
-  }
-
-  // ── Webhook: payout.failed → reverter saldo ──────────────────────────────
-
-  @OnEvent('stripe.payout.failed')
-  async handlePayoutFailed(payout: any) {
-    this.logger.error(`Processando payout.failed: ${payout.id}`);
-
-    const [withdrawal] = await this.db
-      .select()
-      .from(schema.withdrawalRequests)
-      .where(eq(schema.withdrawalRequests.stripePayoutId, payout.id));
-
-    if (!withdrawal) {
-      this.logger.warn(
-        `Nenhum saque encontrado para stripePayoutId=${payout.id}`,
-      );
-      return;
-    }
-
-    // Reverter o débito na wallet
-    const wallet = await this.walletService.getOrCreateWallet(
-      withdrawal.userId,
+    // Debita o disponível imediatamente (fica "em trânsito"); reversão em falha.
+    await this.walletService.debit(
+      wallet.id,
+      amountInCents,
+      'Saque para conta bancária (Pagar.me)',
     );
 
-    await this.db.transaction(async (tx: any) => {
-      await tx
-        .update(schema.wallets)
-        .set({
-          balanceInCents: wallet.balanceInCents + withdrawal.amountInCents,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.wallets.userId, withdrawal.userId));
+    // Registra o saque como PROCESSING antes de chamar o gateway (idempotência
+    // estável por linha + rastreabilidade caso o POST caia).
+    const [withdrawal] = await this.db
+      .insert(schema.withdrawalRequests)
+      .values({
+        userId,
+        amountInCents,
+        status: 'processing',
+        pagarmeRecipientId: sellerProfile.pagarmeRecipientId,
+      })
+      .returning();
 
-      await tx
+    try {
+      // NOTA (ponta P-transfer): confirmar em sandbox o endpoint/params exatos
+      // do saque recebedor→banco na Pagar.me v5 (`POST /transfers` vs
+      // `POST /recipients/{id}/withdrawals`). Ajustar se o E2E acusar.
+      const transfer = await this.pagarme.post<PagarmeTransfer>(
+        '/transfers',
+        {
+          amount: amountInCents,
+          recipient_id: sellerProfile.pagarmeRecipientId,
+          metadata: { userId, withdrawalId: withdrawal.id },
+        },
+        `withdrawal-${withdrawal.id}`, // Idempotency-Key
+      );
+
+      await this.db
+        .update(schema.withdrawalRequests)
+        .set({ pagarmeTransferId: transfer.id, updatedAt: new Date() })
+        .where(eq(schema.withdrawalRequests.id, withdrawal.id));
+
+      this.logger.log(
+        `💸 Saque ${withdrawal.id} criado (transfer ${transfer.id}, status ${transfer.status ?? 'processing'}) — seller ${userId}`,
+      );
+
+      return { ...withdrawal, pagarmeTransferId: transfer.id };
+    } catch (err: any) {
+      // Falha ao criar o transfer → estorna o débito e marca o saque como failed.
+      await this.walletService.credit(
+        wallet.id,
+        amountInCents,
+        `Estorno — falha ao criar saque #${withdrawal.id.slice(0, 8)}`,
+      );
+      await this.db
         .update(schema.withdrawalRequests)
         .set({
           status: 'failed',
-          failureReason: payout.failure_message ?? undefined,
+          failureReason: 'Falha ao criar transfer na Pagar.me',
           updatedAt: new Date(),
         })
         .where(eq(schema.withdrawalRequests.id, withdrawal.id));
-    });
 
-    this.logger.error(
-      `❌ Saque ${withdrawal.id} FALHOU. Saldo revertido para o seller ${withdrawal.userId}.`,
+      this.logger.error(
+        `❌ Saque ${withdrawal.id} falhou na criação do transfer. Saldo estornado. ${err?.message ?? ''}`,
+      );
+      throw new BadGatewayException(
+        'Não foi possível processar o saque agora. O saldo foi mantido.',
+      );
+    }
+  }
+
+  // ── Webhook: transfer.* → conclui ou reverte o saque ──────────────────────
+
+  /**
+   * Emitido pelo webhook unificado para qualquer `transfer.*`. O `data` é o
+   * objeto transfer da Pagar.me; o `status` define o desfecho. Idempotente.
+   */
+  @OnEvent('pagarme.transfer.updated')
+  async handleTransferUpdated(data: any) {
+    const transferId = data?.id;
+    const status = data?.status;
+    if (!transferId) {
+      this.logger.warn('transfer.* sem id no payload — ignorado.');
+      return;
+    }
+
+    const [withdrawal] = await this.db
+      .select()
+      .from(schema.withdrawalRequests)
+      .where(eq(schema.withdrawalRequests.pagarmeTransferId, transferId));
+
+    if (!withdrawal) {
+      this.logger.warn(`Nenhum saque para pagarmeTransferId=${transferId}.`);
+      return;
+    }
+
+    // Estado terminal já processado → idempotência.
+    if (withdrawal.status === 'paid' || withdrawal.status === 'failed') {
+      return;
+    }
+
+    if (status === 'paid') {
+      await this.db
+        .update(schema.withdrawalRequests)
+        .set({ status: 'paid', updatedAt: new Date() })
+        .where(eq(schema.withdrawalRequests.id, withdrawal.id));
+      this.logger.log(`✅ Saque ${withdrawal.id} PAGO (transfer ${transferId}).`);
+      return;
+    }
+
+    if (status === 'failed' || status === 'canceled') {
+      // Reverte o saldo (o transfer não saiu).
+      const wallet = await this.walletService.getOrCreateWallet(
+        withdrawal.userId,
+      );
+      await this.walletService.credit(
+        wallet.id,
+        withdrawal.amountInCents,
+        `Estorno — saque não concluído #${withdrawal.id.slice(0, 8)}`,
+      );
+      await this.db
+        .update(schema.withdrawalRequests)
+        .set({
+          status: 'failed',
+          failureReason: data?.status_reason ?? `transfer ${status}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.withdrawalRequests.id, withdrawal.id));
+      this.logger.error(
+        `❌ Saque ${withdrawal.id} ${status}. Saldo estornado para ${withdrawal.userId}.`,
+      );
+      return;
+    }
+
+    // pending/processing/created → segue em 'processing' (sem ação).
+    this.logger.log(
+      `Saque ${withdrawal.id}: transfer ${transferId} em '${status}'.`,
     );
   }
 }

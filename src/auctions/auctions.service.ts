@@ -177,21 +177,34 @@ export class AuctionsService {
       );
     }
 
-    return this.db.transaction(async (tx: any) => {
-      // Registra o lance
-      const [bid] = await tx
+    // ── Gate de saldo (Fase 6): lance exige saldo DISPONÍVEL na wallet ──
+    // Se o bidder já é o vencedor atual, o hold atual dele conta a favor (ao
+    // subir o próprio lance, o hold antigo é destravado antes de travar o novo).
+    const bidderPrevHold =
+      auction.currentWinnerId === bidderId
+        ? auction.currentBidInCents ?? 0
+        : 0;
+    const bidderWalletPre = await this.walletService.getOrCreateWallet(bidderId);
+    if (bidderWalletPre.balanceInCents + bidderPrevHold < dto.amountInCents) {
+      throw new BadRequestException(
+        'Saldo disponível insuficiente para este lance. Deposite para participar.',
+      );
+    }
+
+    // Vencedor anterior (será superado) — capturado da leitura acima. A guarda
+    // de concorrência no UPDATE garante a monotonicidade do valor; em corridas
+    // raras o prev pode ser levemente defasado (ver nota de reconciliação).
+    const prevWinnerId = auction.currentWinnerId;
+    const prevAmount = auction.currentBidInCents;
+
+    const bid = await this.db.transaction(async (tx: any) => {
+      const [newBid] = await tx
         .insert(schema.bids)
-        .values({
-          auctionId,
-          bidderId,
-          amountInCents: dto.amountInCents,
-        })
+        .values({ auctionId, bidderId, amountInCents: dto.amountInCents })
         .returning();
 
-      // Atualiza o leilão com o novo lance atual
+      // Anti-sniper: lance nos últimos 5 min estende o leilão em 5 min.
       let newEndsAt = auction.endsAt;
-
-      // Anti-sniper: se o lance for nos últimos 5 minutos, estende por 5 min
       if (
         auction.antiSniper &&
         auction.endsAt &&
@@ -201,9 +214,7 @@ export class AuctionsService {
         this.logger.log(`Anti-sniper ativado: leilão ${auctionId} estendido.`);
       }
 
-      // Guarda de concorrência: só vence quem supera o lance atual. A condição
-      // `current < novo` (ou ainda nulo) impede que dois lances quase simultâneos
-      // façam o menor sobrescrever o maior (o pré-check acima leu fora da tx).
+      // Guarda de concorrência: só vence quem supera o lance atual.
       const updated = await tx
         .update(schema.auctions)
         .set({
@@ -230,8 +241,45 @@ export class AuctionsService {
         );
       }
 
-      return bid;
+      // Marca o lance vencedor anterior como superado (status do ciclo).
+      if (prevWinnerId) {
+        await tx
+          .update(schema.bids)
+          .set({ status: 'outbid' })
+          .where(
+            and(
+              eq(schema.bids.auctionId, auctionId),
+              eq(schema.bids.bidderId, prevWinnerId),
+              eq(schema.bids.status, 'active'),
+            ),
+          );
+      }
+
+      return newBid;
     });
+
+    // ── Ajuste dos holds (fora da tx — padrão do WalletService) ──
+    // NOTA: o hold é ajustado após o commit do lance; a checagem de saldo acima
+    // torna a falha improvável. Se algum ajuste falhar, o lance permanece e o
+    // desajuste do hold precisa de reconciliação (raro; ver plano Fase 6).
+    // Destrava o hold do lance anterior (superado) — inclui o próprio bidder
+    // quando ele sobe o próprio lance.
+    if (prevWinnerId && prevAmount && prevAmount > 0) {
+      const prevWallet = await this.walletService.getOrCreateWallet(prevWinnerId);
+      await this.walletService.releaseBidHold(prevWallet.id, prevAmount, {
+        auctionId,
+        description: `Lance superado — leilão ${auctionId.slice(0, 8)}`,
+      });
+    }
+    // Trava o valor do novo lance vencedor.
+    const bidderWallet = await this.walletService.getOrCreateWallet(bidderId);
+    await this.walletService.holdForBid(bidderWallet.id, dto.amountInCents, {
+      auctionId,
+      bidId: bid.id,
+      description: `Hold de lance — leilão ${auctionId.slice(0, 8)}`,
+    });
+
+    return bid;
   }
 
   // ── Meus lances (comprador) — melhor lance por leilão ────────────────────
@@ -337,55 +385,131 @@ export class AuctionsService {
       ? await this.founderService.resolveCommissionPercent(listing.sellerId)
       : parseInt(process.env.PLATFORM_FEE_PERCENT ?? '11', 10);
 
-    await this.db.transaction(async (tx: any) => {
+    const hasWinner = !!auction.currentWinnerId && !!auction.currentBidInCents;
+    const reserveMet =
+      !auction.reservePriceInCents ||
+      (auction.currentBidInCents ?? 0) >= auction.reservePriceInCents;
+
+    // ── Sem venda: encerra e destrava o hold do (eventual) arrematante ──
+    if (!hasWinner || !reserveMet) {
+      await this.db
+        .update(schema.auctions)
+        .set({ status: 'ended', updatedAt: new Date() })
+        .where(eq(schema.auctions.id, auction.id));
+
+      if (hasWinner) {
+        // Reserva não atingida → devolve o valor travado ao arrematante.
+        const w = await this.walletService.getOrCreateWallet(
+          auction.currentWinnerId!,
+        );
+        await this.walletService.releaseBidHold(w.id, auction.currentBidInCents!, {
+          auctionId: auction.id,
+          description: `Leilão ${auction.id.slice(0, 8)} sem venda (reserva) — hold liberado`,
+        });
+        await this.db
+          .update(schema.bids)
+          .set({ status: 'released' })
+          .where(
+            and(
+              eq(schema.bids.auctionId, auction.id),
+              eq(schema.bids.status, 'active'),
+            ),
+          );
+        this.logger.log(
+          `Leilão ${auction.id} encerrado sem venda (reserva não atingida). Hold liberado.`,
+        );
+      } else {
+        this.logger.log(`Leilão ${auction.id} encerrado sem vencedor.`);
+      }
+      return;
+    }
+
+    // ── Venda: cria pedido PAGO, liquidado do hold do vencedor ──
+    const totalInCents = auction.currentBidInCents!;
+    const platformFeeInCents = Math.round(
+      (totalInCents * platformFeePercent) / 100,
+    );
+    // Arremate é pago com SALDO (hold da wallet) — sem cobrança de gateway,
+    // logo sem taxa de gateway (corrige o antigo 4% hardcoded, bug B4).
+    const sellerNetInCents = totalInCents - platformFeeInCents;
+
+    const orderId: string = await this.db.transaction(async (tx: any) => {
       await tx
         .update(schema.auctions)
         .set({ status: 'ended', updatedAt: new Date() })
         .where(eq(schema.auctions.id, auction.id));
 
-      // Sem lances ou sem vencedor → listing volta a ficar ativo
-      if (!auction.currentWinnerId || !auction.currentBidInCents) {
-        this.logger.log(`Leilão ${auction.id} encerrado sem vencedor.`);
-        return;
-      }
+      const [order] = await tx
+        .insert(schema.orders)
+        .values({
+          buyerId: auction.currentWinnerId!,
+          sellerId: listing!.sellerId,
+          listingId: auction.listingId,
+          totalInCents,
+          sellerNetInCents,
+          platformFeeInCents,
+          gatewayFeeInCents: 0,
+          status: 'paid',
+          paymentMethod: 'wallet',
+          walletAmountInCents: totalInCents,
+          externalAmountInCents: 0,
+        })
+        .returning();
 
-      // Reserve price não atingida → sem venda
-      if (
-        auction.reservePriceInCents &&
-        auction.currentBidInCents < auction.reservePriceInCents
-      ) {
-        this.logger.log(
-          `Leilão ${auction.id} encerrado. Reserva não atingida (${auction.currentBidInCents} < ${auction.reservePriceInCents}).`,
-        );
-        return;
-      }
-
-      const totalInCents = auction.currentBidInCents;
-      const platformFeeInCents = Math.round(totalInCents * platformFeePercent / 100);
-      const stripeFeeInCents = Math.round(totalInCents * 0.04);
-      const sellerNetInCents = totalInCents - platformFeeInCents - stripeFeeInCents;
-
-      // Cria o pedido para o vencedor pagar
-      await tx.insert(schema.orders).values({
-        buyerId: auction.currentWinnerId,
-        sellerId: listing!.sellerId,
-        listingId: auction.listingId,
-        totalInCents,
-        sellerNetInCents,
-        platformFeeInCents,
-        stripeFeeInCents,
-        status: 'pending',
-      });
-
-      // Marca o anúncio como vendido
       await tx
         .update(schema.listings)
         .set({ status: 'sold' })
         .where(eq(schema.listings.id, auction.listingId));
 
-      this.logger.log(
-        `Leilão ${auction.id} encerrado. Vencedor: ${auction.currentWinnerId} — R$${(totalInCents / 100).toFixed(2)}`,
-      );
+      await tx
+        .update(schema.bids)
+        .set({ status: 'won' })
+        .where(
+          and(
+            eq(schema.bids.auctionId, auction.id),
+            eq(schema.bids.bidderId, auction.currentWinnerId!),
+            eq(schema.bids.status, 'active'),
+          ),
+        );
+
+      return order.id as string;
     });
+
+    // Liquida o hold do vencedor (débito efetivo) e retém o líquido do vendedor.
+    // Se o hold não existir (leilão anterior ao recurso), volta o pedido p/
+    // 'pending' e loga — pagamento então segue pelo checkout normal.
+    try {
+      const winnerWallet = await this.walletService.getOrCreateWallet(
+        auction.currentWinnerId!,
+      );
+      await this.walletService.settleBidHold(winnerWallet.id, totalInCents, {
+        auctionId: auction.id,
+        orderId,
+        description: `Arremate leilão ${auction.id.slice(0, 8)}`,
+      });
+
+      const sellerWallet = await this.walletService.getOrCreateWallet(
+        listing!.sellerId,
+      );
+      await this.walletService.hold(
+        sellerWallet.id,
+        sellerNetInCents,
+        `Venda por leilão #${orderId.slice(0, 8)} — líquido retido`,
+        orderId,
+      );
+
+      this.logger.log(
+        `Leilão ${auction.id} arrematado: ${auction.currentWinnerId} — R$${(totalInCents / 100).toFixed(2)} (líquido ${sellerNetInCents / 100}).`,
+      );
+    } catch (err: any) {
+      await this.db
+        .update(schema.orders)
+        .set({ status: 'pending' })
+        .where(eq(schema.orders.id, orderId));
+      this.logger.error(
+        `⚠️ Leilão ${auction.id}: falha ao liquidar hold do vencedor (${err?.message}). ` +
+          `Pedido ${orderId} → 'pending' p/ pagamento manual.`,
+      );
+    }
   }
 }

@@ -299,6 +299,8 @@ export const bids = sqliteTable('bids', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   amountInCents: integer('amount_in_cents').notNull(),
+  // Ciclo do lance p/ hold de saldo (Fase 6): active | outbid | won | lost | released
+  status: text('status').notNull().default('active'),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -351,8 +353,13 @@ export const orders = sqliteTable('orders', {
   // Valor total em centavos
   totalInCents: integer('total_in_cents').notNull(),
 
-  // ID da sessão / payment intent do Stripe
+  // ID da sessão / payment intent do Stripe (legado — migrando p/ Pagar.me)
   stripePaymentId: text('stripe_payment_id'),
+
+  // ── Pagar.me (split nativo — docs/PLAN-wallet-split.md, Fase 1) ──
+  // Aditivo: convive com stripePaymentId até o cleanup (Fase 7).
+  pagarmeOrderId: text('pagarme_order_id'),
+  pagarmeChargeId: text('pagarme_charge_id'),
 
   // pending | paid | shipped | delivered | cancelled | refunded
   status: text('status').notNull().default('pending'),
@@ -365,8 +372,11 @@ export const orders = sqliteTable('orders', {
   sellerNetInCents: integer('seller_net_in_cents'),
   // Taxa da plataforma Kolecta em centavos
   platformFeeInCents: integer('platform_fee_in_cents'),
-  // Taxa do Stripe em centavos (estimada)
+  // Taxa do Stripe em centavos (estimada) — legado
   stripeFeeInCents: integer('stripe_fee_in_cents'),
+  // Taxa REAL do gateway (lida do charge da Pagar.me) — sucessora de stripeFeeInCents,
+  // mata o GATEWAY_FEE_PERCENT hardcoded (bug B4). Preenchida na Fase 2.
+  gatewayFeeInCents: integer('gateway_fee_in_cents'),
 
   // ── Controle de pagamento (para híbrido) ──
   walletAmountInCents: integer('wallet_amount_in_cents').default(0),
@@ -375,7 +385,10 @@ export const orders = sqliteTable('orders', {
   paymentMethod: text('payment_method'),
 
   // ── Controle de Entrega e Liberação ──
+  // deliveredAt = marcado pelo vendedor (legado); meDeliveredAt = status "entregue"
+  // do rastreio Melhor Envio (fonte da verdade da retenção — Fase 4).
   deliveredAt: integer('delivered_at', { mode: 'timestamp' }),
+  meDeliveredAt: integer('me_delivered_at', { mode: 'timestamp' }),
   buyerConfirmedAt: integer('buyer_confirmed_at', { mode: 'timestamp' }),
   autoReleaseAt: integer('auto_release_at', { mode: 'timestamp' }),
   completedAt: integer('completed_at', { mode: 'timestamp' }),
@@ -540,6 +553,9 @@ export const walletTransactions = sqliteTable('wallet_transactions', {
 
   // Metadados
   orderId: text('order_id').references(() => orders.id),
+  // Vínculo do hold de lance (type = bid_hold | bid_release) — Fase 6
+  auctionId: text('auction_id').references(() => auctions.id),
+  bidId: text('bid_id').references(() => bids.id),
   stripeEventId: text('stripe_event_id'),
   description: text('description'),
 
@@ -553,6 +569,9 @@ export const webhookEvents = sqliteTable('webhook_events', {
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
   stripeEventId: text('stripe_event_id').notNull().unique(),
+  // Idempotência genérica por provedor (Pagar.me e futuros). Hoje o webhook
+  // Pagar.me ainda grava o id do evento em stripeEventId; migrar p/ cá na Fase 2.
+  providerEventId: text('provider_event_id').unique(),
   type: text('type').notNull(), // ex: checkout.session.completed
   status: text('status').notNull().default('pending'), // pending | processed | failed
   errorMessage: text('error_message'),
@@ -575,9 +594,13 @@ export const withdrawalRequests = sqliteTable('withdrawal_requests', {
   // requested | processing | paid | failed | cancelled
   status: text('status').notNull().default('requested'),
 
-  // IDs do Stripe para rastreabilidade
+  // IDs do Stripe para rastreabilidade (legado)
   stripePayoutId: text('stripe_payout_id'),
   stripeAccountId: text('stripe_account_id'),
+
+  // Pagar.me — saque via /transfers (Fase 5)
+  pagarmeTransferId: text('pagarme_transfer_id'),
+  pagarmeRecipientId: text('pagarme_recipient_id'),
 
   // Motivo de falha (se status = failed)
   failureReason: text('failure_reason'),

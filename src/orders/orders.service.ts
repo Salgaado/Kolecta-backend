@@ -13,7 +13,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, and } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
 import { PagarmeService } from '../pagarme/pagarme.service';
@@ -30,8 +30,65 @@ const GATEWAY_FEE_PERCENT = parseFloat(
   process.env.PAGARME_GATEWAY_FEE_PERCENT ?? '0',
 );
 
+/**
+ * Recebedor da plataforma (Kolecta) na Pagar.me — destino da comissão no split.
+ * Sem ele configurado, o split é PULADO (fallback legado: a cobrança cai 100%
+ * na conta principal e a divisão fica só no ledger da wallet). Ver
+ * docs/PLAN-wallet-split.md (Fase 2).
+ */
+const PLATFORM_RECIPIENT_ID = process.env.PAGARME_PLATFORM_RECIPIENT_ID ?? '';
+
 /** Validade do QR Code PIX da compra, em segundos (1h). */
 const PIX_EXPIRES_IN_SECONDS = 3600;
+
+/** Uma entrada de split do POST /orders da Pagar.me. */
+interface PagarmeSplit {
+  recipient_id: string;
+  amount: number;
+  type: 'flat';
+  options: {
+    liable: boolean;
+    charge_processing_fee: boolean;
+    charge_remainder: boolean;
+  };
+}
+
+/**
+ * Monta o `split[]` de uma cobrança: líquido pro recebedor do vendedor +
+ * comissão pro recebedor da plataforma. Soma == valor da cobrança.
+ * - Vendedor: `liable` (responde por chargeback) e `charge_processing_fee`
+ *   (absorve a taxa do gateway) — default do plano (§3).
+ * - Plataforma: `charge_remainder` (absorve arredondamento).
+ */
+function buildSplit(
+  sellerRecipientId: string,
+  chargeAmount: number,
+  platformFeeInCents: number,
+): PagarmeSplit[] {
+  const sellerAmount = chargeAmount - platformFeeInCents;
+  return [
+    {
+      recipient_id: sellerRecipientId,
+      amount: sellerAmount,
+      type: 'flat',
+      options: {
+        liable: true,
+        charge_processing_fee: true,
+        charge_remainder: false,
+      },
+    },
+    {
+      recipient_id: PLATFORM_RECIPIENT_ID,
+      amount: platformFeeInCents,
+      type: 'flat',
+      options: {
+        liable: false,
+        charge_processing_fee: false,
+        charge_remainder: true,
+      },
+    },
+  ];
+}
 
 @Injectable()
 export class OrdersService {
@@ -179,6 +236,30 @@ export class OrdersService {
     const paymentMethod =
       chargeAmount <= 0 ? 'wallet' : walletDeducted > 0 ? 'hybrid' : 'external';
 
+    // ── Gate B5: venda externa exige recebedor APTO do vendedor ──
+    // Se há valor a cobrar via gateway (external/híbrido), o líquido precisa cair
+    // no recebedor Pagar.me do vendedor via split. Sem recebedor `active`, não há
+    // pra onde splitar → bloquear a venda antes de criar o pedido (evita saldo
+    // órfão). Checado aqui pois nada foi mutado ainda.
+    let sellerRecipientId: string | null = null;
+    if (chargeAmount > 0) {
+      const [sellerProfile] = await this.db
+        .select({
+          recipientId: schema.sellerProfiles.pagarmeRecipientId,
+          canReceive: schema.sellerProfiles.canReceive,
+        })
+        .from(schema.sellerProfiles)
+        .where(eq(schema.sellerProfiles.userId, listing.sellerId));
+
+      if (!sellerProfile?.canReceive || !sellerProfile.recipientId) {
+        throw new BadRequestException(
+          'Este vendedor ainda não está apto a receber pagamentos. ' +
+            'Tente novamente mais tarde.',
+        );
+      }
+      sellerRecipientId = sellerProfile.recipientId;
+    }
+
     // Transação atômica: bloqueia o listing + cria o pedido
     const order = await this.db.transaction(async (tx) => {
       await tx
@@ -270,6 +351,28 @@ export class OrdersService {
     const areaCode = phoneDigits.slice(0, 2);
     const phoneNumber = phoneDigits.slice(2);
 
+    // ── Split nativo (Fase 2) ──
+    // Só na cobrança PIX PURA (sem parcela de wallet). Híbrido → Fase 3.
+    // Sem recebedor da plataforma configurado, pula o split (fluxo legado).
+    let split: PagarmeSplit[] | undefined;
+    if (walletDeducted === 0 && sellerRecipientId && PLATFORM_RECIPIENT_ID) {
+      const commissionPct = await this.founderService.resolveCommissionPercent(
+        listing.sellerId,
+      );
+      const platformFeeInCents = Math.round(
+        (chargeAmount * commissionPct) / 100,
+      );
+      split = buildSplit(sellerRecipientId, chargeAmount, platformFeeInCents);
+      this.logger.log(
+        `Split pedido ${order.id}: vendedor ${(chargeAmount - platformFeeInCents) / 100} / ` +
+          `plataforma ${platformFeeInCents / 100} BRL (comissão ${commissionPct}%)`,
+      );
+    } else if (walletDeducted === 0 && sellerRecipientId && !PLATFORM_RECIPIENT_ID) {
+      this.logger.warn(
+        `Split pulado (PAGARME_PLATFORM_RECIPIENT_ID ausente) — pedido ${order.id} no fluxo legado.`,
+      );
+    }
+
     // Cria a cobrança PIX na Pagar.me para o valor restante
     const pixOrder = await this.pagarme.post<PagarmeOrderResponse>(
       '/orders',
@@ -300,6 +403,7 @@ export class OrdersService {
           {
             payment_method: 'pix',
             pix: { expires_in: PIX_EXPIRES_IN_SECONDS },
+            ...(split ? { split } : {}),
           },
         ],
         metadata: {
@@ -348,11 +452,15 @@ export class OrdersService {
       );
     }
 
-    // Persiste o id do pedido Pagar.me (coluna stripePaymentId reaproveitada até
-    // a renomeação da Fase 2 → pagarme_order_id).
+    // Persiste os ids da Pagar.me nas colunas dedicadas (Fase 1). Mantém
+    // stripePaymentId como espelho legado até o cleanup (Fase 7).
     await this.db
       .update(schema.orders)
-      .set({ stripePaymentId: pixOrder.id })
+      .set({
+        pagarmeOrderId: pixOrder.id,
+        pagarmeChargeId: charge?.id ?? null,
+        stripePaymentId: pixOrder.id,
+      })
       .where(eq(schema.orders.id, order.id));
 
     this.logger.log(
@@ -541,7 +649,10 @@ export class OrdersService {
     this.logger.log(
       `Processando order.paid da Pagar.me: pedido ${orderId} (pagarme ${data?.id})`,
     );
-    await this.confirmOrderPayment(orderId, data?.id ?? 'pagarme');
+    const charge = data?.charges?.[0];
+    await this.confirmOrderPayment(orderId, data?.id ?? 'pagarme', {
+      pagarmeChargeId: charge?.id,
+    });
   }
 
   /**
@@ -604,9 +715,76 @@ export class OrdersService {
     );
   }
 
+  /**
+   * Chargeback recebido (Fase 4.5). Abre uma disputa de sistema no pedido — o
+   * `ReleaseBalanceCron` então CONGELA o auto-release enquanto ela estiver
+   * aberta. Idempotente: não duplica disputa aberta para o mesmo pedido.
+   * O estorno/decisão de liability roda na resolução da disputa.
+   */
+  @OnEvent('pagarme.charge.chargedback')
+  async handlePagarmeChargeback(data: any) {
+    // O orderId pode vir em metadata do charge ou do order aninhado (best-effort).
+    const orderId =
+      data?.metadata?.orderId ??
+      data?.order?.metadata?.orderId ??
+      data?.charge?.order?.metadata?.orderId;
+
+    if (!orderId) {
+      this.logger.warn(
+        `chargeback.received (${data?.id}) sem orderId no metadata. Ignorando.`,
+      );
+      return;
+    }
+
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+    if (!order) {
+      this.logger.warn(`chargeback: pedido ${orderId} não encontrado.`);
+      return;
+    }
+
+    // Idempotência: já existe disputa aberta para o pedido?
+    const [existing] = await this.db
+      .select({ id: schema.disputes.id })
+      .from(schema.disputes)
+      .where(
+        and(
+          eq(schema.disputes.orderId, orderId),
+          inArray(schema.disputes.status, ['open', 'under_review']),
+        ),
+      );
+    if (existing) {
+      this.logger.warn(
+        `chargeback: pedido ${orderId} já tem disputa aberta (${existing.id}).`,
+      );
+      return;
+    }
+
+    await this.db.insert(schema.disputes).values({
+      orderId,
+      // Parte "prejudicada" = comprador cujo banco abriu o chargeback.
+      reporterId: order.buyerId,
+      reason: 'chargeback',
+      description:
+        'Disputa aberta automaticamente por chargeback recebido na Pagar.me. ' +
+        'Release do saldo do vendedor congelado até a resolução.',
+      status: 'open',
+    });
+
+    this.logger.warn(
+      `⚠️ Chargeback no pedido ${orderId}: disputa de sistema aberta; release congelado.`,
+    );
+  }
+
   // ── Shared order confirmation logic ───────────────────────────────────────
 
-  private async confirmOrderPayment(orderId: string, providerPaymentId: string) {
+  private async confirmOrderPayment(
+    orderId: string,
+    providerPaymentId: string,
+    opts?: { pagarmeChargeId?: string },
+  ) {
     const [order] = await this.db
       .select()
       .from(schema.orders)
@@ -642,13 +820,19 @@ export class OrdersService {
         .update(schema.orders)
         .set({
           status: 'paid',
-          // Coluna stripePaymentId reaproveitada p/ o id do provedor (Pagar.me)
-          // até a renomeação da Fase 2 → pagarme_order_id.
+          // stripePaymentId mantido como espelho legado do id do provedor.
           stripePaymentId: providerPaymentId,
+          ...(opts?.pagarmeChargeId
+            ? { pagarmeChargeId: opts.pagarmeChargeId }
+            : {}),
           sellerNetInCents,
           platformFeeInCents,
-          // Coluna stripeFeeInCents reaproveitada p/ a taxa de gateway
-          // (renomear p/ gateway_fee_in_cents na Fase 2).
+          // Grava na coluna dedicada (Fase 1) + espelho legado stripeFeeInCents.
+          // NOTA (ponta P-fee): com split nativo + charge_processing_fee no
+          // vendedor, a taxa REAL é descontada pela Pagar.me; hoje usamos o
+          // GATEWAY_FEE_PERCENT (env, default 0). Reconciliar com a fee real
+          // exige a API de balance_operations (fora do webhook order.paid).
+          gatewayFeeInCents,
           stripeFeeInCents: gatewayFeeInCents,
         })
         .where(eq(schema.orders.id, orderId));
@@ -751,29 +935,33 @@ export class OrdersService {
     }
 
     const now = new Date();
-    const sellerNetInCents = order.sellerNetInCents || order.totalInCents;
+    const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
-    // Liberar saldo retido do vendedor → saldo disponível
-    const sellerWallet = await this.walletService.getOrCreateWallet(order.sellerId);
-    await this.walletService.release(
-      sellerWallet.id,
-      sellerNetInCents,
-      `Liberação — Comprador confirmou recebimento (Pedido #${order.id.slice(0, 8)})`,
-      order.id,
-    );
+    // P5 (decidido 21/07): a confirmação do comprador NÃO libera na hora —
+    // abre uma janela de 48h (proteção contra disputa/arrependimento). O
+    // release efetivo (held → available) fica com o ReleaseBalanceCron quando
+    // auto_release_at vencer E não houver disputa aberta.
+    // "O que vier primeiro": mantém o auto_release_at mais cedo entre o já
+    // existente (ex.: entrega marcada) e agora+48h.
+    const autoReleaseAt =
+      order.autoReleaseAt && order.autoReleaseAt < in48h
+        ? order.autoReleaseAt
+        : in48h;
 
     const [updated] = await this.db
       .update(schema.orders)
       .set({
-        status: 'completed',
+        // 'delivered' faz o cron eleger o pedido para release quando vencer.
+        status: 'delivered',
         buyerConfirmedAt: now,
-        completedAt: now,
+        autoReleaseAt,
       })
       .where(eq(schema.orders.id, orderId))
       .returning();
 
     this.logger.log(
-      `✅ Pedido ${orderId} completado. Saldo de ${sellerNetInCents / 100} BRL liberado para o vendedor ${order.sellerId}`,
+      `✅ Pedido ${orderId}: comprador confirmou recebimento. ` +
+        `Release automático em ${autoReleaseAt.toISOString()} (janela 48h, salvo disputa).`,
     );
 
     return updated;

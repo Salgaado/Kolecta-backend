@@ -10,9 +10,23 @@ import {
   ConflictException,
 } from '@nestjs/common';
 
+const mockWallet = {
+  id: 'wallet_bidder',
+  userId: 'buyer_001',
+  balanceInCents: 1_000_000, // saldo alto p/ passar no gate de lance
+  pendingInCents: 0,
+};
+
 const mockWalletService = {
-  creditSeller: jest.fn(),
-  holdBalance: jest.fn(),
+  getOrCreateWallet: jest.fn().mockResolvedValue(mockWallet),
+  holdForBid: jest.fn().mockResolvedValue({ success: true }),
+  releaseBidHold: jest.fn().mockResolvedValue({ success: true }),
+  settleBidHold: jest.fn().mockResolvedValue({ success: true }),
+  hold: jest.fn().mockResolvedValue({ success: true }),
+};
+
+const mockFounderService = {
+  resolveCommissionPercent: jest.fn().mockResolvedValue(11),
 };
 
 const sellerId = 'seller_001';
@@ -95,15 +109,22 @@ describe('AuctionsService', () => {
         AuctionsService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
         { provide: WalletService, useValue: mockWalletService },
-        {
-          provide: FounderService,
-          useValue: { resolveCommissionPercent: jest.fn().mockResolvedValue(11) },
-        },
+        { provide: FounderService, useValue: mockFounderService },
       ],
     }).compile();
 
     return module.get<AuctionsService>(AuctionsService);
   };
+
+  beforeEach(() => {
+    // Restaura defaults dos mocks compartilhados (evita vazamento de *Once).
+    mockWalletService.getOrCreateWallet.mockReset().mockResolvedValue(mockWallet);
+    mockWalletService.holdForBid.mockReset().mockResolvedValue({ success: true });
+    mockWalletService.releaseBidHold.mockReset().mockResolvedValue({ success: true });
+    mockWalletService.settleBidHold.mockReset().mockResolvedValue({ success: true });
+    mockWalletService.hold.mockReset().mockResolvedValue({ success: true });
+    mockFounderService.resolveCommissionPercent.mockReset().mockResolvedValue(11);
+  });
 
   // ── findById ─────────────────────────────────────────────────────────────
 
@@ -326,12 +347,12 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([{ id: sellerId, role: 'user' }]); // requester é o seller
       service = await buildModule();
 
-      // _closeAuction usa transaction — mockDb.transaction já está configurado
+      // Leilão sem vencedor → _closeAuction encerra via db.update (sem tx).
       await expect(
         service.endAuction(mockAuctionId, sellerId),
       ).resolves.not.toThrow();
 
-      expect(mockDb.transaction).toHaveBeenCalled();
+      expect(mockDb.update).toHaveBeenCalled();
     });
 
     it('deve encerrar o leilão quando o requester é admin', async () => {
@@ -346,7 +367,7 @@ describe('AuctionsService', () => {
         service.endAuction(mockAuctionId, 'admin_user'),
       ).resolves.not.toThrow();
 
-      expect(mockDb.transaction).toHaveBeenCalled();
+      expect(mockDb.update).toHaveBeenCalled();
     });
   });
 
@@ -391,22 +412,13 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([mockListing])  // listing para o primeiro
         .mockResolvedValueOnce([mockListing]); // listing para o segundo
 
-      // Faz a transaction falhar apenas na primeira chamada
-      let txCallCount = 0;
-      mockDb.transaction = jest.fn().mockImplementation(async (fn: any) => {
-        txCallCount++;
-        if (txCallCount === 1) throw new Error('Falha simulada');
-        const tx: any = {};
-        tx.update = jest.fn().mockReturnValue(tx);
-        tx.set = jest.fn().mockReturnValue(tx);
-        tx.where = jest.fn().mockResolvedValue(undefined);
-        tx.insert = jest.fn().mockReturnValue(tx);
-        tx.values = jest.fn().mockReturnValue(tx);
-        tx.returning = jest.fn().mockResolvedValue([]);
-        return fn(tx);
-      });
-
       service = await buildModule();
+      // Falha só no fechamento do 1º leilão (resolveCommissionPercent é o
+      // primeiro await de _closeAuction) → deve ser capturada e seguir p/ o 2º.
+      mockFounderService.resolveCommissionPercent
+        .mockReset()
+        .mockRejectedValueOnce(new Error('Falha simulada'))
+        .mockResolvedValue(11);
 
       const result = await service.endExpiredAuctions();
 

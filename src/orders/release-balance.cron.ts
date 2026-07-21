@@ -2,7 +2,7 @@ import { Injectable, Inject, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { WalletService } from '../wallet/wallet.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
-import { eq, lte, and } from 'drizzle-orm';
+import { eq, lte, and, inArray } from 'drizzle-orm';
 import * as schema from '../database/schema';
 
 type Database = any;
@@ -50,6 +50,26 @@ export class ReleaseBalanceCron {
 
     for (const order of ordersToRelease) {
       try {
+        // ── Gate de disputa (Fase 4.3) ──
+        // Disputa aberta CONGELA o release: o dinheiro fica retido até a
+        // resolução (a disputa define o destino — estorno ou liberação).
+        const openDisputes = await this.db
+          .select({ id: schema.disputes.id })
+          .from(schema.disputes)
+          .where(
+            and(
+              eq(schema.disputes.orderId, order.id),
+              inArray(schema.disputes.status, ['open', 'under_review']),
+            ),
+          );
+
+        if (openDisputes.length > 0) {
+          this.logger.warn(
+            `⏸️ Auto-release do pedido ${order.id} congelado: disputa aberta.`,
+          );
+          continue;
+        }
+
         const sellerNetInCents = order.sellerNetInCents || order.totalInCents;
 
         // Liberar saldo retido → disponível
