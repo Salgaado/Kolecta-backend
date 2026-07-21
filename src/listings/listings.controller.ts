@@ -142,6 +142,17 @@ export class ListingsController {
     return { data: listing };
   }
 
+  // ── POST /api/listings/:id/publish — Vendedor: publicar (passa na peneira) ──
+
+  @Post(':id/publish')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  async publish(@Param('id') id: string, @Req() req: Request) {
+    const sellerId = (req as any).auth.userId as string;
+    const listing = await this.listingsService.publish(id, sellerId);
+    return { data: listing };
+  }
+
   // ── PATCH /api/listings/:id/status — Admin: mudar status ────────────────
 
   @Patch(':id/status')

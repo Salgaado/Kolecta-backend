@@ -15,6 +15,7 @@ import * as XLSX from 'xlsx';
 import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
 import { FounderService } from '../founder/founder.service';
 import { SUBMITTED_LISTING_STATUSES } from '../founder/founder.constants';
+import { listingPublishBlockers } from './listing-publish-rules';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -277,6 +278,22 @@ export class ListingsService {
   async updateStatus(id: string, status: string): Promise<ListingRecord> {
     const listing = await this.findById(id); // garante existência
 
+    // ── Peneira de publicação ──
+    // Ao ir ao ar pela primeira vez (draft/pending_review → active), o anúncio
+    // precisa atender aos requisitos mínimos. Bloqueia com a lista do que falta.
+    if (
+      status === 'active' &&
+      (listing.status === 'draft' || listing.status === 'pending_review')
+    ) {
+      const missing = await this.getPublishBlockers(listing);
+      if (missing.length > 0) {
+        throw new BadRequestException({
+          message: `Não é possível publicar. Faltam: ${missing.join('; ')}.`,
+          missing,
+        });
+      }
+    }
+
     await this.db
       .update(schema.listings)
       .set({ status, updatedAt: new Date() })
@@ -302,6 +319,58 @@ export class ListingsService {
     }
 
     return this.findById(id);
+  }
+
+  // ── Peneira: requisitos que faltam para publicar ─────────────────────────
+
+  /** Lista (legível) de requisitos faltantes p/ publicar; vazio = pode ir ao ar. */
+  async getPublishBlockers(listing: ListingRecord): Promise<string[]> {
+    let startingBidInCents: number | null | undefined;
+    if (listing.type === 'auction') {
+      const [auction] = await this.db
+        .select({ startingBidInCents: schema.auctions.startingBidInCents })
+        .from(schema.auctions)
+        .where(eq(schema.auctions.listingId, listing.id))
+        .limit(1);
+      startingBidInCents = auction?.startingBidInCents;
+    }
+    return listingPublishBlockers(listing, startingBidInCents);
+  }
+
+  // ── Publicar (vendedor) — draft → active, passando pela peneira ──────────
+
+  /**
+   * O vendedor publica o próprio anúncio. Só vai ao ar se passar na peneira de
+   * requisitos (descrição, preço/lance, ≥3 fotos, categoria, condição, frete).
+   * Caso contrário, lança 400 com a lista do que falta.
+   */
+  async publish(id: string, sellerId: string): Promise<ListingRecord> {
+    const listing = await this.findById(id);
+
+    if (listing.sellerId !== sellerId) {
+      throw new ForbiddenException(
+        'Você não tem permissão para publicar este anúncio.',
+      );
+    }
+    if (!['draft', 'pending_review', 'paused'].includes(listing.status)) {
+      throw new BadRequestException(
+        `Anúncio não pode ser publicado a partir do status '${listing.status}'.`,
+      );
+    }
+
+    // Reaproveita updateStatus, que aplica a peneira em draft/pending_review → active.
+    // (para 'paused', valida aqui também, já que a reativação não repassa a peneira)
+    if (listing.status === 'paused') {
+      const missing = await this.getPublishBlockers(listing);
+      if (missing.length > 0) {
+        throw new BadRequestException({
+          message: `Não é possível publicar. Faltam: ${missing.join('; ')}.`,
+          missing,
+        });
+      }
+    }
+
+    return this.updateStatus(id, 'active');
   }
 
   /**

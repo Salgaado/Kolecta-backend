@@ -266,4 +266,58 @@ describe('ListingsService', () => {
       );
     });
   });
+
+  // ── publish (peneira de requisitos) ────────────────────────────────────────
+  describe('publish', () => {
+    const validDraft = {
+      ...fakeListing,
+      status: 'draft',
+      description: 'Descrição bem completa do item colecionável raro e lacrado.',
+      priceInCents: 50000,
+      images: JSON.stringify(['a.jpg', 'b.jpg', 'c.jpg']),
+      categoryId: 'cat_1',
+      condition: 'lacrado',
+      weightGrams: 200,
+      widthCm: 10,
+      heightCm: 10,
+      lengthCm: 10,
+    };
+
+    it('bloqueia (400) quando faltam requisitos', async () => {
+      const incompleto = {
+        ...validDraft,
+        description: 'curto', // < 30 chars
+        images: null, // 0 fotos
+        categoryId: null, // sem categoria
+        weightGrams: null, // sem frete
+      };
+      selectChain.limit
+        .mockResolvedValueOnce([incompleto]) // findById em publish
+        .mockResolvedValueOnce([incompleto]); // findById em updateStatus
+
+      await expect(
+        service.publish('listing_001', 'user_seller'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lança ForbiddenException se não é o dono', async () => {
+      selectChain.limit.mockResolvedValueOnce([validDraft]);
+      await expect(
+        service.publish('listing_001', 'outro_user'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('publica (active) quando todos os requisitos são atendidos', async () => {
+      selectChain.limit
+        .mockResolvedValueOnce([validDraft]) // findById em publish
+        .mockResolvedValueOnce([validDraft]) // findById em updateStatus
+        .mockResolvedValueOnce([{ ...validDraft, status: 'active' }]); // findById final
+
+      await service.publish('listing_001', 'user_seller');
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'active' }),
+      );
+    });
+  });
 });
