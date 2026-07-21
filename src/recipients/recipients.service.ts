@@ -12,6 +12,7 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { CreateRecipientDto } from './dto/create-recipient.dto';
+import { buildRecipientPayload } from './recipient-payload';
 import { isValidDocument } from './document-validation';
 
 /** Resposta do endpoint de KYC link (prova de vida). */
@@ -74,7 +75,7 @@ export class RecipientsService {
     }
 
     // Cria o recebedor na Pagar.me
-    const payload = this.buildRecipientPayload(userId, dto);
+    const payload = buildRecipientPayload(userId, dto);
     const recipient = await this.pagarme.post<{ id: string; status: string }>(
       '/recipients',
       payload,
@@ -257,68 +258,6 @@ export class RecipientsService {
     };
   }
 
-  private buildRecipientPayload(userId: string, dto: CreateRecipientDto) {
-    const ba = dto.bankAccount;
-    const bankAccount = {
-      holder_name: ba.holderName,
-      holder_type: ba.holderType,
-      holder_document: ba.holderDocument,
-      bank: ba.bank,
-      branch_number: ba.branchNumber,
-      branch_check_digit: ba.branchCheckDigit,
-      account_number: ba.accountNumber,
-      account_check_digit: ba.accountCheckDigit,
-      type: ba.accountType,
-    };
-
-    const registerInformation =
-      dto.type === 'individual'
-        ? {
-            type: 'individual',
-            document: dto.document,
-            name: dto.name,
-            email: dto.email,
-            mother_name: dto.motherName,
-            birthdate: dto.birthdate,
-            // Pagar.me espera renda em reais (não centavos)
-            monthly_income: dto.monthlyIncomeInCents
-              ? dto.monthlyIncomeInCents / 100
-              : undefined,
-            professional_occupation: dto.professionalOccupation,
-            phone_numbers: dto.phone
-              ? [
-                  {
-                    ddd: dto.phone.slice(0, 2),
-                    number: dto.phone.slice(2),
-                    type: 'mobile',
-                  },
-                ]
-              : undefined,
-          }
-        : {
-            type: 'corporation',
-            document: dto.document,
-            company_name: dto.name,
-            trading_name: dto.name,
-            email: dto.email,
-            phone_numbers: dto.phone
-              ? [
-                  {
-                    ddd: dto.phone.slice(0, 2),
-                    number: dto.phone.slice(2),
-                    type: 'mobile',
-                  },
-                ]
-              : undefined,
-          };
-
-    return {
-      code: userId,
-      register_information: registerInformation,
-      default_bank_account: bankAccount,
-      metadata: { userId },
-    };
-  }
 }
 
 /** Mascara CPF/CNPJ para exibição (LGPD): mostra só os últimos 2 dígitos. */
