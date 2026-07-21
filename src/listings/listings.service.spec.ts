@@ -176,7 +176,7 @@ describe('ListingsService', () => {
         durationHours: 72,
       });
 
-      const insertedTables = txInsert.mock.calls.map((c) => c[0]);
+      const insertedTables = txInsert.mock.calls.map((c: any[]) => c[0]);
       expect(insertedTables).toContain(schema.listings);
       expect(insertedTables).toContain(schema.auctions);
     });
