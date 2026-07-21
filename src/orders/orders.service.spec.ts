@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { OrdersService } from './orders.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { WalletService } from '../wallet/wallet.service';
-import { StripeService } from '../stripe/stripe.service';
+import { PagarmeService } from '../pagarme/pagarme.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { FounderService } from '../founder/founder.service';
 import {
@@ -75,14 +75,22 @@ const mockWalletService = {
     .mockResolvedValue({ id: 'wallet_001', balanceInCents: 0 }),
 };
 
-const mockStripeService = {
-  stripe: {
-    paymentIntents: {
-      create: jest
-        .fn()
-        .mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test' }),
-    },
-  },
+// Mock do PagarmeService — post('/orders') retorna uma cobrança PIX com QR
+const mockPagarmeService = {
+  post: jest.fn().mockResolvedValue({
+    id: 'or_test',
+    status: 'pending',
+    charges: [
+      {
+        id: 'ch_test',
+        last_transaction: {
+          qr_code: '00020126...pix',
+          qr_code_url: 'https://pagar.me/qr.png',
+          expires_at: '2026-07-20T13:00:00Z',
+        },
+      },
+    ],
+  }),
 };
 
 // ─── Suite ────────────────────────────────────────────────────────────────────
@@ -98,7 +106,7 @@ describe('OrdersService', () => {
         OrdersService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
         { provide: WalletService, useValue: mockWalletService },
-        { provide: StripeService, useValue: mockStripeService },
+        { provide: PagarmeService, useValue: mockPagarmeService },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         {
           provide: FounderService,

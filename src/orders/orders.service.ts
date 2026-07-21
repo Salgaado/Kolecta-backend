@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   BadRequestException,
+  BadGatewayException,
   NotFoundException,
   ForbiddenException,
   Logger,
@@ -15,8 +16,22 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
-import { StripeService } from '../stripe/stripe.service';
+import { PagarmeService } from '../pagarme/pagarme.service';
 import { FounderService } from '../founder/founder.service';
+
+/**
+ * Taxa do gateway (Pagar.me) descontada do líquido do vendedor, em %.
+ * PIX tem custo muito menor que cartão; o valor real depende do contrato da
+ * conta. Default 0 (Kolecta absorve) até o número real ser confirmado — NÃO
+ * chutamos um valor para não lesar o vendedor. Ver `PAGARME_GATEWAY_FEE_PERCENT`.
+ * Substitui o antigo `~4%` hardcoded que era estimativa da Stripe (bug B4).
+ */
+const GATEWAY_FEE_PERCENT = parseFloat(
+  process.env.PAGARME_GATEWAY_FEE_PERCENT ?? '0',
+);
+
+/** Validade do QR Code PIX da compra, em segundos (1h). */
+const PIX_EXPIRES_IN_SECONDS = 3600;
 
 @Injectable()
 export class OrdersService {
@@ -26,7 +41,7 @@ export class OrdersService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
     private readonly walletService: WalletService,
-    private readonly stripeService: StripeService,
+    private readonly pagarme: PagarmeService,
     private readonly eventEmitter: EventEmitter2,
     private readonly founderService: FounderService,
   ) {}
@@ -108,16 +123,27 @@ export class OrdersService {
     });
   }
 
-  // ── Create order + PaymentIntent (checkout híbrido: wallet + stripe) ────────
+  // ── Checkout: pedido + pagamento (wallet + PIX Pagar.me) ────────────────────
 
-  async createOrderWithPaymentIntent(buyerId: string, dto: CreateOrderDto) {
+  /**
+   * Cria o pedido e resolve o pagamento:
+   *  - 100% wallet  → debita e confirma na hora (síncrono, sem gateway).
+   *  - wallet+PIX ou só PIX → gera cobrança PIX na Pagar.me e devolve o QR.
+   *    A confirmação do pedido só acontece no webhook `order.paid`
+   *    (→ evento `pagarme.order.paid` → `confirmOrderPayment`).
+   *
+   * Substitui o antigo fluxo Stripe (`paymentIntents.create`). O caso híbrido
+   * mantém o comportamento atual de debitar a parcela da wallet já no checkout;
+   * se o PIX falhar/expirar, o handler `pagarme.order.failed` estorna.
+   */
+  async createCheckout(buyerId: string, dto: CreateOrderDto) {
     if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException('O carrinho está vazio');
     }
 
     await this.persistBuyerCpf(buyerId, dto.buyerCpf);
 
-    // Apenas 1 item por chamada no MVP (um PaymentIntent por vendedor)
+    // MVP: 1 item por chamada (uma cobrança por vendedor)
     const listingId = dto.items[0].listingId;
 
     const [listing] = await this.db
@@ -150,6 +176,9 @@ export class OrdersService {
       chargeAmount = totalInCents - walletDeducted;
     }
 
+    const paymentMethod =
+      chargeAmount <= 0 ? 'wallet' : walletDeducted > 0 ? 'hybrid' : 'external';
+
     // Transação atômica: bloqueia o listing + cria o pedido
     const order = await this.db.transaction(async (tx) => {
       await tx
@@ -165,6 +194,9 @@ export class OrdersService {
           listingId: listing.id,
           totalInCents,
           status: 'pending',
+          walletAmountInCents: walletDeducted,
+          externalAmountInCents: chargeAmount,
+          paymentMethod,
         })
         .returning();
 
@@ -196,7 +228,7 @@ export class OrdersService {
       };
     }
 
-    // ── Caso 2: Deduz parcial da wallet + cobra restante via Stripe ──
+    // ── Caso 2: Deduz parcial da wallet + cobra restante via PIX ──
     if (walletDeducted > 0) {
       const wallet = await this.walletService.getOrCreateWallet(buyerId);
       await this.walletService.debit(
@@ -206,38 +238,138 @@ export class OrdersService {
         order.id,
       );
       this.logger.log(
-        `Abatido ${walletDeducted / 100} BRL da wallet. Restante: ${chargeAmount / 100} BRL via Stripe.`,
+        `Abatido ${walletDeducted / 100} BRL da wallet. Restante: ${chargeAmount / 100} BRL via PIX.`,
       );
     }
 
-    // Cria o PaymentIntent para o valor restante
-    const paymentIntent = await this.stripeService.stripeClient.paymentIntents.create(
+    // Dados do comprador para o customer da Pagar.me (nome/email/cpf)
+    const [buyer] = await this.db
+      .select({
+        name: schema.users.name,
+        email: schema.users.email,
+        cpf: schema.users.cpf,
+      })
+      .from(schema.users)
+      .where(eq(schema.users.id, buyerId));
+
+    const cpfDigits = (dto.buyerCpf || buyer?.cpf || '').replace(/\D/g, '');
+    if (!cpfDigits) {
+      throw new BadRequestException(
+        'CPF é obrigatório para gerar o pagamento via PIX.',
+      );
+    }
+
+    // Telefone é exigido pela Pagar.me para PIX ("At least one customer phone
+    // is required"). DDD (2 primeiros dígitos) + número (restante).
+    const phoneDigits = (dto.buyerPhone || '').replace(/\D/g, '');
+    if (phoneDigits.length < 10) {
+      throw new BadRequestException(
+        'Telefone (com DDD) é obrigatório para gerar o pagamento via PIX.',
+      );
+    }
+    const areaCode = phoneDigits.slice(0, 2);
+    const phoneNumber = phoneDigits.slice(2);
+
+    // Cria a cobrança PIX na Pagar.me para o valor restante
+    const pixOrder = await this.pagarme.post<PagarmeOrderResponse>(
+      '/orders',
       {
-        amount: chargeAmount,
-        currency: 'brl',
-        payment_method_types: ['card', 'pix'],
+        items: [
+          {
+            amount: chargeAmount,
+            description: `Compra Kolecta #${order.id.slice(0, 8)}`,
+            quantity: 1,
+            code: 'kolecta-order',
+          },
+        ],
+        customer: {
+          name: buyer?.name || 'Comprador Kolecta',
+          email: buyer?.email,
+          type: 'individual',
+          document: cpfDigits,
+          document_type: 'CPF',
+          phones: {
+            mobile_phone: {
+              country_code: '55',
+              area_code: areaCode,
+              number: phoneNumber,
+            },
+          },
+        },
+        payments: [
+          {
+            payment_method: 'pix',
+            pix: { expires_in: PIX_EXPIRES_IN_SECONDS },
+          },
+        ],
         metadata: {
+          type: 'purchase',
           orderId: order.id,
           buyerId,
           sellerId: listing.sellerId,
           walletDeducted: String(walletDeducted),
         },
       },
-      {
-        idempotencyKey: `order-${order.id}`,
-      },
+      `order-${order.id}`, // Idempotency-Key estável por pedido
     );
 
+    const charge = pixOrder.charges?.[0];
+    const tx = charge?.last_transaction;
+
+    // A Pagar.me responde 200 mesmo quando a transação falha (status no corpo).
+    if (!tx?.qr_code) {
+      this.logger.error(
+        `Falha ao gerar PIX da compra (order ${order.id} / pagarme ${pixOrder.id}, ` +
+          `status ${pixOrder.status}): ${JSON.stringify(tx?.gateway_response ?? {})}`,
+      );
+      // Devolve o listing e cancela o pedido para não deixar item travado.
+      await this.db.transaction(async (t: any) => {
+        await t
+          .update(schema.orders)
+          .set({ status: 'cancelled' })
+          .where(eq(schema.orders.id, order.id));
+        await t
+          .update(schema.listings)
+          .set({ status: 'active' })
+          .where(eq(schema.listings.id, listing.id));
+      });
+      // Estorna o abatimento parcial da wallet, se houve.
+      if (walletDeducted > 0) {
+        const wallet = await this.walletService.getOrCreateWallet(buyerId);
+        await this.walletService.credit(
+          wallet.id,
+          walletDeducted,
+          `Estorno - falha ao gerar PIX da compra #${order.id.slice(0, 8)}`,
+          order.id,
+        );
+      }
+      throw new BadGatewayException(
+        'Não foi possível gerar o PIX no momento. Tente novamente.',
+      );
+    }
+
+    // Persiste o id do pedido Pagar.me (coluna stripePaymentId reaproveitada até
+    // a renomeação da Fase 2 → pagarme_order_id).
+    await this.db
+      .update(schema.orders)
+      .set({ stripePaymentId: pixOrder.id })
+      .where(eq(schema.orders.id, order.id));
+
     this.logger.log(
-      `PaymentIntent ${paymentIntent.id} criado para Order ${order.id} (${chargeAmount / 100} BRL)`,
+      `PIX de compra criado: order ${order.id} / pagarme ${pixOrder.id} / ` +
+        `R$ ${(chargeAmount / 100).toFixed(2)} (wallet ${walletDeducted / 100})`,
     );
 
     return {
-      clientSecret: paymentIntent.client_secret,
       orderId: order.id,
+      pagarmeOrderId: pixOrder.id,
       totalInCents,
       walletDeducted,
       chargeAmount,
+      qrCode: tx.qr_code, // copia-e-cola
+      qrCodeUrl: tx.qr_code_url, // imagem do QR
+      expiresAt: tx.expires_at,
+      paidViaWallet: false,
     };
   }
 
@@ -389,46 +521,92 @@ export class OrdersService {
     return updated;
   }
 
-  // ── Webhook Handlers ───────────────────────────────────────────────────────
+  // ── Webhook Handlers (Pagar.me) ────────────────────────────────────────────
 
-  @OnEvent('stripe.checkout.completed')
-  async handleCheckoutCompleted(session: any) {
-    this.logger.log(
-      `Processando webhook checkout.completed da Sessão Stripe: ${session.id}`,
-    );
-
-    const orderId = session.metadata?.orderId;
-    if (!orderId) {
-      this.logger.error('Sessão sem orderId no metadata. Ignorando.');
-      return;
-    }
-
-    await this.confirmOrderPayment(
-      orderId,
-      session.payment_intent || session.id,
-    );
-  }
-
-  @OnEvent('stripe.payment_intent.succeeded')
-  async handlePaymentIntentSucceeded(paymentIntent: any) {
-    this.logger.log(
-      `Processando webhook payment_intent.succeeded: ${paymentIntent.id}`,
-    );
-
-    const orderId = paymentIntent.metadata?.orderId;
+  /**
+   * PIX de compra pago. Emitido pelo webhook unificado da Pagar.me quando
+   * `order.paid` chega SEM `metadata.type === 'wallet_deposit'` (depósito é
+   * tratado à parte). O `data` é o objeto de pedido da Pagar.me.
+   */
+  @OnEvent('pagarme.order.paid')
+  async handlePagarmeOrderPaid(data: any) {
+    const orderId = data?.metadata?.orderId;
     if (!orderId) {
       this.logger.warn(
-        `PaymentIntent ${paymentIntent.id} sem orderId no metadata. Ignorando.`,
+        `Pagar.me order.paid (${data?.id}) sem orderId no metadata. Ignorando.`,
       );
       return;
     }
 
-    await this.confirmOrderPayment(orderId, paymentIntent.id);
+    this.logger.log(
+      `Processando order.paid da Pagar.me: pedido ${orderId} (pagarme ${data?.id})`,
+    );
+    await this.confirmOrderPayment(orderId, data?.id ?? 'pagarme');
+  }
+
+  /**
+   * PIX de compra falhou/expirou/cancelado. Estorna o abatimento parcial da
+   * wallet (se houve) e devolve o anúncio para `active`. Idempotente.
+   */
+  @OnEvent('pagarme.order.failed')
+  async handlePagarmeOrderFailed(data: any) {
+    const orderId = data?.metadata?.orderId;
+    if (!orderId) {
+      this.logger.warn(
+        `Pagar.me order.failed (${data?.id}) sem orderId no metadata. Ignorando.`,
+      );
+      return;
+    }
+
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+
+    if (!order) {
+      this.logger.warn(`order.failed: pedido ${orderId} não encontrado.`);
+      return;
+    }
+    // Só age em pedidos ainda pendentes (idempotência).
+    if (order.status !== 'pending') {
+      this.logger.warn(
+        `order.failed: pedido ${orderId} já está '${order.status}'. Ignorando.`,
+      );
+      return;
+    }
+
+    await this.db.transaction(async (tx: any) => {
+      await tx
+        .update(schema.orders)
+        .set({ status: 'cancelled' })
+        .where(eq(schema.orders.id, orderId));
+      await tx
+        .update(schema.listings)
+        .set({ status: 'active' })
+        .where(eq(schema.listings.id, order.listingId));
+    });
+
+    // Estorna a parcela debitada da wallet no checkout, se houve.
+    const walletRefund = order.walletAmountInCents ?? 0;
+    if (walletRefund > 0) {
+      const wallet = await this.walletService.getOrCreateWallet(order.buyerId);
+      await this.walletService.credit(
+        wallet.id,
+        walletRefund,
+        `Estorno - PIX não concluído (Compra #${order.id.slice(0, 8)})`,
+        order.id,
+      );
+    }
+
+    this.logger.warn(
+      `↩️ Pedido ${orderId} cancelado (PIX não concluído). ` +
+        `Anúncio reativado; wallet estornada em ${walletRefund / 100} BRL.`,
+    );
   }
 
   // ── Shared order confirmation logic ───────────────────────────────────────
 
-  private async confirmOrderPayment(orderId: string, stripePaymentId: string) {
+  private async confirmOrderPayment(orderId: string, providerPaymentId: string) {
     const [order] = await this.db
       .select()
       .from(schema.orders)
@@ -452,19 +630,26 @@ export class OrdersService {
       order.sellerId,
     );
     const platformFeeInCents = Math.round(order.totalInCents * platformFeePercent / 100);
-    // Estimativa da taxa Stripe (~3.99% + R$0.39 para BR, simplificado como ~4%)
-    const stripeFeeInCents = Math.round(order.totalInCents * 0.04);
-    const sellerNetInCents = order.totalInCents - platformFeeInCents - stripeFeeInCents;
+    // Taxa do gateway (Pagar.me): incide apenas sobre o valor pago externamente
+    // (PIX), não sobre a parcela paga com saldo da wallet. Percentual configurável
+    // via env; default 0 até o custo real do contrato ser confirmado (bug B4).
+    const externalInCents = order.externalAmountInCents ?? order.totalInCents;
+    const gatewayFeeInCents = Math.round(externalInCents * GATEWAY_FEE_PERCENT / 100);
+    const sellerNetInCents = order.totalInCents - platformFeeInCents - gatewayFeeInCents;
 
     await this.db.transaction(async (tx: any) => {
       await tx
         .update(schema.orders)
         .set({
           status: 'paid',
-          stripePaymentId,
+          // Coluna stripePaymentId reaproveitada p/ o id do provedor (Pagar.me)
+          // até a renomeação da Fase 2 → pagarme_order_id.
+          stripePaymentId: providerPaymentId,
           sellerNetInCents,
           platformFeeInCents,
-          stripeFeeInCents,
+          // Coluna stripeFeeInCents reaproveitada p/ a taxa de gateway
+          // (renomear p/ gateway_fee_in_cents na Fase 2).
+          stripeFeeInCents: gatewayFeeInCents,
         })
         .where(eq(schema.orders.id, orderId));
 
@@ -484,7 +669,7 @@ export class OrdersService {
     );
 
     this.logger.log(
-      `✅ Pedido ${order.id} confirmado. Hold de ${sellerNetInCents / 100} BRL (bruto: ${order.totalInCents / 100}, taxa plataforma: ${platformFeeInCents / 100}, taxa stripe: ${stripeFeeInCents / 100})`,
+      `✅ Pedido ${order.id} confirmado. Hold de ${sellerNetInCents / 100} BRL (bruto: ${order.totalInCents / 100}, taxa plataforma: ${platformFeeInCents / 100}, taxa gateway: ${gatewayFeeInCents / 100})`,
     );
 
     // Busca dados do comprador e listing para o evento
@@ -593,5 +778,26 @@ export class OrdersService {
 
     return updated;
   }
+}
+
+// ── Tipagem mínima da resposta de /orders da Pagar.me (PIX) ───────────────────
+interface PagarmeTransaction {
+  qr_code?: string;
+  qr_code_url?: string;
+  expires_at?: string;
+  status?: string;
+  gateway_response?: unknown;
+}
+
+interface PagarmeCharge {
+  id?: string;
+  status?: string;
+  last_transaction?: PagarmeTransaction;
+}
+
+interface PagarmeOrderResponse {
+  id: string;
+  status: string;
+  charges?: PagarmeCharge[];
 }
 

@@ -29,10 +29,7 @@ export class OrdersController {
   @Post('checkout')
   @Roles('user', 'admin')
   async createCheckout(@Req() req: any, @Body() dto: CreateOrderDto) {
-    return this.ordersService.createOrderWithPaymentIntent(
-      req.auth.userId,
-      dto,
-    );
+    return this.ordersService.createCheckout(req.auth.userId, dto);
   }
 
   @Get('my/purchases')

@@ -36,6 +36,13 @@ export class CreateOrderDto {
   @IsCpf()
   @IsOptional()
   buyerCpf?: string;
+
+  // Telefone do comprador (DDD + número, só dígitos). Exigido pela Pagar.me para
+  // gerar o PIX ("At least one customer phone is required"). Opcional no DTO
+  // porque o fluxo 100% wallet não gera cobrança externa.
+  @IsString()
+  @IsOptional()
+  buyerPhone?: string;
 }
 
 export class UpdateOrderStatusDto {
