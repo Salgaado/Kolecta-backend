@@ -7,7 +7,7 @@ import {
   ConflictException,
   Logger,
 } from '@nestjs/common';
-import { eq, and, desc, lte, lt, or, isNull, isNotNull } from 'drizzle-orm';
+import { eq, and, desc, lte, lt, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
@@ -79,12 +79,49 @@ export class AuctionsService {
   // ── Leilões do seller (autenticado) ──────────────────────────────────────
 
   async findSellerAuctions(sellerId: string) {
-    return this.db
+    const rows = await this.db
       .select(this.auctionListingSelect)
       .from(schema.auctions)
       .innerJoin(schema.listings, eq(schema.auctions.listingId, schema.listings.id))
       .where(eq(schema.listings.sellerId, sellerId))
       .orderBy(desc(schema.auctions.createdAt));
+
+    if (rows.length === 0) return rows;
+
+    // Enriquece com nº de lances por leilão e o NOME do vencedor (o painel do
+    // vendedor mostrava "0 lances" e o vencedor como id cru — ver F26).
+    const auctionIds = rows.map((r) => r.id);
+    const counts = await this.db
+      .select({
+        auctionId: schema.bids.auctionId,
+        total: sql<number>`count(*)`,
+      })
+      .from(schema.bids)
+      .where(inArray(schema.bids.auctionId, auctionIds))
+      .groupBy(schema.bids.auctionId);
+    const countByAuction = new Map(
+      counts.map((c) => [c.auctionId, Number(c.total)]),
+    );
+
+    const winnerIds = [
+      ...new Set(rows.map((r) => r.currentWinnerId).filter(Boolean)),
+    ] as string[];
+    const nameByUser = new Map<string, string | null>();
+    if (winnerIds.length > 0) {
+      const winners = await this.db
+        .select({ id: schema.users.id, name: schema.users.name })
+        .from(schema.users)
+        .where(inArray(schema.users.id, winnerIds));
+      winners.forEach((u) => nameByUser.set(u.id, u.name ?? null));
+    }
+
+    return rows.map((r) => ({
+      ...r,
+      totalBids: countByAuction.get(r.id) ?? 0,
+      winnerName: r.currentWinnerId
+        ? (nameByUser.get(r.currentWinnerId) ?? null)
+        : null,
+    }));
   }
 
   // ── Criar leilão (seller) ────────────────────────────────────────────────
