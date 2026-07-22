@@ -119,8 +119,9 @@ function toAddress(addr: AddressDto | undefined) {
     city: addr.city,
     state: addr.state.toUpperCase(),
     zip_code: addr.zipCode,
-    // Pagar.me marca estes como obrigatórios; envia string vazia se ausentes.
     complementary: addr.complementary ?? '',
-    reference_point: addr.referencePoint ?? '',
+    // Pagar.me EXIGE reference_point não-vazio (string vazia = "field is required"
+    // → 422). Quando o vendedor não informa, mandamos um marcador não-vazio.
+    reference_point: addr.referencePoint?.trim() || 'Não informado',
   };
 }
