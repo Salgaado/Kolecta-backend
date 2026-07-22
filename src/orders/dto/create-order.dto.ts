@@ -38,6 +38,12 @@ export class CreateOrderDto {
   @Type(() => Number)
   shippingInCents?: number;
 
+  // 'shipping' (envio) | 'pickup' (retirada pessoal). Em pickup não há frete e o
+  // saldo libera na hora quando o comprador confirma o recebimento.
+  @IsIn(['shipping', 'pickup'])
+  @IsOptional()
+  deliveryMethod?: 'shipping' | 'pickup';
+
   @IsBoolean()
   @IsOptional()
   useWalletBalance?: boolean;

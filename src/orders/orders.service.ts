@@ -224,8 +224,12 @@ export class OrdersService {
 
     // Comprador paga item + frete. O frete vai 100% ao vendedor no split
     // (ele paga a etiqueta) e a comissão NÃO incide sobre ele.
+    // Retirada pessoal (pickup): sem frete, sem etiqueta; libera na hora ao confirmar.
+    const deliveryMethod: 'shipping' | 'pickup' =
+      dto.deliveryMethod === 'pickup' ? 'pickup' : 'shipping';
     const itemInCents: number = listing.priceInCents ?? 0;
-    const shippingInCents: number = dto.shippingInCents ?? 0;
+    const shippingInCents: number =
+      deliveryMethod === 'pickup' ? 0 : dto.shippingInCents ?? 0;
     const totalInCents: number = itemInCents + shippingInCents;
     let walletDeducted = 0;
     let chargeAmount = totalInCents;
@@ -282,6 +286,7 @@ export class OrdersService {
           addressId: dto.addressId ?? null,
           totalInCents,
           shippingInCents,
+          deliveryMethod,
           status: 'pending',
           walletAmountInCents: walletDeducted,
           externalAmountInCents: chargeAmount,
