@@ -192,6 +192,7 @@ export class ListingsService {
       minIncrementInCents,
       reservePriceInCents,
       durationHours,
+      antiSniper,
       ...listingData
     } = dto;
 
@@ -218,6 +219,8 @@ export class ListingsService {
           minIncrementInCents: minIncrementInCents ?? 1000,
           reservePriceInCents: reservePriceInCents ?? null,
           durationHours: durationHours ?? 48,
+          // anti-sniper vem do wizard; default true quando o campo é omitido.
+          antiSniper: antiSniper ?? true,
           status: 'active',
         });
       }

@@ -213,6 +213,12 @@ export const listings = sqliteTable('listings', {
   year: text('year'),
   edition: text('edition'), // Ex: Limited 5000 pçs
 
+  // Atributos específicos por categoria (jogo, raridade, número, personagem,
+  // grading, articulado, editora, volume, edição especial…). JSON stringificado
+  // de um objeto chave→valor. Cada categoria usa seu próprio conjunto de chaves;
+  // por isso é um mapa flexível em vez de colunas fixas.
+  attributes: text('attributes'), // JSON: '{"jogo":"Pokémon","raridade":"Rara"}'
+
   // lacrado | novo | mint | usado
   condition: text('condition').notNull(),
 

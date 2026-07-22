@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -82,6 +83,19 @@ export class CreateListingDto {
   @Type(() => Number)
   durationHours?: number;
 
+  // Anti-sniper do leilão: estende o tempo se houver lance nos minutos finais.
+  // A coluna já existia no schema; faltava aceitar no create para persistir o
+  // toggle do wizard.
+  @IsOptional()
+  @IsBoolean()
+  antiSniper?: boolean;
+
+  // Atributos específicos por categoria — JSON stringificado de um objeto
+  // chave→valor (jogo, raridade, número, personagem, grading…).
+  @IsOptional()
+  @IsString()
+  attributes?: string;
+
   // JSON array stringificado: '["url1","url2"]'
   @IsOptional()
   @IsString()
@@ -158,6 +172,11 @@ export class UpdateListingDto {
   @Min(0)
   @Type(() => Number)
   priceInCents?: number;
+
+  // Atributos por categoria (JSON stringificado). Ver CreateListingDto.
+  @IsOptional()
+  @IsString()
+  attributes?: string;
 
   @IsOptional()
   @IsString()
