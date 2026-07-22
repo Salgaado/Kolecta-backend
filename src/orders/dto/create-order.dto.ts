@@ -2,6 +2,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -63,4 +64,10 @@ export class UpdateOrderStatusDto {
   @IsString()
   @IsOptional()
   trackingCode?: string;
+
+  // 'shipping' (envio) | 'pickup' (retirada pessoal). Em pickup, a confirmação
+  // do comprador libera o saldo na hora (sem a janela de 48h).
+  @IsIn(['shipping', 'pickup'])
+  @IsOptional()
+  deliveryMethod?: 'shipping' | 'pickup';
 }

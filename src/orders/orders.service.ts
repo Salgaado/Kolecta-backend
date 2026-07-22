@@ -633,6 +633,7 @@ export class OrdersService {
       .set({
         status: dto.status,
         ...(dto.trackingCode && { trackingCode: dto.trackingCode }),
+        ...(dto.deliveryMethod && { deliveryMethod: dto.deliveryMethod }),
       })
       .where(eq(schema.orders.id, orderId))
       .returning();
@@ -948,6 +949,65 @@ export class OrdersService {
     }
 
     const now = new Date();
+
+    // ── Retirada pessoal: libera NA HORA ──────────────────────────────────────
+    // Sem transporte (item entregue em mãos), não há risco de extravio, então a
+    // confirmação do comprador move o saldo retido → disponível imediatamente
+    // (sem a janela de 48h). Disputa aberta ainda congela o release.
+    if (order.deliveryMethod === 'pickup') {
+      try {
+        const openDisputes = await this.db
+          .select({ id: schema.disputes.id })
+          .from(schema.disputes)
+          .where(
+            and(
+              eq(schema.disputes.orderId, order.id),
+              inArray(schema.disputes.status, ['open', 'under_review']),
+            ),
+          );
+
+        if (openDisputes.length === 0) {
+          const sellerNetInCents = order.sellerNetInCents || order.totalInCents;
+          const sellerWallet = await this.walletService.getOrCreateWallet(
+            order.sellerId,
+          );
+          await this.walletService.release(
+            sellerWallet.id,
+            sellerNetInCents,
+            `Retirada pessoal confirmada — Pedido #${order.id.slice(0, 8)}`,
+            order.id,
+          );
+
+          const [completed] = await this.db
+            .update(schema.orders)
+            .set({
+              status: 'completed',
+              buyerConfirmedAt: now,
+              completedAt: now,
+            })
+            .where(eq(schema.orders.id, orderId))
+            .returning();
+
+          this.logger.log(
+            `✅ Pedido ${orderId} (retirada pessoal): comprador confirmou → ` +
+              `saldo liberado NA HORA (${sellerNetInCents / 100} BRL) para seller ${order.sellerId}.`,
+          );
+          return completed;
+        }
+
+        this.logger.warn(
+          `Pedido ${orderId} (retirada pessoal) com disputa aberta — ` +
+            `release imediato congelado; segue janela padrão.`,
+        );
+      } catch (err: any) {
+        // Se o release falhar (ex.: hold ausente), não quebra a confirmação:
+        // cai no fluxo padrão e o ReleaseBalanceCron tenta depois.
+        this.logger.error(
+          `Falha no release imediato do pedido ${orderId} (retirada pessoal): ${err.message}. Caindo para janela padrão.`,
+        );
+      }
+    }
+
     const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
     // P5 (decidido 21/07): a confirmação do comprador NÃO libera na hora —

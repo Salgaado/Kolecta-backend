@@ -363,6 +363,11 @@ export const orders = sqliteTable('orders', {
   // (ele paga a etiqueta); a comissão da Kolecta NÃO incide sobre o frete.
   shippingInCents: integer('shipping_in_cents').default(0),
 
+  // Método de entrega: 'shipping' (envio via transportadora) | 'pickup' (retirada
+  // pessoal). Em 'pickup' NÃO há transporte, então a confirmação do comprador
+  // libera o saldo NA HORA (sem a janela de 48h). Ver OrdersService.confirmDelivery.
+  deliveryMethod: text('delivery_method').default('shipping'),
+
   // ID da sessão / payment intent do Stripe (legado — migrando p/ Pagar.me)
   stripePaymentId: text('stripe_payment_id'),
 
