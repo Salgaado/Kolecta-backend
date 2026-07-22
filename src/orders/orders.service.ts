@@ -222,7 +222,11 @@ export class OrdersService {
       );
     }
 
-    const totalInCents: number = listing.priceInCents ?? 0;
+    // Comprador paga item + frete. O frete vai 100% ao vendedor no split
+    // (ele paga a etiqueta) e a comissão NÃO incide sobre ele.
+    const itemInCents: number = listing.priceInCents ?? 0;
+    const shippingInCents: number = dto.shippingInCents ?? 0;
+    const totalInCents: number = itemInCents + shippingInCents;
     let walletDeducted = 0;
     let chargeAmount = totalInCents;
 
@@ -273,7 +277,11 @@ export class OrdersService {
           buyerId,
           sellerId: listing.sellerId,
           listingId: listing.id,
+          // Endereço de entrega do checkout — antes era descartado, deixando o
+          // pedido sem destino e travando a geração da etiqueta.
+          addressId: dto.addressId ?? null,
           totalInCents,
+          shippingInCents,
           status: 'pending',
           walletAmountInCents: walletDeducted,
           externalAmountInCents: chargeAmount,
@@ -359,8 +367,11 @@ export class OrdersService {
       const commissionPct = await this.founderService.resolveCommissionPercent(
         listing.sellerId,
       );
+      // Comissão só sobre o item. O split PIX puro só roda sem wallet, então
+      // chargeAmount == totalInCents == item + frete; o vendedor recebe
+      // chargeAmount - itemFee = (item líquido + frete inteiro).
       const platformFeeInCents = Math.round(
-        (chargeAmount * commissionPct) / 100,
+        (itemInCents * commissionPct) / 100,
       );
       split = buildSplit(sellerRecipientId, chargeAmount, platformFeeInCents);
       this.logger.log(
@@ -807,7 +818,9 @@ export class OrdersService {
     const platformFeePercent = await this.founderService.resolveCommissionPercent(
       order.sellerId,
     );
-    const platformFeeInCents = Math.round(order.totalInCents * platformFeePercent / 100);
+    // Comissão só sobre o item (frete vai 100% pro vendedor).
+    const itemInCents = order.totalInCents - (order.shippingInCents ?? 0);
+    const platformFeeInCents = Math.round(itemInCents * platformFeePercent / 100);
     // Taxa do gateway (Pagar.me): incide apenas sobre o valor pago externamente
     // (PIX), não sobre a parcela paga com saldo da wallet. Percentual configurável
     // via env; default 0 até o custo real do contrato ser confirmado (bug B4).

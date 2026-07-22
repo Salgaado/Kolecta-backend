@@ -2,9 +2,11 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
+  Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -26,6 +28,14 @@ export class CreateOrderDto {
   @IsString()
   @IsOptional()
   addressId?: string;
+
+  // Frete escolhido pelo comprador, em centavos. Somado ao total cobrado e
+  // repassado 100% ao vendedor no split (comissão só sobre o item).
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  @Type(() => Number)
+  shippingInCents?: number;
 
   @IsBoolean()
   @IsOptional()

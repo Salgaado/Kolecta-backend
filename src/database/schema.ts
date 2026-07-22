@@ -356,8 +356,12 @@ export const orders = sqliteTable('orders', {
     .references(() => listings.id),
   addressId: text('address_id').references(() => addresses.id),
 
-  // Valor total em centavos
+  // Valor total em centavos (item + frete)
   totalInCents: integer('total_in_cents').notNull(),
+
+  // Frete cobrado do comprador, em centavos. Vai 100% para o vendedor no split
+  // (ele paga a etiqueta); a comissão da Kolecta NÃO incide sobre o frete.
+  shippingInCents: integer('shipping_in_cents').default(0),
 
   // ID da sessão / payment intent do Stripe (legado — migrando p/ Pagar.me)
   stripePaymentId: text('stripe_payment_id'),
