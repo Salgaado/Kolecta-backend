@@ -102,7 +102,11 @@ interface PagarmeSplit {
   options: {
     liable: boolean;
     charge_processing_fee: boolean;
-    charge_remainder: boolean;
+    // Nome correto na API v5 da Pagar.me. Enviar `charge_remainder` (sem `_fee`)
+    // é ignorado pela API → nenhum recebedor absorve o resto e a cobrança é
+    // rejeitada com "At least 1 recipient must be responsible for the
+    // charge_remainder_fee".
+    charge_remainder_fee: boolean;
   };
 }
 
@@ -111,7 +115,8 @@ interface PagarmeSplit {
  * comissão pro recebedor da plataforma. Soma == valor da cobrança.
  * - Vendedor: `liable` (responde por chargeback) e `charge_processing_fee`
  *   (absorve a taxa do gateway) — default do plano (§3).
- * - Plataforma: `charge_remainder` (absorve arredondamento).
+ * - Plataforma: `charge_remainder_fee` (absorve arredondamento). Exatamente 1
+ *   recebedor precisa tê-lo em `true`, senão a Pagar.me rejeita a cobrança.
  */
 function buildSplit(
   sellerRecipientId: string,
@@ -127,7 +132,7 @@ function buildSplit(
       options: {
         liable: true,
         charge_processing_fee: true,
-        charge_remainder: false,
+        charge_remainder_fee: false,
       },
     },
     {
@@ -137,7 +142,7 @@ function buildSplit(
       options: {
         liable: false,
         charge_processing_fee: false,
-        charge_remainder: true,
+        charge_remainder_fee: true,
       },
     },
   ];
@@ -636,13 +641,23 @@ export class OrdersService {
     // ── PIX: cobrança ASSÍNCRONA (confirma via webhook order.paid) ──
     // A Pagar.me responde 200 mesmo quando a transação falha (status no corpo).
     if (!tx?.qr_code) {
+      // Extrai o motivo da Pagar.me (gateway_response.errors[].message ou
+      // .message) para logar E devolver ao cliente — sem isso, o 502 vira uma
+      // mensagem genérica e o motivo real (recebedor, split, valor) fica oculto.
+      const gw = tx?.gateway_response as
+        | { message?: string; errors?: Array<{ message?: string }> }
+        | undefined;
+      const reason =
+        gw?.errors?.map((e) => e?.message).filter(Boolean).join(' · ') ||
+        gw?.message ||
+        `status ${charge?.status ?? pagarmeOrder.status}`;
       this.logger.error(
         `Falha ao gerar PIX da compra (order ${order.id} / pagarme ${pagarmeOrder.id}, ` +
-          `status ${pagarmeOrder.status}): ${JSON.stringify(tx?.gateway_response ?? {})}`,
+          `status ${pagarmeOrder.status}/${charge?.status}): ${JSON.stringify(tx?.gateway_response ?? {})}`,
       );
       await rollbackCheckout('falha ao gerar PIX');
       throw new BadGatewayException(
-        'Não foi possível gerar o PIX no momento. Tente novamente.',
+        `Não foi possível gerar o PIX: ${reason}. Tente novamente.`,
       );
     }
 
