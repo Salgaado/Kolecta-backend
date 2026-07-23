@@ -1,6 +1,7 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { WalletService } from '../wallet/wallet.service';
+import { OrdersService } from './orders.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { eq, lte, and, inArray } from 'drizzle-orm';
 import * as schema from '../database/schema';
@@ -21,7 +22,28 @@ export class ReleaseBalanceCron {
   constructor(
     @Inject(DATABASE_CONNECTION) private readonly db: Database,
     private readonly walletService: WalletService,
+    private readonly ordersService: OrdersService,
   ) {}
+
+  /**
+   * Cinto de segurança: cancela pedidos PIX pendentes cujo QR já expirou e que
+   * não receberam o webhook de falha da Pagar.me (reconcilia antes; recupera
+   * pagos com webhook perdido). O fluxo normal continua sendo o webhook.
+   */
+  @Cron(CronExpression.EVERY_30_MINUTES)
+  async handleExpiredPixCleanup() {
+    try {
+      const r = await this.ordersService.sweepExpiredPendingPix();
+      if (r.checked > 0) {
+        this.logger.log(
+          `🧹 Limpeza PIX expirado: ${r.checked} verificado(s), ` +
+            `${r.cancelled} cancelado(s), ${r.recovered} recuperado(s) como pago.`,
+        );
+      }
+    } catch (e: any) {
+      this.logger.error(`Falha na limpeza de PIX expirado: ${e?.message}`);
+    }
+  }
 
   @Cron(CronExpression.EVERY_HOUR)
   async handleAutoRelease() {

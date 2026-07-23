@@ -98,4 +98,12 @@ export class OrdersController {
     );
     return { data: order };
   }
+
+  // Comprador cancela o próprio pedido pendente (PIX não pago) → libera o anúncio
+  @Post(':id/cancel')
+  @Roles('user', 'admin')
+  async cancelOrder(@Req() req: any, @Param('id') id: string) {
+    const order = await this.ordersService.cancelOrder(req.auth.userId, id);
+    return { data: order };
+  }
 }

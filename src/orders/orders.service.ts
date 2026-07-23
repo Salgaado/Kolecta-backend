@@ -13,7 +13,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { eq, inArray, and } from 'drizzle-orm';
+import { eq, inArray, and, lt } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
 import { PagarmeService } from '../pagarme/pagarme.service';
@@ -919,41 +919,175 @@ export class OrdersService {
       this.logger.warn(`order.failed: pedido ${orderId} não encontrado.`);
       return;
     }
-    // Só age em pedidos ainda pendentes (idempotência).
-    if (order.status !== 'pending') {
+
+    await this.cancelPendingOrder(order, 'PIX não concluído');
+  }
+
+  /**
+   * Cancela um pedido pendente de forma ATÔMICA e idempotente: transiciona
+   * pending→cancelled só se ainda estiver pending (guard no WHERE, evita
+   * cancelamento/estorno duplicado por concorrência entre webhook, cron e
+   * cancelamento manual), reativa o anúncio e estorna a parcela de wallet.
+   * Retorna true se ESTE chamador foi quem cancelou.
+   */
+  private async cancelPendingOrder(
+    order: any,
+    reason: string,
+  ): Promise<boolean> {
+    const cancelled = await this.db
+      .update(schema.orders)
+      .set({ status: 'cancelled' })
+      .where(
+        and(
+          eq(schema.orders.id, order.id),
+          eq(schema.orders.status, 'pending'),
+        ),
+      )
+      .returning();
+
+    if (cancelled.length === 0) {
+      // Outro caminho (webhook/cron) já resolveu — nada a fazer.
       this.logger.warn(
-        `order.failed: pedido ${orderId} já está '${order.status}'. Ignorando.`,
+        `Cancelamento ignorado: pedido ${order.id} não está mais 'pending'.`,
       );
-      return;
+      return false;
     }
 
-    await this.db.transaction(async (tx: any) => {
-      await tx
-        .update(schema.orders)
-        .set({ status: 'cancelled' })
-        .where(eq(schema.orders.id, orderId));
-      await tx
-        .update(schema.listings)
-        .set({ status: 'active' })
-        .where(eq(schema.listings.id, order.listingId));
-    });
+    await this.db
+      .update(schema.listings)
+      .set({ status: 'active' })
+      .where(eq(schema.listings.id, order.listingId));
 
-    // Estorna a parcela debitada da wallet no checkout, se houve.
     const walletRefund = order.walletAmountInCents ?? 0;
     if (walletRefund > 0) {
       const wallet = await this.walletService.getOrCreateWallet(order.buyerId);
       await this.walletService.credit(
         wallet.id,
         walletRefund,
-        `Estorno - PIX não concluído (Compra #${order.id.slice(0, 8)})`,
+        `Estorno - ${reason} (Compra #${order.id.slice(0, 8)})`,
         order.id,
       );
     }
 
     this.logger.warn(
-      `↩️ Pedido ${orderId} cancelado (PIX não concluído). ` +
+      `↩️ Pedido ${order.id} cancelado (${reason}). ` +
         `Anúncio reativado; wallet estornada em ${walletRefund / 100} BRL.`,
     );
+    return true;
+  }
+
+  /**
+   * Reconcilia um pedido PIX pendente com a Pagar.me antes de cancelar:
+   * consulta o pedido no gateway e, se estiver `paid` (webhook perdido),
+   * CONFIRMA em vez de cancelar (não perde uma venda paga). Caso contrário,
+   * cancela. Se a consulta falhar (rede), mantém o pedido intocado.
+   */
+  private async reconcilePendingPix(
+    order: any,
+    reason: string,
+  ): Promise<'paid' | 'cancelled' | 'kept'> {
+    // Sem cobrança externa criada (ex.: PIX nunca gerou) → cancela direto.
+    if (!order.pagarmeOrderId) {
+      return (await this.cancelPendingOrder(order, reason)) ? 'cancelled' : 'kept';
+    }
+
+    let pg: PagarmeOrderResponse | undefined;
+    try {
+      pg = await this.pagarme.get<PagarmeOrderResponse>(
+        `/orders/${order.pagarmeOrderId}`,
+      );
+    } catch (e: any) {
+      this.logger.warn(
+        `Reconciliação do pedido ${order.id} adiada (falha ao consultar Pagar.me): ${e?.message}`,
+      );
+      return 'kept';
+    }
+
+    if (pg?.status === 'paid') {
+      this.logger.log(
+        `Reconciliação: pedido ${order.id} está PAGO na Pagar.me — confirmando (webhook perdido).`,
+      );
+      await this.confirmOrderPayment(order.id, pg.id, {
+        pagarmeChargeId: pg.charges?.[0]?.id,
+      });
+      return 'paid';
+    }
+
+    return (await this.cancelPendingOrder(order, reason)) ? 'cancelled' : 'kept';
+  }
+
+  /**
+   * Cancelamento MANUAL pelo comprador (só do próprio pedido, só enquanto
+   * pendente). Reconcilia com a Pagar.me: se já foi pago, confirma e devolve o
+   * pedido pago (não cancela). Libera o anúncio na hora quando cancela.
+   */
+  async cancelOrder(buyerId: string, orderId: string) {
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+
+    if (!order) throw new NotFoundException('Pedido não encontrado');
+    if (order.buyerId !== buyerId) {
+      throw new ForbiddenException('Acesso negado a este pedido');
+    }
+    if (order.status !== 'pending') {
+      throw new BadRequestException(
+        'Apenas pedidos aguardando pagamento podem ser cancelados.',
+      );
+    }
+
+    const outcome = await this.reconcilePendingPix(order, 'cancelado pelo comprador');
+    if (outcome === 'paid') {
+      throw new BadRequestException(
+        'Seu pagamento já foi confirmado — o pedido não pode ser cancelado.',
+      );
+    }
+
+    const [updated] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+    return updated;
+  }
+
+  /**
+   * Varredura (cron): cancela pedidos PIX pendentes cujo QR já expirou e que
+   * não receberam o webhook de falha (cinto de segurança). Reconcilia cada um
+   * com a Pagar.me antes (recupera pagos com webhook perdido). Janela de graça
+   * após o `expires_in` do PIX para não competir com o webhook normal.
+   */
+  async sweepExpiredPendingPix(): Promise<{ checked: number; cancelled: number; recovered: number }> {
+    const GRACE_SECONDS = 10 * 60; // 10 min além do expires_in do PIX
+    const cutoff = new Date(
+      Date.now() - (PIX_EXPIRES_IN_SECONDS + GRACE_SECONDS) * 1000,
+    );
+
+    const stale = await this.db
+      .select()
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.status, 'pending'),
+          eq(schema.orders.paymentInstrument, 'pix'),
+          lt(schema.orders.createdAt, cutoff),
+        ),
+      );
+
+    let cancelled = 0;
+    let recovered = 0;
+    for (const order of stale) {
+      try {
+        const outcome = await this.reconcilePendingPix(order, 'PIX expirado');
+        if (outcome === 'cancelled') cancelled++;
+        else if (outcome === 'paid') recovered++;
+      } catch (e: any) {
+        this.logger.error(
+          `Falha ao varrer pedido pendente ${order.id}: ${e?.message}`,
+        );
+      }
+    }
+    return { checked: stale.length, cancelled, recovered };
   }
 
   /**

@@ -43,9 +43,16 @@ const selectChain = {
   where: jest.fn(),
 };
 
-const updateChain = {
+// `where` é encadeável (mockReturnThis) para suportar `.where().returning()`
+// (cancelPendingOrder); e o objeto é "thenable" para que `await update().set().where()`
+// (sem returning) resolva undefined como antes.
+const updateChain: any = {
   set: jest.fn().mockReturnThis(),
-  where: jest.fn().mockResolvedValue(undefined),
+  where: jest.fn().mockReturnThis(),
+  returning: jest
+    .fn()
+    .mockResolvedValue([{ id: 'order_123', status: 'cancelled' }]),
+  then: (resolve: any) => resolve(undefined),
 };
 
 const insertChain = {
@@ -91,6 +98,8 @@ const mockPagarmeService = {
       },
     ],
   }),
+  // get('/orders/:id') usado na reconciliação (cancelamento manual + cron)
+  get: jest.fn().mockResolvedValue({ id: 'or_test', status: 'failed', charges: [] }),
 };
 
 // ─── Suite ────────────────────────────────────────────────────────────────────
@@ -342,6 +351,103 @@ describe('OrdersService', () => {
           paymentMethod: 'credit_card',
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ── Cancelamento manual + varredura de PIX expirado ────────────────────────
+  describe('cancelOrder (manual)', () => {
+    const pendingPixOrder = {
+      id: 'order_123',
+      buyerId: 'user_buyer',
+      sellerId: 'user_seller',
+      listingId: 'listing_001',
+      status: 'pending',
+      paymentInstrument: 'pix',
+      pagarmeOrderId: 'or_test',
+      walletAmountInCents: 0,
+    };
+
+    it('cancela o próprio pedido pendente e reativa o anúncio (não pago na Pagar.me)', async () => {
+      mockPagarmeService.get.mockResolvedValueOnce({ id: 'or_test', status: 'failed' });
+      selectChain.where
+        .mockResolvedValueOnce([pendingPixOrder]) // fetch inicial
+        .mockResolvedValueOnce([{ ...pendingPixOrder, status: 'cancelled' }]); // re-read
+
+      const result = await service.cancelOrder('user_buyer', 'order_123');
+
+      expect(mockPagarmeService.get).toHaveBeenCalledWith('/orders/or_test');
+      // guard atômico: transiciona pending→cancelled
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'cancelled' }),
+      );
+      // reativa o anúncio
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'active' }),
+      );
+      expect(result.status).toBe('cancelled');
+    });
+
+    it('rejeita cancelar pedido de outro comprador', async () => {
+      selectChain.where.mockResolvedValueOnce([pendingPixOrder]);
+      await expect(
+        service.cancelOrder('outro_user', 'order_123'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejeita cancelar pedido que não está pendente', async () => {
+      selectChain.where.mockResolvedValueOnce([{ ...pendingPixOrder, status: 'paid' }]);
+      await expect(
+        service.cancelOrder('user_buyer', 'order_123'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('não cancela se a Pagar.me diz que já foi pago (confirma e recusa o cancelamento)', async () => {
+      mockPagarmeService.get.mockResolvedValueOnce({
+        id: 'or_test',
+        status: 'paid',
+        charges: [{ id: 'ch_test' }],
+      });
+      selectChain.where
+        .mockResolvedValueOnce([pendingPixOrder]) // fetch inicial (cancelOrder)
+        .mockResolvedValueOnce([pendingPixOrder]) // confirmOrderPayment: order (pending)
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com' }]) // buyer
+        .mockResolvedValueOnce([{ title: 'Hot Wheels' }]); // listing
+
+      await expect(
+        service.cancelOrder('user_buyer', 'order_123'),
+      ).rejects.toThrow(BadRequestException);
+
+      // confirmou a venda (hold do vendedor) em vez de cancelar
+      expect(mockWalletService.hold).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('sweepExpiredPendingPix (cron)', () => {
+    it('cancela pedido PIX pendente expirado (não pago na Pagar.me)', async () => {
+      mockPagarmeService.get.mockResolvedValueOnce({ id: 'or_test', status: 'failed' });
+      selectChain.where.mockResolvedValueOnce([
+        {
+          id: 'order_123',
+          buyerId: 'user_buyer',
+          listingId: 'listing_001',
+          status: 'pending',
+          paymentInstrument: 'pix',
+          pagarmeOrderId: 'or_test',
+          walletAmountInCents: 0,
+        },
+      ]);
+
+      const r = await service.sweepExpiredPendingPix();
+
+      expect(r.checked).toBe(1);
+      expect(r.cancelled).toBe(1);
+      expect(r.recovered).toBe(0);
+    });
+
+    it('não faz nada quando não há pedidos expirados', async () => {
+      selectChain.where.mockResolvedValueOnce([]);
+      const r = await service.sweepExpiredPendingPix();
+      expect(r).toEqual({ checked: 0, cancelled: 0, recovered: 0 });
     });
   });
 
