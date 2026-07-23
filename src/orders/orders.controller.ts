@@ -5,6 +5,7 @@ import {
   Patch,
   Body,
   Param,
+  Query,
   UseGuards,
   Req,
 } from '@nestjs/common';
@@ -30,6 +31,14 @@ export class OrdersController {
   @Roles('user', 'admin')
   async createCheckout(@Req() req: any, @Body() dto: CreateOrderDto) {
     return this.ordersService.createCheckout(req.auth.userId, dto);
+  }
+
+  // Simula o parcelamento no cartão de um valor (centavos) para o seletor de
+  // parcelas do checkout. O valor real é sempre recalculado no /checkout.
+  @Get('installments-simulation')
+  @Roles('user', 'admin')
+  installmentsSimulation(@Query('amount') amount: string) {
+    return this.ordersService.simulateInstallments(Number(amount));
   }
 
   @Get('my/purchases')

@@ -398,6 +398,15 @@ export const orders = sqliteTable('orders', {
   externalAmountInCents: integer('external_amount_in_cents').default(0),
   // wallet | external | hybrid
   paymentMethod: text('payment_method'),
+  // Instrumento externo usado na parte cobrada: 'pix' | 'credit_card'.
+  // null quando o pedido foi pago 100% com saldo da wallet.
+  paymentInstrument: text('payment_instrument'),
+  // Nº de parcelas no cartão (1 = à vista). null para PIX/wallet.
+  installments: integer('installments'),
+  // Juros PAGO PELO COMPRADOR ao parcelar, em centavos. Custo do comprador —
+  // NÃO é receita da plataforma: entra no recebedor da plataforma no split
+  // apenas para compensar o custo de antecipação cobrado pela Pagar.me.
+  interestInCents: integer('interest_in_cents').default(0),
 
   // ── Controle de Entrega e Liberação ──
   // deliveredAt = marcado pelo vendedor (legado); meDeliveredAt = status "entregue"

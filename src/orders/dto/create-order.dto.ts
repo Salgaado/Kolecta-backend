@@ -7,6 +7,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -47,6 +48,28 @@ export class CreateOrderDto {
   @IsBoolean()
   @IsOptional()
   useWalletBalance?: boolean;
+
+  // Instrumento da parte cobrada via gateway. Default 'pix' quando ausente
+  // (compatibilidade com o checkout PIX atual).
+  @IsIn(['pix', 'credit_card'])
+  @IsOptional()
+  paymentMethod?: 'pix' | 'credit_card';
+
+  // Token do cartão gerado NO FRONT via chave pública Pagar.me (endpoint
+  // /tokens). O número do cartão NUNCA passa pelo nosso backend (escopo PCI).
+  // Obrigatório quando paymentMethod === 'credit_card'.
+  @IsString()
+  @IsOptional()
+  cardToken?: string;
+
+  // Nº de parcelas no cartão (1 = à vista, sem juros). Juros a partir de 2x
+  // são custo do comprador. Limitado a 12x.
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  @IsOptional()
+  @Type(() => Number)
+  installments?: number;
 
   // CPF do comprador (exigido pela Pagar.me na transação). Opcional por ora —
   // o fluxo 100% wallet ainda não obriga; o frontend passa a enviar no checkout.

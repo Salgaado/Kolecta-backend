@@ -177,6 +177,174 @@ describe('OrdersService', () => {
     });
   });
 
+  // ── Checkout: escolha de instrumento (PIX vs cartão) ───────────────────────
+  describe('createCheckout — instrumento de pagamento', () => {
+    const baseDto = {
+      items: [{ listingId: 'listing_001' }],
+      buyerCpf: '529.982.247-25',
+      buyerPhone: '11987654321',
+    };
+
+    it('default (sem paymentMethod) cai no PIX e retorna QR Code', async () => {
+      selectChain.where
+        .mockResolvedValueOnce([fakeListingActive]) // listing
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]); // buyer
+
+      const result = await service.createCheckout('user_buyer', baseDto);
+
+      const postBody = mockPagarmeService.post.mock.calls[0][1];
+      expect(postBody.payments[0].payment_method).toBe('pix');
+      expect(result.qrCode).toBeDefined();
+      expect(result.paidViaWallet).toBe(false);
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
+    });
+
+    it('cartão APROVADO confirma na hora (hold do vendedor) e não retorna QR', async () => {
+      selectChain.where
+        .mockResolvedValueOnce([fakeListingActive]) // listing
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
+        // confirmOrderPayment (inline): order → buyer → listing
+        .mockResolvedValueOnce([
+          {
+            id: 'order_123',
+            status: 'pending',
+            buyerId: 'user_buyer',
+            sellerId: 'user_seller',
+            listingId: 'listing_001',
+            totalInCents: 50000,
+            shippingInCents: 0,
+            externalAmountInCents: 50000,
+            paymentInstrument: 'credit_card',
+          },
+        ])
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com' }])
+        .mockResolvedValueOnce([{ title: 'Hot Wheels' }]);
+
+      mockPagarmeService.post.mockResolvedValueOnce({
+        id: 'or_card',
+        status: 'paid',
+        charges: [
+          { id: 'ch_card', status: 'paid', last_transaction: { status: 'captured' } },
+        ],
+      });
+
+      const result = await service.createCheckout('user_buyer', {
+        ...baseDto,
+        paymentMethod: 'credit_card',
+        cardToken: 'tok_test',
+        installments: 3,
+      });
+
+      const postBody = mockPagarmeService.post.mock.calls[0][1];
+      expect(postBody.payments[0].payment_method).toBe('credit_card');
+      expect(postBody.payments[0].credit_card.installments).toBe(3);
+      expect(postBody.payments[0].credit_card.card_token).toBe('tok_test');
+      expect(result.paidViaCard).toBe(true);
+      expect(result.installments).toBe(3);
+      expect(result.qrCode).toBeUndefined();
+      // Confirmação síncrona → líquido do vendedor entra como saldo retido.
+      expect(mockWalletService.hold).toHaveBeenCalledTimes(1);
+    });
+
+    it('cartão RECUSADO faz rollback e lança a mensagem do gateway', async () => {
+      selectChain.where
+        .mockResolvedValueOnce([fakeListingActive]) // listing
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]); // buyer
+
+      mockPagarmeService.post.mockResolvedValueOnce({
+        id: 'or_card',
+        status: 'failed',
+        charges: [
+          {
+            id: 'ch_card',
+            status: 'failed',
+            last_transaction: {
+              status: 'refused',
+              gateway_response: {
+                errors: [{ message: 'Cartão recusado pelo emissor' }],
+              },
+            },
+          },
+        ],
+      });
+
+      await expect(
+        service.createCheckout('user_buyer', {
+          ...baseDto,
+          paymentMethod: 'credit_card',
+          cardToken: 'tok_test',
+          installments: 1,
+        }),
+      ).rejects.toThrow('Cartão recusado pelo emissor');
+
+      // Rollback: pedido cancelado, listing devolvido; nada retido ao vendedor.
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'cancelled' }),
+      );
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
+    });
+
+    it('cartão NÃO combina com saldo: cobra o valor cheio mesmo com useWalletBalance', async () => {
+      selectChain.where
+        .mockResolvedValueOnce([fakeListingActive]) // listing
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
+        .mockResolvedValueOnce([
+          {
+            id: 'order_123',
+            status: 'pending',
+            buyerId: 'user_buyer',
+            sellerId: 'user_seller',
+            listingId: 'listing_001',
+            totalInCents: 50000,
+            shippingInCents: 0,
+            externalAmountInCents: 50000,
+            paymentInstrument: 'credit_card',
+          },
+        ])
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com' }])
+        .mockResolvedValueOnce([{ title: 'Hot Wheels' }]);
+
+      mockPagarmeService.post.mockResolvedValueOnce({
+        id: 'or_card',
+        status: 'paid',
+        charges: [
+          { id: 'ch_card', status: 'paid', last_transaction: { status: 'captured' } },
+        ],
+      });
+
+      const result = await service.createCheckout('user_buyer', {
+        ...baseDto,
+        useWalletBalance: true, // deve ser ignorado no cartão
+        paymentMethod: 'credit_card',
+        cardToken: 'tok_test',
+        installments: 1,
+      });
+
+      // Valor cobrado no cartão = total cheio (nenhum abatimento de saldo).
+      const postBody = mockPagarmeService.post.mock.calls[0][1];
+      expect(postBody.items[0].amount).toBe(50000);
+      expect(result.paidViaCard).toBe(true);
+      expect(result.walletDeducted).toBe(0);
+    });
+
+    it('cartão sem token é rejeitado antes de tocar a Pagar.me', async () => {
+      // Rejeita já na validação do instrumento (antes do gate de recebedor),
+      // então só o lookup do listing é consumido.
+      selectChain.where.mockResolvedValueOnce([fakeListingActive]); // listing
+
+      await expect(
+        service.createCheckout('user_buyer', {
+          ...baseDto,
+          paymentMethod: 'credit_card',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
   // ── Queries enriquecidas (join com listing + contraparte) ──────────────────
   describe('findSellerOrders', () => {
     it('deve enriquecer pedidos com listing (imagens parseadas) e nome do comprador', async () => {
