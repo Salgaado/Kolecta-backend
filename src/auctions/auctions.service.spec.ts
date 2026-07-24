@@ -3,6 +3,8 @@ import { AuctionsService } from './auctions.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { WalletService } from '../wallet/wallet.service';
 import { FounderService } from '../founder/founder.service';
+import { CardsService } from '../cards/cards.service';
+import { PagarmeService } from '../pagarme/pagarme.service';
 import {
   NotFoundException,
   BadRequestException,
@@ -11,22 +13,38 @@ import {
 } from '@nestjs/common';
 
 const mockWallet = {
-  id: 'wallet_bidder',
-  userId: 'buyer_001',
-  balanceInCents: 1_000_000, // saldo alto p/ passar no gate de lance
+  id: 'wallet_seller',
+  userId: 'seller_001',
+  balanceInCents: 0,
   pendingInCents: 0,
 };
 
 const mockWalletService = {
   getOrCreateWallet: jest.fn().mockResolvedValue(mockWallet),
-  holdForBid: jest.fn().mockResolvedValue({ success: true }),
-  releaseBidHold: jest.fn().mockResolvedValue({ success: true }),
-  settleBidHold: jest.fn().mockResolvedValue({ success: true }),
   hold: jest.fn().mockResolvedValue({ success: true }),
 };
 
 const mockFounderService = {
   resolveCommissionPercent: jest.fn().mockResolvedValue(11),
+};
+
+// Cartão salvo do bidder (referência interna customer + card_id).
+const mockCardsService = {
+  getCardRef: jest
+    .fn()
+    .mockResolvedValue({ customerId: 'cus_1', cardId: 'card_1' }),
+};
+
+// Pré-auth padrão: order com charge autorizada (pending → authorized_pending_capture).
+const authorizedOrder = {
+  id: 'or_1',
+  status: 'pending',
+  charges: [{ id: 'ch_1', status: 'authorized_pending_capture' }],
+};
+
+const mockPagarmeService = {
+  post: jest.fn().mockResolvedValue(authorizedOrder),
+  delete: jest.fn().mockResolvedValue({}),
 };
 
 const sellerId = 'seller_001';
@@ -77,6 +95,7 @@ const makeDrizzleMock = () => {
   chain.where = jest.fn().mockReturnValue(chain);  // retorna chain por padrão
   chain.innerJoin = jest.fn().mockReturnValue(chain);
   chain.orderBy = jest.fn().mockResolvedValue([mockBid]);
+  chain.groupBy = jest.fn().mockResolvedValue([]); // contagem de lances por leilão
   chain.limit = jest.fn().mockReturnValue(chain);
   chain.offset = jest.fn().mockReturnValue(chain);
   chain.insert = jest.fn().mockReturnValue(chain);
@@ -110,6 +129,8 @@ describe('AuctionsService', () => {
         { provide: DATABASE_CONNECTION, useValue: mockDb },
         { provide: WalletService, useValue: mockWalletService },
         { provide: FounderService, useValue: mockFounderService },
+        { provide: CardsService, useValue: mockCardsService },
+        { provide: PagarmeService, useValue: mockPagarmeService },
       ],
     }).compile();
 
@@ -119,11 +140,13 @@ describe('AuctionsService', () => {
   beforeEach(() => {
     // Restaura defaults dos mocks compartilhados (evita vazamento de *Once).
     mockWalletService.getOrCreateWallet.mockReset().mockResolvedValue(mockWallet);
-    mockWalletService.holdForBid.mockReset().mockResolvedValue({ success: true });
-    mockWalletService.releaseBidHold.mockReset().mockResolvedValue({ success: true });
-    mockWalletService.settleBidHold.mockReset().mockResolvedValue({ success: true });
     mockWalletService.hold.mockReset().mockResolvedValue({ success: true });
     mockFounderService.resolveCommissionPercent.mockReset().mockResolvedValue(11);
+    mockCardsService.getCardRef
+      .mockReset()
+      .mockResolvedValue({ customerId: 'cus_1', cardId: 'card_1' });
+    mockPagarmeService.post.mockReset().mockResolvedValue(authorizedOrder);
+    mockPagarmeService.delete.mockReset().mockResolvedValue({});
   });
 
   // ── findById ─────────────────────────────────────────────────────────────
@@ -217,13 +240,45 @@ describe('AuctionsService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('deve registrar lance com sucesso', async () => {
+    it('deve lançar BadRequestException se o bidder não tem cartão salvo', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
-        .mockResolvedValueOnce([
-          { ...mockListing, sellerId: 'another_seller' },
-        ]);
+        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }]);
+      mockCardsService.getCardRef.mockReset().mockResolvedValue(null);
+      service = await buildModule();
+
+      await expect(
+        service.placeBid(mockAuctionId, bidderId, { amountInCents: 6100 }),
+      ).rejects.toThrow(BadRequestException);
+      // Sem cartão → nem tenta autorizar na Pagar.me.
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+    });
+
+    it('deve lançar BadRequestException se o cartão é recusado na pré-auth', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([mockAuction])
+        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
+        .mockResolvedValueOnce([]); // sellerProfiles → sem recebedor (sem split)
+      mockPagarmeService.post.mockReset().mockResolvedValue({
+        id: 'or_x',
+        status: 'failed',
+        charges: [{ id: 'ch_x', status: 'failed' }],
+      });
+      service = await buildModule();
+
+      await expect(
+        service.placeBid(mockAuctionId, bidderId, { amountInCents: 6100 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('deve registrar lance com sucesso (pré-auth no cartão)', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([mockAuction])
+        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
+        .mockResolvedValueOnce([]); // sellerProfiles → sem recebedor
       service = await buildModule();
 
       const result = await service.placeBid(mockAuctionId, bidderId, {
@@ -231,13 +286,30 @@ describe('AuctionsService', () => {
       });
 
       expect(result).toEqual(mockBid);
+      // Criou a pré-autorização (capture:false) na Pagar.me.
+      expect(mockPagarmeService.post).toHaveBeenCalledWith(
+        '/orders',
+        expect.objectContaining({
+          customer_id: 'cus_1',
+          payments: expect.arrayContaining([
+            expect.objectContaining({
+              credit_card: expect.objectContaining({
+                capture: false,
+                card_id: 'card_1',
+              }),
+            }),
+          ]),
+        }),
+        expect.any(String),
+      );
     });
 
-    it('deve lançar ConflictException se outro lance vencer a corrida (update-guard)', async () => {
+    it('deve lançar ConflictException e cancelar a pré-auth se perder a corrida', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
-        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }]);
+        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
+        .mockResolvedValueOnce([]); // sellerProfiles
 
       // Transaction em que o UPDATE condicional não afeta linhas (returning vazio),
       // simulando que um lance igual/maior chegou primeiro.
@@ -261,6 +333,8 @@ describe('AuctionsService', () => {
       await expect(
         service.placeBid(mockAuctionId, bidderId, { amountInCents: 6100 }),
       ).rejects.toThrow(ConflictException);
+      // Rollback: a pré-auth recém-criada é cancelada (void).
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith('/charges/ch_1');
     });
   });
 
@@ -339,10 +413,10 @@ describe('AuctionsService', () => {
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it('deve encerrar o leilão quando o requester é o seller', async () => {
+    it('deve encerrar o leilão quando o requester é o seller (sem vencedor)', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
-        .mockResolvedValueOnce([mockAuction])                   // auction ativo
+        .mockResolvedValueOnce([mockAuction])                   // auction ativo (sem vencedor)
         .mockResolvedValueOnce([mockListing])                   // listing pertence ao seller
         .mockResolvedValueOnce([{ id: sellerId, role: 'user' }]); // requester é o seller
       service = await buildModule();
@@ -368,6 +442,56 @@ describe('AuctionsService', () => {
       ).resolves.not.toThrow();
 
       expect(mockDb.update).toHaveBeenCalled();
+    });
+
+    it('deve CAPTURAR a pré-auth do vencedor e reter o líquido do vendedor', async () => {
+      const winnerAuction = {
+        ...mockAuction,
+        currentWinnerId: bidderId,
+        currentBidInCents: 6000,
+      };
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([winnerAuction])                  // auction (com vencedor)
+        .mockResolvedValueOnce([mockListing])                    // listing
+        .mockResolvedValueOnce([{ id: sellerId, role: 'user' }]) // requester = seller
+        .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }]); // _getActiveBidAuth
+      // Captura da pré-auth confirmada.
+      mockPagarmeService.post.mockReset().mockResolvedValue({ status: 'paid' });
+      service = await buildModule();
+
+      await service.endAuction(mockAuctionId, sellerId);
+
+      // Capturou a charge autorizada.
+      expect(mockPagarmeService.post).toHaveBeenCalledWith(
+        '/charges/ch_1/capture',
+        { amount: 6000 },
+        expect.any(String),
+      );
+      // Espelhou o líquido do vendedor como retido na wallet.
+      expect(mockWalletService.hold).toHaveBeenCalled();
+    });
+
+    it('deve deixar o pedido pending_payment se a captura falhar (Fase 4)', async () => {
+      const winnerAuction = {
+        ...mockAuction,
+        currentWinnerId: bidderId,
+        currentBidInCents: 6000,
+      };
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([winnerAuction])
+        .mockResolvedValueOnce([mockListing])
+        .mockResolvedValueOnce([{ id: sellerId, role: 'user' }])
+        .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }]);
+      // Captura NÃO confirmada → _captureCharge lança → ramo pending_payment.
+      mockPagarmeService.post.mockReset().mockResolvedValue({ status: 'failed' });
+      service = await buildModule();
+
+      await service.endAuction(mockAuctionId, sellerId);
+
+      // Sem captura confirmada, o líquido do vendedor NÃO é retido.
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
     });
   });
 

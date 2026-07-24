@@ -29,6 +29,9 @@ export const users = sqliteTable('users', {
   // CPF do comprador (só dígitos), capturado no checkout — exigido pela Pagar.me
   // na transação PIX/cartão. Dado sensível (LGPD): não logar, mascarar na saída.
   cpf: text('cpf'),
+  // ID do customer na Pagar.me (cus_...), criado ao salvar o 1º cartão. Reusado
+  // para vincular cartões salvos (lance por cartão). NUNCA guarda o nº do cartão.
+  pagarmeCustomerId: text('pagarme_customer_id'),
 
   // ─── Consentimento legal (Termos + LGPD) ────────────────────────────────────
   // Aceite registrado no cadastro (modal T10). LGPD exige consentimento
@@ -305,8 +308,20 @@ export const bids = sqliteTable('bids', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   amountInCents: integer('amount_in_cents').notNull(),
-  // Ciclo do lance p/ hold de saldo (Fase 6): active | outbid | won | lost | released
+  // Ciclo do lance: active (líder, auth vigente) | outbid | won | lost | released
   status: text('status').notNull().default('active'),
+
+  // ─── Pré-autorização no cartão (lance por cartão / retenção) ─────────────────
+  // O lance líder tem uma pré-autorização (capture:false) na Pagar.me que garante
+  // o valor. Ao ser superado → void (cancela a auth). No fechamento → captura.
+  // O cron de re-auth cria uma nova auth antes de `authExpiresAt` e voida a antiga.
+  pagarmeOrderId: text('pagarme_order_id'),
+  pagarmeChargeId: text('pagarme_charge_id'),
+  // Snapshot do card_id usado na auth (p/ re-autorizar no mesmo cartão).
+  pagarmeCardId: text('pagarme_card_id'),
+  // Validade estimada da pré-autorização (janela da adquirente ~5 dias).
+  authExpiresAt: integer('auth_expires_at', { mode: 'timestamp' }),
+
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -437,6 +452,39 @@ export const favorites = sqliteTable('favorites', {
     .notNull()
     .$defaultFn(() => new Date()),
 });
+
+// ─── Saved Cards ─────────────────────────────────────────────────────────────
+// Cartão de crédito salvo no Financeiro, usado para dar LANCE por cartão
+// (pré-autorização/retenção). PCI: guardamos apenas o card_id da Pagar.me
+// (card_...) + metadados mascarados (brand/last4/holder/validade) — o número
+// completo e o CVV NUNCA passam pelo nosso backend (tokenização no cliente).
+// MVP: 1 cartão por usuário (uniqueIndex em userId).
+
+export const savedCards = sqliteTable(
+  'saved_cards',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // ID do cartão na Pagar.me (card_...), vinculado ao customer do usuário.
+    pagarmeCardId: text('pagarme_card_id').notNull(),
+    // Metadados mascarados para exibição (não são dados sensíveis PCI).
+    brand: text('brand'),
+    lastFour: text('last_four'),
+    holderName: text('holder_name'),
+    // MM/AAAA da validade (exibição).
+    expMonth: integer('exp_month'),
+    expYear: integer('exp_year'),
+    ...timestamps,
+  },
+  (table) => ({
+    // MVP: um cartão por usuário.
+    userIdx: uniqueIndex('saved_cards_user_id_idx').on(table.userId),
+  }),
+);
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 // Agrupamento de mensagens por negociação (comprador + vendedor + anúncio)

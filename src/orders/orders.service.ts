@@ -17,6 +17,7 @@ import { eq, inArray, and, lt } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
 import { PagarmeService } from '../pagarme/pagarme.service';
+import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
 import { FounderService } from '../founder/founder.service';
 
 /**
@@ -51,14 +52,35 @@ const CARD_FEE_PERCENT = parseFloat(
 );
 
 /**
- * Juros mensal do parcelamento no cartão, em % (ex.: 2.99 = 2,99% a.m.).
- * "Juros no comprador": ele paga a mais ao parcelar (tabela Price). O valor do
- * juro cai no recebedor da plataforma no split apenas para compensar o custo de
- * antecipação da Pagar.me — não é margem da Kolecta. 0 = parcelamento sem juros.
+ * CET (Custo Efetivo Total) por nº de parcelas — contrato Pagar.me da Kolecta
+ * ("Condições acordadas": taxa MDR + antecipação automática). Fração do valor da
+ * transação que a Pagar.me retém no recebimento em ~30 dias. É a fonte da verdade
+ * do parcelamento; se a Pagar.me renegociar as taxas, atualizar ESTA tabela.
  */
-const CARD_INTEREST_PERCENT_PER_MONTH = parseFloat(
-  process.env.PAGARME_CARD_INTEREST_PERCENT ?? '0',
-);
+const PAGARME_CET_BY_INSTALLMENT: Readonly<Record<number, number>> = {
+  1: 0.0399,
+  2: 0.0654,
+  3: 0.0802,
+  4: 0.095,
+  5: 0.1097,
+  6: 0.1245,
+  7: 0.1393,
+  8: 0.1541,
+  9: 0.1689,
+  10: 0.1837,
+  11: 0.1985,
+  12: 0.2133,
+};
+
+/**
+ * "Juros no comprador": ao parcelar, o comprador paga a MAIS o custo EXTRA de
+ * parcelar vs. à vista (CET_n − CET_1x). O crédito à vista (1x) continua SEM
+ * juros. O acréscimo cai no recebedor da plataforma no split para compensar a
+ * antecipação cobrada pela Pagar.me — não é margem da Kolecta. Defina
+ * PAGARME_INSTALLMENT_INTEREST=off para zerar (promoção "tudo sem juros").
+ */
+const INSTALLMENT_INTEREST_ENABLED =
+  (process.env.PAGARME_INSTALLMENT_INTEREST ?? 'on').toLowerCase() !== 'off';
 
 /** Máximo de parcelas permitido no cartão. */
 const MAX_INSTALLMENTS = 12;
@@ -67,26 +89,34 @@ const MAX_INSTALLMENTS = 12;
 const MIN_INSTALLMENT_IN_CENTS = 500; // R$ 5,00
 
 /**
- * Calcula o parcelamento de um principal pela tabela Price (juros compostos).
- * Retorna o valor de cada parcela, o total cobrado (parcela × n) e o juro
- * embutido, todos em centavos. 1x ou juros 0 → sem juro (total == principal).
+ * Calcula o parcelamento de um principal pela tabela de CET acordada. O comprador
+ * paga o principal + o acréscimo de parcelar (CET_n − CET_1x); as parcelas são
+ * iguais, como a Pagar.me exibe. Retorna o valor de cada parcela, o total cobrado
+ * (parcela × n) e o juro embutido, todos em centavos. 1x, juros desligado, ou nº
+ * de parcelas fora da tabela → sem juro (total == principal).
  */
 function computeInstallment(
   principalInCents: number,
   installments: number,
 ): { installmentInCents: number; totalInCents: number; interestInCents: number } {
-  const i = CARD_INTEREST_PERCENT_PER_MONTH / 100;
-  if (installments <= 1 || i <= 0) {
+  const n = Math.round(installments);
+  const cetN = PAGARME_CET_BY_INSTALLMENT[n];
+  const cet1 = PAGARME_CET_BY_INSTALLMENT[1];
+  const surcharge =
+    INSTALLMENT_INTEREST_ENABLED && cetN !== undefined
+      ? Math.max(0, cetN - cet1)
+      : 0;
+  if (n <= 1 || surcharge <= 0) {
     return {
       installmentInCents: principalInCents,
       totalInCents: principalInCents,
       interestInCents: 0,
     };
   }
-  // PMT = P · i / (1 − (1+i)^−n)
-  const factor = i / (1 - Math.pow(1 + i, -installments));
-  const installmentInCents = Math.round(principalInCents * factor);
-  const totalInCents = installmentInCents * installments;
+  // Acréscimo de parcelar sobre o principal, dividido em n parcelas iguais.
+  const grossInCents = principalInCents * (1 + surcharge);
+  const installmentInCents = Math.round(grossInCents / n);
+  const totalInCents = installmentInCents * n;
   return {
     installmentInCents,
     totalInCents,
@@ -95,58 +125,6 @@ function computeInstallment(
 }
 
 /** Uma entrada de split do POST /orders da Pagar.me. */
-interface PagarmeSplit {
-  recipient_id: string;
-  amount: number;
-  type: 'flat';
-  options: {
-    liable: boolean;
-    charge_processing_fee: boolean;
-    // Nome correto na API v5 da Pagar.me. Enviar `charge_remainder` (sem `_fee`)
-    // é ignorado pela API → nenhum recebedor absorve o resto e a cobrança é
-    // rejeitada com "At least 1 recipient must be responsible for the
-    // charge_remainder_fee".
-    charge_remainder_fee: boolean;
-  };
-}
-
-/**
- * Monta o `split[]` de uma cobrança: líquido pro recebedor do vendedor +
- * comissão pro recebedor da plataforma. Soma == valor da cobrança.
- * - Vendedor: `liable` (responde por chargeback) e `charge_processing_fee`
- *   (absorve a taxa do gateway) — default do plano (§3).
- * - Plataforma: `charge_remainder_fee` (absorve arredondamento). Exatamente 1
- *   recebedor precisa tê-lo em `true`, senão a Pagar.me rejeita a cobrança.
- */
-function buildSplit(
-  sellerRecipientId: string,
-  chargeAmount: number,
-  platformFeeInCents: number,
-): PagarmeSplit[] {
-  const sellerAmount = chargeAmount - platformFeeInCents;
-  return [
-    {
-      recipient_id: sellerRecipientId,
-      amount: sellerAmount,
-      type: 'flat',
-      options: {
-        liable: true,
-        charge_processing_fee: true,
-        charge_remainder_fee: false,
-      },
-    },
-    {
-      recipient_id: PLATFORM_RECIPIENT_ID,
-      amount: platformFeeInCents,
-      type: 'flat',
-      options: {
-        liable: false,
-        charge_processing_fee: false,
-        charge_remainder_fee: true,
-      },
-    },
-  ];
-}
 
 @Injectable()
 export class OrdersService {
@@ -487,6 +465,7 @@ export class OrdersService {
         sellerRecipientId,
         amountCharged,
         platformFeeInCents + interestInCents,
+        PLATFORM_RECIPIENT_ID,
       );
       this.logger.log(
         `Split pedido ${order.id}: vendedor ${(chargeAmount - platformFeeInCents) / 100} / ` +
@@ -694,9 +673,10 @@ export class OrdersService {
 
   /**
    * Simula o parcelamento no cartão de um valor (em centavos) até MAX_INSTALLMENTS,
-   * respeitando a parcela mínima. "Juros no comprador" via tabela Price. O front
-   * consome isto para montar o seletor de parcelas; o valor cobrado é sempre
-   * RECALCULADO no `createCheckout` (nunca confia no client).
+   * respeitando a parcela mínima. "Juros no comprador" pela tabela de CET acordada
+   * (ver PAGARME_CET_BY_INSTALLMENT). O front consome isto para montar o seletor de
+   * parcelas; o valor cobrado é sempre RECALCULADO no `createCheckout` (nunca confia
+   * no client).
    */
   simulateInstallments(amountInCents: number) {
     if (!amountInCents || amountInCents <= 0) {

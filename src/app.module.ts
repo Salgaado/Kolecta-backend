@@ -14,6 +14,7 @@ import { DepositsModule } from './deposits/deposits.module';
 import { ConnectAccountsModule } from './connect/connect.module';
 import { AddressesModule } from './addresses/addresses.module';
 import { FavoritesModule } from './favorites/favorites.module';
+import { CardsModule } from './cards/cards.module';
 import { WithdrawalsModule } from './withdrawals/withdrawals.module';
 import { AuctionsModule } from './auctions/auctions.module';
 import { DevAuthMiddleware } from './auth/dev-auth.middleware';
@@ -57,6 +58,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     WalletModule,
     AddressesModule,
     FavoritesModule,
+    CardsModule,
     ShippingModule,
     MessagesModule,
     SellersModule,

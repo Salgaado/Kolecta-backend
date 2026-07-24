@@ -7,13 +7,32 @@ import {
   ConflictException,
   Logger,
 } from '@nestjs/common';
-import { eq, and, desc, lte, lt, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
+import { eq, and, desc, lte, lt, ne, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { WalletService } from '../wallet/wallet.service';
 import { FounderService } from '../founder/founder.service';
+import { CardsService } from '../cards/cards.service';
+import { PagarmeService } from '../pagarme/pagarme.service';
+import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
 import { CreateAuctionDto, PlaceBidDto } from './dto/auction.dto';
+
+/**
+ * Recebedor da plataforma na Pagar.me (destino da comissão no split do arremate).
+ * Sem ele, a pré-auth do lance vai sem split (fallback legado). Ver orders.service.
+ */
+const PLATFORM_RECIPIENT_ID = process.env.PAGARME_PLATFORM_RECIPIENT_ID ?? '';
+
+/**
+ * Janela de validade estimada da pré-autorização (dias). A adquirente garante os
+ * fundos por ~5 dias; o cron de re-auth (Fase 3) renova antes disso em leilões
+ * mais longos. Configurável por `PAGARME_PREAUTH_VALIDITY_DAYS`.
+ */
+const AUTH_VALIDITY_DAYS = parseInt(
+  process.env.PAGARME_PREAUTH_VALIDITY_DAYS ?? '5',
+  10,
+);
 
 @Injectable()
 export class AuctionsService {
@@ -24,6 +43,8 @@ export class AuctionsService {
     private readonly db: LibSQLDatabase<typeof schema>,
     private readonly walletService: WalletService,
     private readonly founderService: FounderService,
+    private readonly cardsService: CardsService,
+    private readonly pagarme: PagarmeService,
   ) {}
 
   private readonly auctionListingSelect = {
@@ -214,109 +235,283 @@ export class AuctionsService {
       );
     }
 
-    // ── Gate de saldo (Fase 6): lance exige saldo DISPONÍVEL na wallet ──
-    // Se o bidder já é o vencedor atual, o hold atual dele conta a favor (ao
-    // subir o próprio lance, o hold antigo é destravado antes de travar o novo).
-    const bidderPrevHold =
-      auction.currentWinnerId === bidderId
-        ? auction.currentBidInCents ?? 0
-        : 0;
-    const bidderWalletPre = await this.walletService.getOrCreateWallet(bidderId);
-    if (bidderWalletPre.balanceInCents + bidderPrevHold < dto.amountInCents) {
+    // ── Cartão salvo obrigatório (lance por cartão) ──
+    // O lance é garantido por pré-autorização no cartão. Sem cartão salvo no
+    // Financeiro, não há como reter o valor → bloqueia.
+    const cardRef = await this.cardsService.getCardRef(bidderId);
+    if (!cardRef) {
       throw new BadRequestException(
-        'Saldo disponível insuficiente para este lance. Deposite para participar.',
+        'Salve um cartão de crédito no Financeiro para dar lances.',
       );
     }
 
-    // Vencedor anterior (será superado) — capturado da leitura acima. A guarda
-    // de concorrência no UPDATE garante a monotonicidade do valor; em corridas
-    // raras o prev pode ser levemente defasado (ver nota de reconciliação).
+    // Recebedor do vendedor (p/ split nativo no arremate). Ausente/inapto →
+    // pré-auth sem split (fallback legado, igual ao checkout).
+    const sellerRecipientId = await this._getSellerRecipientId(listing.sellerId);
+
+    // Vencedor anterior (será superado) + a auth dele (a ser cancelada se
+    // ganharmos a corrida). Capturado ANTES de criar a nova auth.
     const prevWinnerId = auction.currentWinnerId;
-    const prevAmount = auction.currentBidInCents;
+    const prevAuth = prevWinnerId
+      ? await this._getActiveBidAuth(auctionId, prevWinnerId)
+      : null;
 
-    const bid = await this.db.transaction(async (tx: any) => {
-      const [newBid] = await tx
-        .insert(schema.bids)
-        .values({ auctionId, bidderId, amountInCents: dto.amountInCents })
-        .returning();
+    // ── Pré-autorização (retenção) no cartão do bidder ──
+    // Cria a auth ANTES de assumir a liderança; se perdermos a corrida de
+    // concorrência abaixo, cancelamos a auth (rollback). Lança BadRequest com o
+    // motivo da Pagar.me quando o cartão é recusado.
+    const preAuth = await this._createBidPreAuth({
+      customerId: cardRef.customerId,
+      cardId: cardRef.cardId,
+      amountInCents: dto.amountInCents,
+      auctionId,
+      bidderId,
+      sellerId: listing.sellerId,
+      sellerRecipientId,
+    });
 
-      // Anti-sniper: lance nos últimos 5 min estende o leilão em 5 min.
-      let newEndsAt = auction.endsAt;
-      if (
-        auction.antiSniper &&
-        auction.endsAt &&
-        auction.endsAt.getTime() - Date.now() < 5 * 60 * 1000
-      ) {
-        newEndsAt = new Date(Date.now() + 5 * 60 * 1000);
-        this.logger.log(`Anti-sniper ativado: leilão ${auctionId} estendido.`);
-      }
+    let bid: typeof schema.bids.$inferSelect;
+    try {
+      bid = await this.db.transaction(async (tx: any) => {
+        const [newBid] = await tx
+          .insert(schema.bids)
+          .values({
+            auctionId,
+            bidderId,
+            amountInCents: dto.amountInCents,
+            pagarmeOrderId: preAuth.orderId,
+            pagarmeChargeId: preAuth.chargeId,
+            pagarmeCardId: cardRef.cardId,
+            authExpiresAt: preAuth.expiresAt,
+          })
+          .returning();
 
-      // Guarda de concorrência: só vence quem supera o lance atual.
-      const updated = await tx
-        .update(schema.auctions)
-        .set({
-          currentBidInCents: dto.amountInCents,
-          currentWinnerId: bidderId,
-          endsAt: newEndsAt,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(schema.auctions.id, auctionId),
-            or(
-              isNull(schema.auctions.currentBidInCents),
-              lt(schema.auctions.currentBidInCents, dto.amountInCents),
+        // Anti-sniper: lance nos últimos 5 min estende o leilão em 5 min.
+        let newEndsAt = auction.endsAt;
+        if (
+          auction.antiSniper &&
+          auction.endsAt &&
+          auction.endsAt.getTime() - Date.now() < 5 * 60 * 1000
+        ) {
+          newEndsAt = new Date(Date.now() + 5 * 60 * 1000);
+          this.logger.log(`Anti-sniper ativado: leilão ${auctionId} estendido.`);
+        }
+
+        // Guarda de concorrência: só vence quem supera o lance atual.
+        const updated = await tx
+          .update(schema.auctions)
+          .set({
+            currentBidInCents: dto.amountInCents,
+            currentWinnerId: bidderId,
+            endsAt: newEndsAt,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.auctions.id, auctionId),
+              or(
+                isNull(schema.auctions.currentBidInCents),
+                lt(schema.auctions.currentBidInCents, dto.amountInCents),
+              ),
             ),
-          ),
-        )
-        .returning();
+          )
+          .returning();
 
-      if (updated.length === 0) {
-        // Outro lance igual/maior chegou primeiro → desfaz o insert (rollback).
-        throw new ConflictException(
-          'Outro lance superou o seu. Atualize e tente novamente.',
-        );
-      }
+        if (updated.length === 0) {
+          // Outro lance igual/maior chegou primeiro → desfaz o insert (rollback).
+          throw new ConflictException(
+            'Outro lance superou o seu. Atualize e tente novamente.',
+          );
+        }
 
-      // Marca o lance vencedor anterior como superado (status do ciclo).
-      if (prevWinnerId) {
+        // Todos os outros lances ativos do leilão viram 'outbid' — sobra só o
+        // novo (líder). Cobre o caso de o bidder subir o próprio lance.
         await tx
           .update(schema.bids)
           .set({ status: 'outbid' })
           .where(
             and(
               eq(schema.bids.auctionId, auctionId),
-              eq(schema.bids.bidderId, prevWinnerId),
               eq(schema.bids.status, 'active'),
+              ne(schema.bids.id, newBid.id),
             ),
           );
-      }
 
-      return newBid;
-    });
-
-    // ── Ajuste dos holds (fora da tx — padrão do WalletService) ──
-    // NOTA: o hold é ajustado após o commit do lance; a checagem de saldo acima
-    // torna a falha improvável. Se algum ajuste falhar, o lance permanece e o
-    // desajuste do hold precisa de reconciliação (raro; ver plano Fase 6).
-    // Destrava o hold do lance anterior (superado) — inclui o próprio bidder
-    // quando ele sobe o próprio lance.
-    if (prevWinnerId && prevAmount && prevAmount > 0) {
-      const prevWallet = await this.walletService.getOrCreateWallet(prevWinnerId);
-      await this.walletService.releaseBidHold(prevWallet.id, prevAmount, {
-        auctionId,
-        description: `Lance superado — leilão ${auctionId.slice(0, 8)}`,
+        return newBid;
       });
+    } catch (err) {
+      // Perdeu a corrida (ou erro) → cancela a retenção recém-criada.
+      await this._voidPreAuth(preAuth.chargeId);
+      throw err;
     }
-    // Trava o valor do novo lance vencedor.
-    const bidderWallet = await this.walletService.getOrCreateWallet(bidderId);
-    await this.walletService.holdForBid(bidderWallet.id, dto.amountInCents, {
-      auctionId,
-      bidId: bid.id,
-      description: `Hold de lance — leilão ${auctionId.slice(0, 8)}`,
-    });
+
+    // Ganhou a liderança → cancela a auth do vencedor anterior (best-effort;
+    // inclui o próprio bidder quando ele sobe o próprio lance).
+    if (prevAuth?.chargeId) {
+      await this._voidPreAuth(prevAuth.chargeId);
+    }
 
     return bid;
+  }
+
+  // ── Helpers de pré-autorização no cartão ──────────────────────────────────
+
+  /** Recebedor apto do vendedor (p/ split), ou null (→ auth sem split). */
+  private async _getSellerRecipientId(
+    sellerId: string,
+  ): Promise<string | null> {
+    const [profile] = await this.db
+      .select({
+        recipientId: schema.sellerProfiles.pagarmeRecipientId,
+        canReceive: schema.sellerProfiles.canReceive,
+      })
+      .from(schema.sellerProfiles)
+      .where(eq(schema.sellerProfiles.userId, sellerId));
+    return profile?.canReceive && profile.recipientId
+      ? profile.recipientId
+      : null;
+  }
+
+  /** Auth vigente (order/charge) do lance ativo de um usuário no leilão. */
+  private async _getActiveBidAuth(
+    auctionId: string,
+    bidderId: string,
+  ): Promise<{ chargeId: string | null; orderId: string | null } | null> {
+    const [b] = await this.db
+      .select({
+        chargeId: schema.bids.pagarmeChargeId,
+        orderId: schema.bids.pagarmeOrderId,
+      })
+      .from(schema.bids)
+      .where(
+        and(
+          eq(schema.bids.auctionId, auctionId),
+          eq(schema.bids.bidderId, bidderId),
+          eq(schema.bids.status, 'active'),
+        ),
+      );
+    return b ?? null;
+  }
+
+  /**
+   * Cria uma pré-autorização (`capture:false`) no cartão salvo do bidder, no
+   * valor do lance. Retorna { orderId, chargeId, expiresAt }. Lança
+   * BadRequest com o motivo da Pagar.me quando o cartão é recusado.
+   */
+  private async _createBidPreAuth(params: {
+    customerId: string;
+    cardId: string;
+    amountInCents: number;
+    auctionId: string;
+    bidderId: string;
+    sellerId: string;
+    sellerRecipientId: string | null;
+  }): Promise<{ orderId: string; chargeId: string; expiresAt: Date }> {
+    // Split nativo no arremate (executado na captura). Sem recebedor apto ou
+    // sem recebedor da plataforma → auth sem split (fluxo legado).
+    let split: PagarmeSplit[] | undefined;
+    if (params.sellerRecipientId && PLATFORM_RECIPIENT_ID) {
+      const commissionPct = await this.founderService.resolveCommissionPercent(
+        params.sellerId,
+      );
+      const platformFeeInCents = Math.round(
+        (params.amountInCents * commissionPct) / 100,
+      );
+      split = buildSplit(
+        params.sellerRecipientId,
+        params.amountInCents,
+        platformFeeInCents,
+        PLATFORM_RECIPIENT_ID,
+      );
+    }
+
+    let pagarmeOrder: any;
+    try {
+      pagarmeOrder = await this.pagarme.post(
+        '/orders',
+        {
+          customer_id: params.customerId,
+          items: [
+            {
+              amount: params.amountInCents,
+              description: `Lance Kolecta — leilão ${params.auctionId.slice(0, 8)}`,
+              quantity: 1,
+              code: 'kolecta-bid',
+            },
+          ],
+          payments: [
+            {
+              payment_method: 'credit_card',
+              credit_card: {
+                capture: false, // pré-autorização (retenção sem captura)
+                statement_descriptor: 'KOLECTA',
+                card_id: params.cardId,
+                ...(split ? { split } : {}),
+              },
+            },
+          ],
+          metadata: {
+            type: 'bid_preauth',
+            auctionId: params.auctionId,
+            bidderId: params.bidderId,
+          },
+        },
+        // Idempotência por lance (valor + bidder + janela do segundo).
+        `bid-preauth-${params.auctionId}-${params.bidderId}-${params.amountInCents}-${Math.floor(Date.now() / 1000)}`,
+      );
+    } catch {
+      throw new BadRequestException(
+        'Não foi possível autorizar o valor no seu cartão. Tente outro cartão.',
+      );
+    }
+
+    const charge = pagarmeOrder?.charges?.[0];
+    const authorized =
+      pagarmeOrder?.status === 'pending' || // order com charge autorizada
+      charge?.status === 'authorized_pending_capture';
+
+    if (!charge?.id || !authorized) {
+      const reason =
+        charge?.last_transaction?.gateway_response?.errors?.[0]?.message ||
+        charge?.last_transaction?.acquirer_message ||
+        'Cartão recusado. Verifique os dados ou tente outro cartão.';
+      // Cancela a order caso tenha sido criada em estado não-autorizado.
+      if (charge?.id) await this._voidPreAuth(charge.id);
+      throw new BadRequestException(reason);
+    }
+
+    const expiresAt = new Date(
+      Date.now() + AUTH_VALIDITY_DAYS * 24 * 60 * 60 * 1000,
+    );
+    return { orderId: pagarmeOrder.id, chargeId: charge.id, expiresAt };
+  }
+
+  /** Cancela (void) uma pré-autorização. Best-effort — não derruba o fluxo. */
+  private async _voidPreAuth(chargeId: string): Promise<void> {
+    try {
+      await this.pagarme.delete(`/charges/${chargeId}`);
+    } catch (err: any) {
+      this.logger.warn(
+        `Falha ao cancelar pré-auth ${chargeId} (ignorado): ${err?.message}`,
+      );
+    }
+  }
+
+  /** Captura uma pré-autorização no valor informado. Lança se não ficar `paid`. */
+  private async _captureCharge(
+    chargeId: string,
+    amountInCents: number,
+  ): Promise<void> {
+    const captured = await this.pagarme.post(
+      `/charges/${chargeId}/capture`,
+      { amount: amountInCents },
+      `bid-capture-${chargeId}`,
+    );
+    if (captured?.status !== 'paid') {
+      throw new Error(
+        `Captura da pré-auth ${chargeId} não confirmada (status: ${captured?.status}).`,
+      );
+    }
   }
 
   // ── Meus lances (comprador) — melhor lance por leilão ────────────────────
@@ -427,7 +622,12 @@ export class AuctionsService {
       !auction.reservePriceInCents ||
       (auction.currentBidInCents ?? 0) >= auction.reservePriceInCents;
 
-    // ── Sem venda: encerra e destrava o hold do (eventual) arrematante ──
+    // Auth vigente do vencedor (pré-autorização a capturar/cancelar).
+    const winnerAuth = hasWinner
+      ? await this._getActiveBidAuth(auction.id, auction.currentWinnerId!)
+      : null;
+
+    // ── Sem venda: encerra e CANCELA a pré-auth do (eventual) arrematante ──
     if (!hasWinner || !reserveMet) {
       await this.db
         .update(schema.auctions)
@@ -435,14 +635,8 @@ export class AuctionsService {
         .where(eq(schema.auctions.id, auction.id));
 
       if (hasWinner) {
-        // Reserva não atingida → devolve o valor travado ao arrematante.
-        const w = await this.walletService.getOrCreateWallet(
-          auction.currentWinnerId!,
-        );
-        await this.walletService.releaseBidHold(w.id, auction.currentBidInCents!, {
-          auctionId: auction.id,
-          description: `Leilão ${auction.id.slice(0, 8)} sem venda (reserva) — hold liberado`,
-        });
+        // Reserva não atingida → libera a retenção no cartão do arrematante.
+        if (winnerAuth?.chargeId) await this._voidPreAuth(winnerAuth.chargeId);
         await this.db
           .update(schema.bids)
           .set({ status: 'released' })
@@ -453,7 +647,7 @@ export class AuctionsService {
             ),
           );
         this.logger.log(
-          `Leilão ${auction.id} encerrado sem venda (reserva não atingida). Hold liberado.`,
+          `Leilão ${auction.id} encerrado sem venda (reserva não atingida). Pré-auth cancelada.`,
         );
       } else {
         this.logger.log(`Leilão ${auction.id} encerrado sem vencedor.`);
@@ -461,15 +655,59 @@ export class AuctionsService {
       return;
     }
 
-    // ── Venda: cria pedido PAGO, liquidado do hold do vencedor ──
+    // ── Venda: CAPTURA a pré-auth do vencedor (arremate por cartão) ──
     const totalInCents = auction.currentBidInCents!;
     const platformFeeInCents = Math.round(
       (totalInCents * platformFeePercent) / 100,
     );
-    // Arremate é pago com SALDO (hold da wallet) — sem cobrança de gateway,
-    // logo sem taxa de gateway (corrige o antigo 4% hardcoded, bug B4).
+    // Split nativo desconta a taxa do gateway do vendedor (charge_processing_fee);
+    // o valor real é reconciliado à parte (ponta P-fee do plano). Aqui, 0.
     const sellerNetInCents = totalInCents - platformFeeInCents;
 
+    // Captura a retenção no cartão. Falha (auth expirada/recusada) → Fase 4:
+    // pedido/anúncio ficam 'pending_payment' para o vencedor pagar no prazo.
+    try {
+      if (!winnerAuth?.chargeId) {
+        throw new Error('sem pré-auth vigente para capturar');
+      }
+      await this._captureCharge(winnerAuth.chargeId, totalInCents);
+    } catch (err: any) {
+      const orderId: string = await this.db.transaction(async (tx: any) => {
+        await tx
+          .update(schema.auctions)
+          .set({ status: 'ended', updatedAt: new Date() })
+          .where(eq(schema.auctions.id, auction.id));
+        const [order] = await tx
+          .insert(schema.orders)
+          .values({
+            buyerId: auction.currentWinnerId!,
+            sellerId: listing!.sellerId,
+            listingId: auction.listingId,
+            totalInCents,
+            sellerNetInCents,
+            platformFeeInCents,
+            gatewayFeeInCents: 0,
+            status: 'pending_payment',
+            paymentMethod: 'external',
+            paymentInstrument: 'credit_card',
+            externalAmountInCents: totalInCents,
+            walletAmountInCents: 0,
+          })
+          .returning();
+        await tx
+          .update(schema.listings)
+          .set({ status: 'pending_payment' })
+          .where(eq(schema.listings.id, auction.listingId));
+        return order.id as string;
+      });
+      this.logger.error(
+        `⚠️ Leilão ${auction.id}: captura da pré-auth falhou (${err?.message}). ` +
+          `Pedido ${orderId} → 'pending_payment' (aguardando pagamento do vencedor — Fase 4).`,
+      );
+      return;
+    }
+
+    // Captura OK → cria pedido pago e retém o líquido do vendedor (espelho).
     const orderId: string = await this.db.transaction(async (tx: any) => {
       await tx
         .update(schema.auctions)
@@ -487,9 +725,12 @@ export class AuctionsService {
           platformFeeInCents,
           gatewayFeeInCents: 0,
           status: 'paid',
-          paymentMethod: 'wallet',
-          walletAmountInCents: totalInCents,
-          externalAmountInCents: 0,
+          paymentMethod: 'external',
+          paymentInstrument: 'credit_card',
+          pagarmeOrderId: winnerAuth!.orderId,
+          pagarmeChargeId: winnerAuth!.chargeId,
+          walletAmountInCents: 0,
+          externalAmountInCents: totalInCents,
         })
         .returning();
 
@@ -512,19 +753,10 @@ export class AuctionsService {
       return order.id as string;
     });
 
-    // Liquida o hold do vencedor (débito efetivo) e retém o líquido do vendedor.
-    // Se o hold não existir (leilão anterior ao recurso), volta o pedido p/
-    // 'pending' e loga — pagamento então segue pelo checkout normal.
+    // Espelha o líquido do vendedor como retido na wallet (buyer protection).
+    // Se o split nativo colocou o líquido no recebedor do vendedor, este é o
+    // espelho contábil; o release/saque segue o fluxo das Fases 4/5.
     try {
-      const winnerWallet = await this.walletService.getOrCreateWallet(
-        auction.currentWinnerId!,
-      );
-      await this.walletService.settleBidHold(winnerWallet.id, totalInCents, {
-        auctionId: auction.id,
-        orderId,
-        description: `Arremate leilão ${auction.id.slice(0, 8)}`,
-      });
-
       const sellerWallet = await this.walletService.getOrCreateWallet(
         listing!.sellerId,
       );
@@ -534,19 +766,14 @@ export class AuctionsService {
         `Venda por leilão #${orderId.slice(0, 8)} — líquido retido`,
         orderId,
       );
-
-      this.logger.log(
-        `Leilão ${auction.id} arrematado: ${auction.currentWinnerId} — R$${(totalInCents / 100).toFixed(2)} (líquido ${sellerNetInCents / 100}).`,
-      );
     } catch (err: any) {
-      await this.db
-        .update(schema.orders)
-        .set({ status: 'pending' })
-        .where(eq(schema.orders.id, orderId));
       this.logger.error(
-        `⚠️ Leilão ${auction.id}: falha ao liquidar hold do vencedor (${err?.message}). ` +
-          `Pedido ${orderId} → 'pending' p/ pagamento manual.`,
+        `⚠️ Leilão ${auction.id}: pedido ${orderId} pago, mas falhou o espelho do líquido do vendedor (${err?.message}).`,
       );
     }
+
+    this.logger.log(
+      `Leilão ${auction.id} arrematado por cartão: ${auction.currentWinnerId} — R$${(totalInCents / 100).toFixed(2)} (líquido ${sellerNetInCents / 100}).`,
+    );
   }
 }
