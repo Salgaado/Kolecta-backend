@@ -78,7 +78,8 @@ const client = createClient({
              updated_at = ?
        where user_id in (${placeholders})
     `,
-    args: [Date.now(), ...ids],
+    // `mode: 'timestamp'` no schema = Unix em SEGUNDOS (não ms).
+    args: [Math.floor(Date.now() / 1000), ...ids],
   });
   await client.execute({
     sql: `delete from founder_credits where user_id in (${placeholders})`,
