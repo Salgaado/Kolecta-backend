@@ -184,22 +184,23 @@ export class AdminService {
       .offset(offset);
 
     return rows.map((r) => ({
+      // `...r.listing` já inclui rejectionReason/moderatedBy/moderatedAt (2.1/2.4).
       ...r.listing,
       sellerName: r.sellerName ?? null,
-      // Auditoria de moderação (2.4).
+      // Auditoria de moderação (2.4): nome de quem moderou.
       moderatorName: r.moderatorName ?? null,
-      // Config do leilão quando aplicável (2.2) — null para venda direta.
-      auction:
-        r.listing.type === 'auction' && r.auction
-          ? {
-              startingBidInCents: r.auction.startingBidInCents,
-              minIncrementInCents: r.auction.minIncrementInCents,
-              reservePriceInCents: r.auction.reservePriceInCents,
-              durationHours: r.auction.durationHours,
-              endsAt: r.auction.endsAt,
-              antiSniper: r.auction.antiSniper,
-            }
-          : null,
+      // Config do leilão NO TOPO (2.2) — o front lê listing.startingBidInCents
+      // etc. direto. Só quando type='auction'; venda direta não sobrepõe nada.
+      ...(r.listing.type === 'auction' && r.auction
+        ? {
+            startingBidInCents: r.auction.startingBidInCents,
+            minIncrementInCents: r.auction.minIncrementInCents,
+            reservePriceInCents: r.auction.reservePriceInCents,
+            durationHours: r.auction.durationHours,
+            endsAt: r.auction.endsAt,
+            antiSniper: r.auction.antiSniper,
+          }
+        : {}),
     }));
   }
 
