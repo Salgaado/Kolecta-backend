@@ -20,6 +20,6 @@ export function html(data: KycApprovedData): string {
       <p style="margin:12px 0 0;">Que tal começar criando seu primeiro anúncio?</p>
     `,
     ctaLabel: 'Criar anúncio',
-    ctaUrl: `${BRAND.site}/seller/listings/new`,
+    ctaUrl: `${BRAND.site}/painel/anuncios/novo`,
   });
 }

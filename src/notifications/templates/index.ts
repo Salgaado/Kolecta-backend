@@ -5,6 +5,9 @@ import * as orderConfirmed from './order-confirmed';
 import * as saleMade from './sale-made';
 import * as kycApproved from './kyc-approved';
 import * as kycActionNeeded from './kyc-action-needed';
+import * as welcome from './welcome';
+import * as listingApproved from './listing-approved';
+import * as listingRejected from './listing-rejected';
 
 export interface EmailTemplate {
   subject: (data: any) => string;
@@ -16,6 +19,9 @@ export const TEMPLATES = {
   'sale-made': saleMade,
   'kyc-approved': kycApproved,
   'kyc-action-needed': kycActionNeeded,
+  welcome: welcome,
+  'listing-approved': listingApproved,
+  'listing-rejected': listingRejected,
 } satisfies Record<string, EmailTemplate>;
 
 export type TemplateSlug = keyof typeof TEMPLATES;

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { WebhookService } from './webhook.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { eq } from 'drizzle-orm';
 import * as schema from '../database/schema';
 
@@ -49,6 +50,9 @@ const userDeletedEvt = {
   data: { id: 'user_abc123' },
 };
 
+// Emissor de eventos: só precisamos observar o que foi emitido.
+const mockEventEmitter = { emit: jest.fn() };
+
 // ─── Suite ────────────────────────────────────────────────────────────────────
 describe('WebhookService', () => {
   let service: WebhookService;
@@ -60,6 +64,7 @@ describe('WebhookService', () => {
       providers: [
         WebhookService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
+        { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
 
@@ -74,6 +79,12 @@ describe('WebhookService', () => {
   describe('user.created', () => {
     it('deve chamar db.insert com os dados corretos', async () => {
       await service.handleEvent(userCreatedEvt);
+
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith('user.registered', {
+        id: 'user_abc123',
+        email: 'test@kolecta.com',
+        name: 'João Silva',
+      });
 
       expect(mockInsert).toHaveBeenCalledWith(schema.users);
       const valuesCall = mockInsert.mock.results[0].value.values;

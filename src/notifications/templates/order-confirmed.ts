@@ -29,6 +29,6 @@ export function html(data: OrderConfirmedData): string {
       <p style="margin:12px 0 0;">Você pode acompanhar o status do pedido a qualquer momento na sua conta.</p>
     `,
     ctaLabel: 'Ver meu pedido',
-    ctaUrl: `${BRAND.site}/account/orders/${data.orderId}`,
+    ctaUrl: `${BRAND.site}/conta/pedidos/${data.orderId}`,
   });
 }

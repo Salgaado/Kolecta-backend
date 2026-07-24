@@ -30,6 +30,6 @@ export function html(data: SaleMadeData): string {
       <p style="margin:12px 0 0;font-size:13px;color:#6b7280;">O valor fica retido com segurança e é liberado para saque após a confirmação de entrega.</p>
     `,
     ctaLabel: 'Gerenciar venda',
-    ctaUrl: `${BRAND.site}/seller/orders/${data.orderId}`,
+    ctaUrl: `${BRAND.site}/painel/pedidos/${data.orderId}`,
   });
 }

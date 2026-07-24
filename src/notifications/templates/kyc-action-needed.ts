@@ -30,6 +30,6 @@ export function html(data: KycActionNeededData): string {
       <p style="margin:12px 0 0;">Acesse sua conta para concluir a verificação. Se precisar de ajuda, é só responder este e-mail.</p>
     `,
     ctaLabel: 'Revisar verificação',
-    ctaUrl: `${BRAND.site}/seller/onboarding`,
+    ctaUrl: `${BRAND.site}/painel/recebedor`,
   });
 }

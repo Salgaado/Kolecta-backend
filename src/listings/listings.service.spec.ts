@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ListingsService } from './listings.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { FounderService } from '../founder/founder.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   NotFoundException,
   ForbiddenException,
@@ -65,6 +66,9 @@ const mockDb = {
   transaction: jest.fn(async (cb: (tx: typeof mockTx) => unknown) => cb(mockTx)),
 };
 
+// Emissor de eventos: só precisamos observar o que foi emitido.
+const mockEventEmitter = { emit: jest.fn() };
+
 // ─── Suite ────────────────────────────────────────────────────────────────────
 
 describe('ListingsService', () => {
@@ -81,6 +85,7 @@ describe('ListingsService', () => {
           provide: FounderService,
           useValue: { evaluate: jest.fn().mockResolvedValue(undefined) },
         },
+        { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
 
@@ -263,6 +268,61 @@ describe('ListingsService', () => {
 
       expect(updateChain.set).toHaveBeenCalledWith(
         expect.objectContaining({ endsAt: expect.any(Date) }),
+      );
+    });
+
+    // ── E-mail de moderação: só em ação de admin ──
+    // A mesma chamada serve para o vendedor publicar sozinho; avisar alguém do
+    // que ele mesmo acabou de fazer seria ruído.
+
+    it('admin aprovando (moderatorId) emite listing.moderated → aprovado', async () => {
+      selectChain.limit
+        .mockResolvedValueOnce([fakeListing])
+        .mockResolvedValueOnce([{ ...fakeListing, status: 'active' }]);
+
+      await service.updateStatus('listing_001', 'active', {
+        moderatorId: 'admin_1',
+      });
+
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'listing.moderated',
+        expect.objectContaining({
+          template: 'listing-approved',
+          listingId: 'listing_001',
+          sellerId: fakeListing.sellerId,
+        }),
+      );
+    });
+
+    it('admin reprovando leva o motivo junto', async () => {
+      selectChain.limit
+        .mockResolvedValueOnce([fakeListing])
+        .mockResolvedValueOnce([{ ...fakeListing, status: 'rejected' }]);
+
+      await service.updateStatus('listing_001', 'rejected', {
+        moderatorId: 'admin_1',
+        reason: 'Fotos desfocadas',
+      });
+
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'listing.moderated',
+        expect.objectContaining({
+          template: 'listing-rejected',
+          reason: 'Fotos desfocadas',
+        }),
+      );
+    });
+
+    it('vendedor publicando sozinho (sem moderatorId) NÃO emite e-mail', async () => {
+      selectChain.limit
+        .mockResolvedValueOnce([fakeListing])
+        .mockResolvedValueOnce([{ ...fakeListing, status: 'active' }]);
+
+      await service.updateStatus('listing_001', 'active');
+
+      expect(mockEventEmitter.emit).not.toHaveBeenCalledWith(
+        'listing.moderated',
+        expect.anything(),
       );
     });
   });

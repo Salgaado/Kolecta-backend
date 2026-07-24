@@ -194,6 +194,18 @@ export class AdminService {
         listingTitle: 'Anúncio de teste',
         totalInCents: 12345,
       },
+      welcome: { name: 'Teste Kolecta' },
+      'listing-approved': {
+        sellerName: 'Teste Kolecta',
+        listingId: 'teste',
+        listingTitle: 'Hot Wheels Porsche 917K — anúncio de teste',
+      },
+      'listing-rejected': {
+        sellerName: 'Teste Kolecta',
+        listingId: 'teste',
+        listingTitle: 'Hot Wheels Porsche 917K — anúncio de teste',
+        reason: 'As fotos estão desfocadas. Reenvie com 3 fotos nítidas.',
+      },
     };
 
     await this.mailService.send({

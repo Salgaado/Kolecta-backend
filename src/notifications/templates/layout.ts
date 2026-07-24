@@ -10,6 +10,27 @@ const BRAND = {
   support: process.env.MAIL_REPLY_TO || 'suporte@kolecta.com.br',
 };
 
+/**
+ * Escapa HTML. Obrigatório em qualquer dado vindo do usuário (título de anúncio,
+ * nome, motivo de reprovação) — sem isso, um título com `<script>` ou aspas
+ * quebra o corpo do e-mail e vira vetor de injeção.
+ */
+export function esc(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Primeiro nome, para tratamento pessoal ("Olá, Daniel"). */
+export function firstName(name: string | null | undefined): string {
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) return '';
+  return trimmed.split(/\s+/)[0];
+}
+
 /** Formata centavos (int) → "R$ 1.234,56" */
 export function formatBRL(cents: number): string {
   return (cents / 100).toLocaleString('pt-BR', {

@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq, desc, and, getTableColumns, like, sql } from 'drizzle-orm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import * as Papa from 'papaparse';
@@ -37,6 +38,7 @@ export class ListingsService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
     private readonly founderService: FounderService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   // ── Buscar por ID ────────────────────────────────────────────────────────
@@ -329,6 +331,29 @@ export class ListingsService {
     // Auto-inicia o leilão quando o admin ativa um anúncio de leilão ainda parado.
     if (status === 'active' && listing.type === 'auction') {
       await this.startAuctionClockIfPending(id);
+    }
+
+    // ── E-mail de moderação (aprovado / reprovado) ──
+    // Só quando a mudança veio de uma AÇÃO DE ADMIN (`moderatorId` presente).
+    // Publicação feita pelo próprio vendedor também chega aqui com 'active',
+    // mas avisar alguém do que ele mesmo acabou de fazer seria ruído.
+    if (opts?.moderatorId) {
+      const moderationEmail =
+        status === 'active'
+          ? 'listing-approved'
+          : ['rejected', 'cancelled'].includes(status)
+            ? 'listing-rejected'
+            : null;
+
+      if (moderationEmail) {
+        this.eventEmitter.emit('listing.moderated', {
+          template: moderationEmail,
+          listingId: id,
+          sellerId: listing.sellerId,
+          listingTitle: listing.title,
+          reason: setFields.rejectionReason ?? null,
+        });
+      }
     }
 
     // Anúncio entrou em estado "enviado" → reavalia qualificação de fundador do

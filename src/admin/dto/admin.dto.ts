@@ -24,6 +24,21 @@ export class SendTestEmailDto {
 
   /** Template a renderizar. Default: `kyc-approved` (não depende de pedido). */
   @IsOptional()
-  @IsIn(['kyc-approved', 'kyc-action-needed', 'order-confirmed', 'sale-made'])
-  template?: 'kyc-approved' | 'kyc-action-needed' | 'order-confirmed' | 'sale-made';
+  @IsIn([
+    'kyc-approved',
+    'kyc-action-needed',
+    'order-confirmed',
+    'sale-made',
+    'welcome',
+    'listing-approved',
+    'listing-rejected',
+  ])
+  template?:
+    | 'kyc-approved'
+    | 'kyc-action-needed'
+    | 'order-confirmed'
+    | 'sale-made'
+    | 'welcome'
+    | 'listing-approved'
+    | 'listing-rejected';
 }

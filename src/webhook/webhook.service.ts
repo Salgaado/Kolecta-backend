@@ -1,6 +1,7 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq } from 'drizzle-orm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 
@@ -11,6 +12,7 @@ export class WebhookService {
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async handleEvent(evt: { type: string; data: any }): Promise<void> {
@@ -41,6 +43,11 @@ export class WebhookService {
     try {
       await this.db.insert(schema.users).values({ id, email, name });
       this.logger.log(`[user.created] Usuário inserido no Turso com sucesso.`);
+
+      // E-mail de boas-vindas. Emitido só depois do insert dar certo — não faz
+      // sentido dar boas-vindas a quem não entrou no banco. O listener trata a
+      // falha por conta própria; e-mail nunca derruba o webhook.
+      this.eventEmitter.emit('user.registered', { id, email, name });
     } catch (err) {
       this.logger.error(`[user.created] Erro ao inserir usuário:`, err.message);
     }
