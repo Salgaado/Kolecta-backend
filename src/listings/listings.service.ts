@@ -251,12 +251,25 @@ export class ListingsService {
       );
     }
 
+    // ── Reprovado + editado = reenviado para a fila ──
+    // Sem isto o anúncio reprovado é um beco sem saída: `publish` recusa o
+    // status 'rejected', o front não mostra o botão de publicar e a fila do
+    // admin só busca draft/pending_review. O vendedor corrigiria para sempre
+    // sem nunca voltar à moderação — e o e-mail de reprovação promete que volta.
+    const voltouParaFila = listing.status === 'rejected';
+
     await this.db
       .update(schema.listings)
-      .set({ ...dto, updatedAt: new Date() })
+      .set({
+        ...dto,
+        ...(voltouParaFila ? { status: 'pending_review' } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(schema.listings.id, id));
 
-    this.logger.log(`[update] Anúncio atualizado: ${id}`);
+    this.logger.log(
+      `[update] Anúncio atualizado: ${id}${voltouParaFila ? ' (reprovado → pending_review, de volta à fila)' : ''}`,
+    );
 
     return this.findById(id);
   }

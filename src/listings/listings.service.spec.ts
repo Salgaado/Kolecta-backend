@@ -224,6 +224,41 @@ describe('ListingsService', () => {
         service.update('listing_001', 'user_outro', { title: 'X' }),
       ).rejects.toThrow(ForbiddenException);
     });
+
+    // ── Reprovado + editado volta para a fila ──
+    // Sem isso o anúncio reprovado nunca mais chega na moderação: publish
+    // recusa 'rejected' e a fila do admin só busca draft/pending_review.
+
+    it('anúncio REPROVADO editado volta para pending_review', async () => {
+      const reprovado = { ...fakeListing, status: 'rejected' };
+      selectChain.limit
+        .mockResolvedValueOnce([reprovado])
+        .mockResolvedValueOnce([{ ...reprovado, status: 'pending_review' }]);
+
+      await service.update('listing_001', 'user_seller', {
+        title: 'Título corrigido',
+      });
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Título corrigido',
+          status: 'pending_review',
+        }),
+      );
+    });
+
+    it('editar anúncio ATIVO não mexe no status', async () => {
+      const ativo = { ...fakeListing, status: 'active' };
+      selectChain.limit
+        .mockResolvedValueOnce([ativo])
+        .mockResolvedValueOnce([ativo]);
+
+      await service.update('listing_001', 'user_seller', { title: 'Ajuste' });
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.not.objectContaining({ status: expect.anything() }),
+      );
+    });
   });
 
   // ── remove ─────────────────────────────────────────────────────────────────
