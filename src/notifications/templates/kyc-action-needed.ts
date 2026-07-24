@@ -1,6 +1,14 @@
-// E-mail #15 — "KYC pendente — ação necessária" (para o VENDEDOR)
+// E-mail — "KYC pendente — ação necessária" (para o VENDEDOR)
 // Gatilho: evento `recipient.kyc.action_needed` (status refused/suspended/blocked).
-import { renderLayout, BRAND } from './layout';
+import {
+  renderEmail,
+  renderText,
+  alertBox,
+  COLORS,
+  BRAND,
+  esc,
+  firstName,
+} from './layout';
 
 export interface KycActionNeededData {
   name: string | null;
@@ -14,22 +22,46 @@ const STATUS_LABEL: Record<string, string> = {
   blocked: 'sua conta de recebimento foi bloqueada',
 };
 
+const TITLE = 'Precisamos de uma ação sua';
+
+const CTA = {
+  href: `${BRAND.site}/painel/recebedor`,
+  label: 'Revisar verificação',
+};
+
+const reasonOf = (status: string) =>
+  STATUS_LABEL[status] ?? 'há uma pendência na sua verificação';
+
+const paragraphs = (data: KycActionNeededData) => [
+  `${esc(firstName(data.name))}, identificamos que <strong>${esc(reasonOf(data.status))}</strong>.`,
+  `Para voltar a vender e sacar na Kolecta, é preciso revisar e reenviar suas informações de verificação. Se precisar de ajuda, é só responder este e-mail.`,
+];
+
 export function subject(): string {
-  return '⚠️ Ação necessária na sua conta de vendedor';
+  return 'Ação necessária na sua conta de vendedor';
 }
 
 export function html(data: KycActionNeededData): string {
-  const greeting = data.name ? `Olá, ${data.name}!` : 'Olá!';
-  const reason =
-    STATUS_LABEL[data.status] ?? 'há uma pendência na sua verificação';
-  return renderLayout({
-    heading: '⚠️ Precisamos de uma ação sua',
-    body: `
-      <p style="margin:0 0 12px;">${greeting}</p>
-      <p style="margin:0 0 12px;">Identificamos que <strong>${reason}</strong>. Para voltar a vender e sacar na Kolecta, é preciso revisar e reenviar suas informações de verificação.</p>
-      <p style="margin:12px 0 0;">Acesse sua conta para concluir a verificação. Se precisar de ajuda, é só responder este e-mail.</p>
-    `,
-    ctaLabel: 'Revisar verificação',
-    ctaUrl: `${BRAND.site}/painel/recebedor`,
+  return renderEmail({
+    preheader: 'Revise sua verificação para voltar a vender.',
+    tag: 'Ação necessária',
+    title: TITLE,
+    paragraphs: paragraphs(data),
+    blocks: alertBox(
+      `Enquanto a verificação estiver pendente, novas vendas e saques ficam bloqueados.`,
+      { color: COLORS.red },
+    ),
+    cta: CTA,
+  });
+}
+
+export function text(data: KycActionNeededData): string {
+  return renderText({
+    title: TITLE,
+    paragraphs: paragraphs(data),
+    lines: [
+      'Enquanto a verificação estiver pendente, novas vendas e saques ficam bloqueados.',
+    ],
+    cta: CTA,
   });
 }

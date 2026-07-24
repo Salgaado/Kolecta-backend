@@ -3,7 +3,7 @@
 // vem de uma AÇÃO DE ADMIN (moderatorId presente). Publicação feita pelo próprio
 // vendedor não dispara: ninguém precisa ser avisado do que acabou de fazer.
 // Conteúdo portado de `emails/templates.mjs` → anuncioAprovado().
-import { renderLayout, BRAND, esc, firstName } from './layout';
+import { renderEmail, renderText, COLORS, BRAND, esc, firstName } from './layout';
 
 export interface ListingApprovedData {
   sellerName: string | null;
@@ -11,22 +11,37 @@ export interface ListingApprovedData {
   listingTitle: string;
 }
 
+const TITLE = 'Seu anúncio foi aprovado';
+
+const cta = (listingId: string) => ({
+  href: `${BRAND.site}/produto/${listingId}`,
+  label: 'Ver meu anúncio no ar',
+});
+
+const paragraphs = (data: ListingApprovedData) => [
+  `${esc(firstName(data.sellerName))}, o anúncio <strong style="color:${COLORS.gold};">${esc(data.listingTitle)}</strong> passou pela moderação e já está visível para todo mundo na Kolecta.`,
+  `A partir de agora ele aparece na busca, na categoria e no seu perfil de vendedor.`,
+];
+
 export function subject(data: ListingApprovedData): string {
   return `${data.listingTitle} foi aprovado`;
 }
 
 export function html(data: ListingApprovedData): string {
-  const n = firstName(data.sellerName);
-  const greeting = n ? `${esc(n)}, o` : 'O';
+  return renderEmail({
+    preheader: `${data.listingTitle} já está visível na Kolecta.`,
+    tag: 'Anúncio aprovado',
+    title: TITLE,
+    paragraphs: paragraphs(data),
+    cta: cta(data.listingId),
+    ctaCaption: 'Dica: anúncio com 3 fotos ou mais vende bem mais rápido.',
+  });
+}
 
-  return renderLayout({
-    heading: '✅ Seu anúncio foi aprovado!',
-    body: `
-      <p style="margin:0 0 12px;">${greeting} anúncio <strong>${esc(data.listingTitle)}</strong> passou pela moderação e já está visível para todo mundo na Kolecta.</p>
-      <p style="margin:0 0 12px;">A partir de agora ele aparece na busca, na categoria e no seu perfil de vendedor.</p>
-      <p style="margin:16px 0 0;color:#6b7280;font-size:14px;">Dica: anúncio com 3 fotos ou mais vende bem mais rápido.</p>
-    `,
-    ctaLabel: 'Ver meu anúncio no ar',
-    ctaUrl: `${BRAND.site}/produto/${data.listingId}`,
+export function text(data: ListingApprovedData): string {
+  return renderText({
+    title: TITLE,
+    paragraphs: paragraphs(data),
+    cta: cta(data.listingId),
   });
 }

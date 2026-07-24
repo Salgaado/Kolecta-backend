@@ -97,6 +97,7 @@ export class MailService {
 
     const subject = tpl.subject(data);
     const htmlBody = tpl.html(data);
+    const textBody = tpl.text(data);
 
     // ── Desabilitado: loga e registra como "skipped" (útil em dev) ───────────
     if (!this.enabled || !this.resend) {
@@ -115,6 +116,8 @@ export class MailService {
         replyTo: this.replyTo,
         subject,
         html: htmlBody,
+        // Multipart (HTML + texto): melhora entregabilidade e acessibilidade.
+        text: textBody,
       });
 
       if (error) {

@@ -12,6 +12,11 @@ import * as listingRejected from './listing-rejected';
 export interface EmailTemplate {
   subject: (data: any) => string;
   html: (data: any) => string;
+  /**
+   * Versão em texto puro. Não é enfeite: e-mail só com HTML perde pontos nos
+   * filtros de spam e quebra para quem lê por leitor de tela.
+   */
+  text: (data: any) => string;
 }
 
 export const TEMPLATES = {

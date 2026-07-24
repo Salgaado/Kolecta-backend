@@ -2,37 +2,61 @@
 // Gatilho: evento `user.registered`, emitido no webhook user.created do Clerk.
 // Essencial: é o recibo do cadastro, não tem opção de desligar.
 // Conteúdo portado de `emails/templates.mjs` → boasVindas().
-import { renderLayout, BRAND, esc, firstName } from './layout';
+import {
+  renderEmail,
+  renderText,
+  checklistBox,
+  BRAND,
+  esc,
+  firstName,
+} from './layout';
 
 export interface WelcomeData {
   name: string | null;
 }
 
+const CTA = {
+  href: `${BRAND.site}/painel/anuncios/novo`,
+  label: 'Publicar meu primeiro anúncio',
+};
+
+const PARAGRAPHS = (n: string) => [
+  `Sua conta está criada, ${esc(n)}. A Kolecta é o point de quem coleciona: miniaturas, cards, action figures, Funko e mangá, com compra direta e leilão no mesmo lugar.`,
+  `Você já pode montar sua vitrine. Todo mundo na Kolecta pode vender, não existe cadastro separado de vendedor.`,
+];
+
 export function subject(data: WelcomeData): string {
-  const n = firstName(data.name);
-  return n ? `Bem-vindo à Kolecta, ${n}` : 'Bem-vindo à Kolecta';
+  return `Bem-vindo à Kolecta, ${firstName(data.name)}`;
 }
 
 export function html(data: WelcomeData): string {
-  const n = firstName(data.name);
-  const greeting = n ? `Olá, ${esc(n)}!` : 'Olá!';
+  return renderEmail({
+    preheader: 'Sua conta está pronta. Veja por onde começar.',
+    tag: 'Boas-vindas',
+    title: `Bem-vindo à Kolecta, ${firstName(data.name)}`,
+    paragraphs: PARAGRAPHS(firstName(data.name)),
+    blocks: checklistBox({
+      title: 'Por onde começar',
+      items: [
+        'Publique seu primeiro anúncio, leva menos de 3 minutos',
+        'Cadastre seu endereço para o frete sair calculado certo',
+        'Configure seus dados de recebimento para poder sacar',
+      ],
+    }),
+    cta: CTA,
+  });
+}
 
-  return renderLayout({
-    heading: '🎉 Sua conta está criada!',
-    body: `
-      <p style="margin:0 0 12px;">${greeting}</p>
-      <p style="margin:0 0 12px;">A Kolecta é o point de quem coleciona: miniaturas, cards, action figures, Funko e mangá — com compra direta e leilão no mesmo lugar.</p>
-      <p style="margin:0 0 16px;">Você já pode montar sua vitrine. Todo mundo na Kolecta pode vender, não existe cadastro separado de vendedor.</p>
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BRAND.bg};border-radius:12px;margin:0 0 8px;">
-        <tr><td style="padding:16px 20px;">
-          <p style="margin:0 0 8px;font-weight:600;color:#1f2937;">Por onde começar</p>
-          <p style="margin:0 0 6px;">• Publique seu primeiro anúncio — leva menos de 3 minutos</p>
-          <p style="margin:0 0 6px;">• Cadastre seu endereço para o frete sair calculado certo</p>
-          <p style="margin:0;">• Configure seus dados de recebimento para poder sacar</p>
-        </td></tr>
-      </table>
-    `,
-    ctaLabel: 'Publicar meu primeiro anúncio',
-    ctaUrl: `${BRAND.site}/painel/anuncios/novo`,
+export function text(data: WelcomeData): string {
+  return renderText({
+    title: `Bem-vindo à Kolecta, ${firstName(data.name)}`,
+    paragraphs: PARAGRAPHS(firstName(data.name)),
+    lines: [
+      'Por onde começar:',
+      '- Publique seu primeiro anúncio',
+      '- Cadastre seu endereço',
+      '- Configure seus dados de recebimento',
+    ],
+    cta: CTA,
   });
 }
