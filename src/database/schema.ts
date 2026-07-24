@@ -234,6 +234,13 @@ export const listings = sqliteTable('listings', {
   // URLs das fotos separadas por vírgula (simples para MVP, migra p/ tabela futura)
   images: text('images'), // JSON array stringificado: '["url1","url2"]'
 
+  // Código interno de estoque do vendedor (pedido dos lojistas), para casar a
+  // venda aqui com o controle que ele já usa. Nullable e SEM unicidade de
+  // propósito: colecionador pessoa física não trabalha com SKU, e exigir
+  // travaria a publicação dele. O mesmo código pode se repetir entre vendedores
+  // diferentes — cada um só enxerga o próprio.
+  sku: text('sku'),
+
   // draft | pending_review | active | sold | cancelled | pending_payment
   status: text('status').notNull().default('draft'),
 

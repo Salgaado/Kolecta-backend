@@ -17,6 +17,14 @@ import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
 import { FounderService } from '../founder/founder.service';
 import { SUBMITTED_LISTING_STATUSES } from '../founder/founder.constants';
 import { listingPublishBlockers } from './listing-publish-rules';
+import {
+  isInstructionRow,
+  validateImportRow,
+  mapImportRow,
+  TEMPLATE_COLUMNS,
+  CATEGORY_SLUGS,
+  CONDITION_VALUES,
+} from './import-rules';
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
@@ -564,36 +572,61 @@ export class ListingsService {
       let failed = 0;
       const errors = [];
 
+      // Slug → id da categoria. Antes o `category` da planilha era descartado e
+      // o anúncio nascia sem categoria, sem aparecer na busca nem na vitrine.
+      const categoryRows = await this.db
+        .select({ id: schema.categories.id, slug: schema.categories.slug })
+        .from(schema.categories);
+      const categoryIdBySlug = new Map(
+        categoryRows.map((c) => [c.slug, c.id]),
+      );
+
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
         const rowNumber = i + 2; // Cabeçalho é 1
 
+        // As duas linhas de instrução do modelo não são dados.
+        if (isInstructionRow(row)) continue;
+
         try {
-          if (!row.title) throw new Error('Título é obrigatório');
-          if (!row.price) throw new Error('Preço é obrigatório');
-          if (!row.condition) throw new Error('Condição é obrigatória');
-
-          const priceInCents = Math.round(parseFloat(row.price) * 100);
-          if (isNaN(priceInCents)) throw new Error('Preço inválido');
-
-          // Validação da condição (aceitar os definidos no DB)
-          const validConditions = ['lacrado', 'novo', 'mint', 'usado', 'novo-lacrado', 'novo-sem-caixa', 'usado-conservado', 'usado-com-marcas'];
-          const condition = row.condition.toLowerCase();
-          if (!validConditions.includes(condition)) {
-            throw new Error(`Condição inválida. Esperado: ${validConditions.join(', ')}`);
+          // Mesma validação do front — protege quem chama a API direto.
+          const rowErrors = validateImportRow(row, rowNumber);
+          if (rowErrors.length > 0) {
+            throw new Error(
+              rowErrors.map((e) => `${e.campo}: ${e.mensagem}`).join('; '),
+            );
           }
 
-          // O schema pede status draft | pending_review | active | sold | cancelled
-          // O SKILL.md pede que importados entrem como pending_review ou pending. O schema tem pending_review.
+          const mapped = mapImportRow(row);
+          const categoryId = categoryIdBySlug.get(mapped.categorySlug);
+          if (!categoryId) {
+            throw new Error(
+              `category: categoria "${mapped.categorySlug}" não existe no banco`,
+            );
+          }
+
+          // Importado entra na fila de moderação, nunca direto no ar.
           await this.db.insert(schema.listings).values({
             id: crypto.randomUUID(),
             sellerId,
-            title: row.title,
-            description: row.description || '',
-            condition: condition,
+            categoryId,
+            title: mapped.title,
+            description: mapped.description,
+            condition: mapped.condition,
             type: 'direct',
-            priceInCents,
-            images: row.images ? JSON.stringify(row.images.split(',')) : null,
+            priceInCents: mapped.priceInCents,
+            images: mapped.images,
+            weightGrams: mapped.weightGrams,
+            widthCm: mapped.widthCm,
+            heightCm: mapped.heightCm,
+            lengthCm: mapped.lengthCm,
+            brand: mapped.brand,
+            scale: mapped.scale,
+            line: mapped.line,
+            year: mapped.year,
+            edition: mapped.edition,
+            sku: mapped.sku,
+            attributes: mapped.attributes,
             status: 'pending_review',
           });
 
@@ -642,9 +675,35 @@ export class ListingsService {
     };
   }
 
+  /**
+   * CSV modelo. O antigo mandava `category_slug` vazio, `stock_quantity` e o
+   * vocabulário abandonado de condição (`usado`) — foi o que fez um vendedor
+   * subir centenas de anúncios incompletos. Agora espelha as colunas reais.
+   */
   async getImportTemplate() {
-    const csvHeader = 'title,description,price,category_slug,condition,images,stock_quantity\n';
-    const csvExample = 'Action Figure Batman,"Boneco muito conservado",150.00,,usado,"http://img1.com,http://img2.com",1\n';
+    const csvHeader = `${TEMPLATE_COLUMNS.join(',')}\n`;
+    const exemplo: Record<string, string> = {
+      title: 'Hot Wheels Nissan Skyline GT-R R34 Premium',
+      category: CATEGORY_SLUGS[0],
+      condition: CONDITION_VALUES[0],
+      description: 'Lacrado, nunca aberto. Peça guardada em caixa desde 2023.',
+      price: '149.90',
+      images:
+        'https://site.com/1.jpg,https://site.com/2.jpg,https://site.com/3.jpg',
+      brand: 'Hot Wheels',
+      scale: '1:64',
+      weight_grams: '150',
+      width_cm: '15',
+      height_cm: '10',
+      length_cm: '5',
+      sku: 'HW-R34-001',
+      year: '2023',
+    };
+    const csvExample =
+      TEMPLATE_COLUMNS.map((c) => {
+        const v = exemplo[c] ?? '';
+        return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+      }).join(',') + '\n';
     return {
       templateUrl: 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvHeader + csvExample)
     };

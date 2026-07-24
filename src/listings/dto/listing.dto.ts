@@ -42,6 +42,11 @@ export class CreateListingDto {
   @IsString()
   edition?: string;
 
+  // Código interno de estoque do lojista. Opcional e sem unicidade — ver schema.
+  @IsOptional()
+  @IsString()
+  sku?: string;
+
   // lacrado | novo | mint | usado
   @IsString()
   @IsNotEmpty()
@@ -161,6 +166,11 @@ export class UpdateListingDto {
   @IsOptional()
   @IsString()
   edition?: string;
+
+  // Código interno de estoque do lojista. Opcional e sem unicidade — ver schema.
+  @IsOptional()
+  @IsString()
+  sku?: string;
 
   @IsOptional()
   @IsString()
