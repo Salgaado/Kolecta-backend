@@ -80,6 +80,22 @@ export class AuctionsController {
     return { data: result };
   }
 
+  // ── POST /api/auctions/orders/:orderId/pay — Vencedor paga arremate pendente ──
+  // Arremate cuja captura da pré-auth falhou no fecho (pedido pending_payment);
+  // o vencedor paga no cartão salvo dentro do prazo (Fase 4).
+
+  @Post('orders/:orderId/pay')
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async payAuctionOrder(
+    @Req() req: Request,
+    @Param('orderId') orderId: string,
+  ) {
+    const buyerId = (req as any).auth.userId as string;
+    const result = await this.auctionsService.payAuctionOrder(buyerId, orderId);
+    return { data: result };
+  }
+
   // ── POST /api/auctions/:id/bids — Comprador: dar lance ─────────────────
 
   @Post(':id/bids')

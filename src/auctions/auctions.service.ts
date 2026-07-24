@@ -34,6 +34,28 @@ const AUTH_VALIDITY_DAYS = parseInt(
   10,
 );
 
+/**
+ * Antecedência com que o cron de re-auth (Fase 3) renova uma pré-autorização
+ * antes de ela expirar. Ex.: 24h → toda auth que vence nas próximas 24h é
+ * renovada. Precisa ser < janela real da adquirente. Configurável por
+ * `PAGARME_REAUTH_WINDOW_HOURS`.
+ */
+const REAUTH_WINDOW_HOURS = parseInt(
+  process.env.PAGARME_REAUTH_WINDOW_HOURS ?? '24',
+  10,
+);
+
+/**
+ * Prazo (horas) que o vencedor de um leilão tem para pagar quando a captura da
+ * pré-auth falha no fecho (pedido `pending_payment`). Expirado → o cron oferece
+ * ao 2º colocado ou reabre o anúncio. Configurável por
+ * `AUCTION_PAYMENT_DEADLINE_HOURS`.
+ */
+const PAYMENT_DEADLINE_HOURS = parseInt(
+  process.env.AUCTION_PAYMENT_DEADLINE_HOURS ?? '24',
+  10,
+);
+
 @Injectable()
 export class AuctionsService {
   private readonly logger = new Logger(AuctionsService.name);
@@ -514,6 +536,478 @@ export class AuctionsService {
     }
   }
 
+  // ── Fase 3: re-autorização das pré-autorizações a expirar ────────────────
+
+  /**
+   * Renova as pré-autorizações prestes a expirar dos lances líderes de leilões
+   * ainda ativos. A adquirente garante os fundos por ~5 dias; leilões mais
+   * longos perderiam a garantia. Para cada líder cujo `authExpiresAt` cai na
+   * janela ({@link REAUTH_WINDOW_HOURS}): cria uma pré-auth nova no cartão do
+   * bidder, faz a troca atômica no lance e cancela a antiga.
+   *
+   * Falha na renovação (cartão sem saldo/recusado agora) → mantém a auth antiga
+   * e segue: no fechamento a captura da auth vencida cai no ramo
+   * `pending_payment` (Fase 4), que dá prazo ao vencedor. Degrada seguro.
+   */
+  async reauthorizeExpiringBids(): Promise<{
+    reauthorized: string[];
+    failed: string[];
+  }> {
+    const threshold = new Date(
+      Date.now() + REAUTH_WINDOW_HOURS * 60 * 60 * 1000,
+    );
+    const rows = await this.db
+      .select({
+        bidId: schema.bids.id,
+        auctionId: schema.bids.auctionId,
+        bidderId: schema.bids.bidderId,
+        amountInCents: schema.bids.amountInCents,
+        chargeId: schema.bids.pagarmeChargeId,
+        sellerId: schema.listings.sellerId,
+      })
+      .from(schema.bids)
+      .innerJoin(schema.auctions, eq(schema.bids.auctionId, schema.auctions.id))
+      .innerJoin(
+        schema.listings,
+        eq(schema.auctions.listingId, schema.listings.id),
+      )
+      .where(
+        and(
+          eq(schema.bids.status, 'active'),
+          eq(schema.auctions.status, 'active'),
+          isNotNull(schema.bids.pagarmeChargeId),
+          isNotNull(schema.bids.authExpiresAt),
+          lte(schema.bids.authExpiresAt, threshold),
+        ),
+      );
+
+    const reauthorized: string[] = [];
+    const failed: string[] = [];
+    for (const row of rows) {
+      try {
+        if (await this._reauthorizeBid(row)) reauthorized.push(row.bidId);
+      } catch (err: any) {
+        failed.push(row.bidId);
+        this.logger.error(
+          `Re-auth do lance ${row.bidId} falhou (mantém a auth antiga): ${err?.message}`,
+        );
+      }
+    }
+    return { reauthorized, failed };
+  }
+
+  /** Renova a pré-auth de um lance líder. Retorna true se trocou a auth. */
+  private async _reauthorizeBid(row: {
+    bidId: string;
+    auctionId: string;
+    bidderId: string;
+    amountInCents: number;
+    chargeId: string | null;
+    sellerId: string;
+  }): Promise<boolean> {
+    // Renova no cartão ATUAL do bidder (1 por usuário). Sem cartão salvo (removido
+    // depois do lance) → não há como renovar; mantém a auth antiga.
+    const cardRef = await this.cardsService.getCardRef(row.bidderId);
+    if (!cardRef) {
+      this.logger.warn(
+        `Re-auth do lance ${row.bidId}: bidder ${row.bidderId} sem cartão salvo. Mantém a auth antiga.`,
+      );
+      return false;
+    }
+
+    const sellerRecipientId = await this._getSellerRecipientId(row.sellerId);
+
+    // Nova pré-auth no valor do lance (lança se o cartão recusar).
+    const fresh = await this._createBidPreAuth({
+      customerId: cardRef.customerId,
+      cardId: cardRef.cardId,
+      amountInCents: row.amountInCents,
+      auctionId: row.auctionId,
+      bidderId: row.bidderId,
+      sellerId: row.sellerId,
+      sellerRecipientId,
+    });
+
+    // Troca atômica: só aponta o lance para a auth nova se ele AINDA é o líder
+    // com a MESMA auth antiga (evita corrida com um lance que o superou/fechou).
+    const swapped = await this.db
+      .update(schema.bids)
+      .set({
+        pagarmeOrderId: fresh.orderId,
+        pagarmeChargeId: fresh.chargeId,
+        pagarmeCardId: cardRef.cardId,
+        authExpiresAt: fresh.expiresAt,
+      })
+      .where(
+        and(
+          eq(schema.bids.id, row.bidId),
+          eq(schema.bids.status, 'active'),
+          eq(schema.bids.pagarmeChargeId, row.chargeId!),
+        ),
+      )
+      .returning();
+
+    if (swapped.length === 0) {
+      // O lance mudou no meio da renovação → desfaz a auth nova (rollback).
+      await this._voidPreAuth(fresh.chargeId);
+      return false;
+    }
+
+    // Trocou → cancela a auth antiga (best-effort).
+    await this._voidPreAuth(row.chargeId!);
+    this.logger.log(
+      `Re-auth do lance ${row.bidId}: nova pré-auth ${fresh.chargeId}; antiga ${row.chargeId} cancelada.`,
+    );
+    return true;
+  }
+
+  // ── Fase 4: pagamento do arremate pendente + expiração do prazo ──────────
+
+  /**
+   * Vencedor paga um arremate cuja captura falhou no fecho (pedido
+   * `pending_payment`), via cartão salvo, dentro do prazo. Cobrança à vista com
+   * captura imediata (não é pré-auth) e split nativo. Aprovado → pedido `paid`,
+   * anúncio `sold`, líquido retido na wallet do vendedor. Recusado →
+   * BadRequest (o pedido segue `pending_payment` até o prazo).
+   */
+  async payAuctionOrder(buyerId: string, orderId: string) {
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+
+    if (!order) throw new NotFoundException('Pedido não encontrado');
+    if (order.buyerId !== buyerId) {
+      throw new ForbiddenException('Acesso negado a este pedido');
+    }
+    if (order.status !== 'pending_payment') {
+      throw new BadRequestException('Este pedido não está aguardando pagamento.');
+    }
+    if (order.paymentDeadlineAt && order.paymentDeadlineAt < new Date()) {
+      throw new BadRequestException(
+        'O prazo para pagamento expirou. O item pode ter sido oferecido a outro participante.',
+      );
+    }
+
+    const cardRef = await this.cardsService.getCardRef(buyerId);
+    if (!cardRef) {
+      throw new BadRequestException(
+        'Salve um cartão de crédito no Financeiro para pagar.',
+      );
+    }
+
+    const sellerRecipientId = await this._getSellerRecipientId(order.sellerId);
+    const totalInCents = order.totalInCents;
+
+    // Split nativo (mesma regra do arremate). Sem recebedor apto/plataforma →
+    // cobrança sem split (fluxo legado).
+    let split: PagarmeSplit[] | undefined;
+    if (sellerRecipientId && PLATFORM_RECIPIENT_ID) {
+      const platformFeeInCents =
+        order.platformFeeInCents ??
+        Math.round(
+          (totalInCents *
+            (await this.founderService.resolveCommissionPercent(
+              order.sellerId,
+            ))) /
+            100,
+        );
+      split = buildSplit(
+        sellerRecipientId,
+        totalInCents,
+        platformFeeInCents,
+        PLATFORM_RECIPIENT_ID,
+      );
+    }
+
+    let pagarmeOrder: any;
+    try {
+      pagarmeOrder = await this.pagarme.post(
+        '/orders',
+        {
+          customer_id: cardRef.customerId,
+          items: [
+            {
+              amount: totalInCents,
+              description: `Arremate Kolecta #${order.id.slice(0, 8)}`,
+              quantity: 1,
+              code: 'kolecta-bid-payment',
+            },
+          ],
+          payments: [
+            {
+              payment_method: 'credit_card',
+              credit_card: {
+                capture: true, // cobrança à vista (captura imediata)
+                statement_descriptor: 'KOLECTA',
+                card_id: cardRef.cardId,
+                ...(split ? { split } : {}),
+              },
+            },
+          ],
+          metadata: { type: 'bid_payment', orderId: order.id, buyerId },
+        },
+        `bid-pay-${order.id}-${Math.floor(Date.now() / 1000)}`,
+      );
+    } catch {
+      throw new BadRequestException(
+        'Não foi possível cobrar seu cartão. Tente outro cartão.',
+      );
+    }
+
+    const charge = pagarmeOrder?.charges?.[0];
+    const paid = pagarmeOrder?.status === 'paid' || charge?.status === 'paid';
+    if (!paid) {
+      const reason =
+        charge?.last_transaction?.gateway_response?.errors?.[0]?.message ||
+        charge?.last_transaction?.acquirer_message ||
+        'Cartão recusado. Verifique os dados ou tente outro cartão.';
+      throw new BadRequestException(reason);
+    }
+
+    await this._settlePaidAuctionOrder(
+      order,
+      pagarmeOrder.id,
+      charge?.id ?? null,
+    );
+    this.logger.log(
+      `💳 Arremate ${order.id} pago pelo vencedor (retry no cartão): pagarme ${pagarmeOrder.id}.`,
+    );
+    return { orderId: order.id, paid: true };
+  }
+
+  /**
+   * Consolida um pedido de arremate PAGO (pelo pagamento do vencedor): pedido →
+   * `paid`, anúncio → `sold`, lance do comprador → `won`, líquido do vendedor
+   * retido na wallet (proteção ao comprador).
+   */
+  private async _settlePaidAuctionOrder(
+    order: typeof schema.orders.$inferSelect,
+    pagarmeOrderId: string,
+    pagarmeChargeId: string | null,
+  ) {
+    const [auction] = await this.db
+      .select({ id: schema.auctions.id })
+      .from(schema.auctions)
+      .where(eq(schema.auctions.listingId, order.listingId));
+
+    await this.db.transaction(async (tx: any) => {
+      await tx
+        .update(schema.orders)
+        .set({
+          status: 'paid',
+          pagarmeOrderId,
+          pagarmeChargeId,
+          paymentDeadlineAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.orders.id, order.id));
+      await tx
+        .update(schema.listings)
+        .set({ status: 'sold' })
+        .where(eq(schema.listings.id, order.listingId));
+      if (auction) {
+        await tx
+          .update(schema.bids)
+          .set({ status: 'won' })
+          .where(
+            and(
+              eq(schema.bids.auctionId, auction.id),
+              eq(schema.bids.bidderId, order.buyerId),
+            ),
+          );
+      }
+    });
+
+    const sellerNetInCents = order.sellerNetInCents ?? order.totalInCents;
+    try {
+      const sellerWallet = await this.walletService.getOrCreateWallet(
+        order.sellerId,
+      );
+      await this.walletService.hold(
+        sellerWallet.id,
+        sellerNetInCents,
+        `Arremate #${order.id.slice(0, 8)} — líquido retido`,
+        order.id,
+      );
+    } catch (err: any) {
+      this.logger.error(
+        `⚠️ Arremate ${order.id} pago, mas falhou o espelho do líquido do vendedor (${err?.message}).`,
+      );
+    }
+  }
+
+  /**
+   * Expira arremates `pending_payment` cujo prazo venceu: cancela o pedido,
+   * marca o lance do vencedor faltoso como `lost` e OFERECE ao 2º colocado
+   * (novo pedido `pending_payment` + prazo) ou, sem 2º colocado apto, REABRE o
+   * anúncio para a vitrine. Usado pelo cron.
+   */
+  async expireOverduePendingPayments(): Promise<{
+    expired: string[];
+    offered: string[];
+    reopened: string[];
+  }> {
+    const now = new Date();
+    const overdue = await this.db
+      .select()
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.status, 'pending_payment'),
+          isNotNull(schema.orders.paymentDeadlineAt),
+          lte(schema.orders.paymentDeadlineAt, now),
+        ),
+      );
+
+    const expired: string[] = [];
+    const offered: string[] = [];
+    const reopened: string[] = [];
+    for (const order of overdue) {
+      try {
+        const outcome = await this._expirePendingPayment(order);
+        if (outcome === 'noop') continue;
+        expired.push(order.id);
+        if (outcome === 'offered') offered.push(order.id);
+        else if (outcome === 'reopened') reopened.push(order.id);
+      } catch (err: any) {
+        this.logger.error(
+          `Falha ao expirar pedido ${order.id}: ${err?.message}`,
+        );
+      }
+    }
+    return { expired, offered, reopened };
+  }
+
+  private async _expirePendingPayment(
+    order: typeof schema.orders.$inferSelect,
+  ): Promise<'offered' | 'reopened' | 'noop'> {
+    // Cancela o pedido de forma atômica (guard de status evita corrida com o
+    // pagamento do vencedor chegando no mesmo instante).
+    const cancelled = await this.db
+      .update(schema.orders)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.orders.id, order.id),
+          eq(schema.orders.status, 'pending_payment'),
+        ),
+      )
+      .returning();
+    if (cancelled.length === 0) return 'noop';
+
+    const [auction] = await this.db
+      .select()
+      .from(schema.auctions)
+      .where(eq(schema.auctions.listingId, order.listingId));
+
+    // O lance do vencedor faltoso vira 'lost' (sai da fila do 2º colocado).
+    if (auction) {
+      await this.db
+        .update(schema.bids)
+        .set({ status: 'lost' })
+        .where(
+          and(
+            eq(schema.bids.auctionId, auction.id),
+            eq(schema.bids.bidderId, order.buyerId),
+          ),
+        );
+    }
+
+    const runnerUp = auction
+      ? await this._findRunnerUp(auction, order.buyerId)
+      : null;
+
+    if (runnerUp) {
+      const platformFeePercent =
+        await this.founderService.resolveCommissionPercent(order.sellerId);
+      const platformFeeInCents = Math.round(
+        (runnerUp.amountInCents * platformFeePercent) / 100,
+      );
+      const sellerNetInCents = runnerUp.amountInCents - platformFeeInCents;
+      await this.db.transaction(async (tx: any) => {
+        await tx.insert(schema.orders).values({
+          buyerId: runnerUp.bidderId,
+          sellerId: order.sellerId,
+          listingId: order.listingId,
+          totalInCents: runnerUp.amountInCents,
+          sellerNetInCents,
+          platformFeeInCents,
+          gatewayFeeInCents: 0,
+          status: 'pending_payment',
+          paymentMethod: 'external',
+          paymentInstrument: 'credit_card',
+          externalAmountInCents: runnerUp.amountInCents,
+          walletAmountInCents: 0,
+          paymentDeadlineAt: new Date(
+            Date.now() + PAYMENT_DEADLINE_HOURS * 60 * 60 * 1000,
+          ),
+        });
+        // Promove o lance do 2º colocado (vira o vencedor a pagar).
+        await tx
+          .update(schema.bids)
+          .set({ status: 'won' })
+          .where(eq(schema.bids.id, runnerUp.bidId));
+        // Anúncio segue reservado (pending_payment) para o 2º colocado.
+        await tx
+          .update(schema.listings)
+          .set({ status: 'pending_payment' })
+          .where(eq(schema.listings.id, order.listingId));
+      });
+      this.logger.warn(
+        `⏱️ Arremate ${order.id} expirado. Oferecido ao 2º colocado ${runnerUp.bidderId} ` +
+          `(R$${(runnerUp.amountInCents / 100).toFixed(2)}).`,
+      );
+      return 'offered';
+    }
+
+    // Sem 2º colocado apto → reabre o anúncio (volta pra vitrine).
+    await this.db
+      .update(schema.listings)
+      .set({ status: 'active' })
+      .where(eq(schema.listings.id, order.listingId));
+    this.logger.warn(
+      `⏱️ Arremate ${order.id} expirado sem 2º colocado apto. Anúncio ${order.listingId} reaberto.`,
+    );
+    return 'reopened';
+  }
+
+  /**
+   * Maior lance de um participante ainda ELEGÍVEL: bidder que não teve lance
+   * marcado como `lost` (nem é o vencedor faltoso), respeitando a reserva.
+   */
+  private async _findRunnerUp(
+    auction: typeof schema.auctions.$inferSelect,
+    excludeBidderId: string,
+  ): Promise<{ bidId: string; bidderId: string; amountInCents: number } | null> {
+    const bids = await this.db
+      .select({
+        bidId: schema.bids.id,
+        bidderId: schema.bids.bidderId,
+        amountInCents: schema.bids.amountInCents,
+        status: schema.bids.status,
+      })
+      .from(schema.bids)
+      .where(eq(schema.bids.auctionId, auction.id))
+      .orderBy(desc(schema.bids.amountInCents));
+
+    const ineligible = new Set(
+      bids.filter((b) => b.status === 'lost').map((b) => b.bidderId),
+    );
+    ineligible.add(excludeBidderId);
+    const reserve = auction.reservePriceInCents ?? 0;
+    for (const b of bids) {
+      if (ineligible.has(b.bidderId)) continue;
+      if (b.amountInCents < reserve) continue;
+      return {
+        bidId: b.bidId,
+        bidderId: b.bidderId,
+        amountInCents: b.amountInCents,
+      };
+    }
+    return null;
+  }
+
   // ── Meus lances (comprador) — melhor lance por leilão ────────────────────
 
   async findMyBids(bidderId: string) {
@@ -692,6 +1186,10 @@ export class AuctionsService {
             paymentInstrument: 'credit_card',
             externalAmountInCents: totalInCents,
             walletAmountInCents: 0,
+            // Prazo para o vencedor pagar (retry no cartão) antes de expirar.
+            paymentDeadlineAt: new Date(
+              Date.now() + PAYMENT_DEADLINE_HOURS * 60 * 60 * 1000,
+            ),
           })
           .returning();
         await tx

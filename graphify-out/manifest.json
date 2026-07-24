@@ -1,0 +1,912 @@
+{
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\drizzle.config.ts": {
+    "mtime": 1772654989.1714976,
+    "ast_hash": "e2005361070a6f094959f4c0050cc809",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\eslint.config.mjs": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "069d66f3fd2af0b03d917cf51a1f4c42",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\nest-cli.json": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "fa439650fa28a1a7aa8c2b6d81c8cc20",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\package.json": {
+    "mtime": 1782404419.4030812,
+    "ast_hash": "9e971e280bb261a1406eef8b52ae44cf",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\tsconfig.build.json": {
+    "mtime": 1784650093.7130287,
+    "ast_hash": "79f51719768bd02f0b39b57b686ee431",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\tsconfig.json": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "0b953172150b5ee6e17b367385a6e1f4",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\scripts\\audit-listings-conformity.ts": {
+    "mtime": 1784664195.9021902,
+    "ast_hash": "bd16931cb1fb5c83119ced0102e57660",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\scripts\\test-recipient-sandbox.ts": {
+    "mtime": 1784632300.6292517,
+    "ast_hash": "86bf9e8d866a32644a18131d5a01a647",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\app.controller.spec.ts": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "e91fed2ee35431d60d1adbf1d5739b83",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\app.controller.ts": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "ae15d1c5a85e6ebfad68b7193766dfb5",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\app.module.ts": {
+    "mtime": 1784897344.4883401,
+    "ast_hash": "bfb52f1496ce861337ce75ef7d5856fa",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\app.service.ts": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "08e985e831bca61f6be89c5c2ecef2fa",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\main.ts": {
+    "mtime": 1780922485.8964136,
+    "ast_hash": "ba5c8e1ec51dedfd45c8d5944629de69",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\addresses\\addresses.controller.ts": {
+    "mtime": 1775184212.7103674,
+    "ast_hash": "9d29b2b27070559a23aa0e0f42879ba8",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\addresses\\addresses.module.ts": {
+    "mtime": 1775184219.4950302,
+    "ast_hash": "b5d47554ac86e22bb1b47ff6170fa60a",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\addresses\\addresses.service.spec.ts": {
+    "mtime": 1776757285.9394076,
+    "ast_hash": "be9a4acc565f2e26aac657946d59fe32",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\addresses\\addresses.service.ts": {
+    "mtime": 1776757285.9394076,
+    "ast_hash": "cf88053d8b57b890ee65794446e2c5f2",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\addresses\\dto\\address.dto.ts": {
+    "mtime": 1780922475.5922863,
+    "ast_hash": "59c89145806d2d7b63e41e3d90ca8a8a",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\admin.controller.ts": {
+    "mtime": 1784245696.8651347,
+    "ast_hash": "3242c9f3503c733ab75761a8bf409bc6",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\admin.module.ts": {
+    "mtime": 1783556020.147413,
+    "ast_hash": "fdf7cda564684f091033819d4b8f0b3a",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\admin.service.spec.ts": {
+    "mtime": 1784554493.3091722,
+    "ast_hash": "7015abf512ea17fce954ff18ed8e0413",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\admin.service.ts": {
+    "mtime": 1784554436.2571926,
+    "ast_hash": "d31997ddcaeabe5237f974d1f67e4f14",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\dto\\admin.dto.ts": {
+    "mtime": 1780922468.548123,
+    "ast_hash": "9187913a01ebc0ae7f3671927424392b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auctions\\auctions.controller.ts": {
+    "mtime": 1784910428.5457802,
+    "ast_hash": "8f077de04df8fec722bb7a777c128b18",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auctions\\auctions.module.ts": {
+    "mtime": 1784897847.0366123,
+    "ast_hash": "52028dacb729246c49a3b8f438142f4b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auctions\\auctions.service.spec.ts": {
+    "mtime": 1784910778.737124,
+    "ast_hash": "7be70ce2d4053fb030c539d5ef890cca",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auctions\\auctions.service.ts": {
+    "mtime": 1784910420.8313603,
+    "ast_hash": "016332589c08d0694be633455502b949",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auctions\\close-auctions.cron.ts": {
+    "mtime": 1784910436.3281581,
+    "ast_hash": "4560fe53c5b96e72f66e7c87839be134",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auctions\\dto\\auction.dto.ts": {
+    "mtime": 1780922461.4305022,
+    "ast_hash": "eee5730dbeeda7a0621c722e5a7f75f8",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auth\\auth.guard.spec.ts": {
+    "mtime": 1772655158.8295302,
+    "ast_hash": "24aebd3ca6c969a2971a46b1262afc33",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auth\\auth.guard.ts": {
+    "mtime": 1778846803.2188568,
+    "ast_hash": "376547585ae904fbf57243944ecacb8f",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auth\\auth.module.ts": {
+    "mtime": 1774473312.6874096,
+    "ast_hash": "35192915fb90bbc688dbac4067ba6b3d",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auth\\dev-auth.middleware.ts": {
+    "mtime": 1776757285.9394076,
+    "ast_hash": "f6c29b4de1370b2e171d2c156686df5b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auth\\roles.decorator.ts": {
+    "mtime": 1776163268.3466392,
+    "ast_hash": "5d78f0c5216b2d6ee08ffe2460d7713d",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\auth\\roles.guard.ts": {
+    "mtime": 1776964992.8518898,
+    "ast_hash": "6e2d533c31249f893b7567c70c2fc1be",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\bling\\bling-sync.service.ts": {
+    "mtime": 1780081812.6147547,
+    "ast_hash": "43cb2c8a1bd09fe9aa2a4b0bfd9ee188",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\bling\\bling.controller.ts": {
+    "mtime": 1780081824.3354423,
+    "ast_hash": "f2cc08e5b17b98525c4fea3187379d60",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\bling\\bling.module.ts": {
+    "mtime": 1780081829.2708638,
+    "ast_hash": "93084a53224d0bb747bde40563048c9d",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\bling\\bling.service.ts": {
+    "mtime": 1780081802.6846673,
+    "ast_hash": "00b76e814dfc1a97769a24efdd145f3c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\cards\\cards.controller.ts": {
+    "mtime": 1784897324.4535086,
+    "ast_hash": "0671ed28653e71bd2f0115d6d2dca9b0",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\cards\\cards.module.ts": {
+    "mtime": 1784897331.001291,
+    "ast_hash": "29cd1e54fbdfe0070720b24fec568b24",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\cards\\cards.service.ts": {
+    "mtime": 1784897837.1857383,
+    "ast_hash": "57e5d25a9ed6ce9fc278f1e180586fbb",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\cards\\dto\\save-card.dto.ts": {
+    "mtime": 1784897287.8643608,
+    "ast_hash": "9fcb9164ae561e41258d6ade8e0ac681",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\categories\\categories.controller.ts": {
+    "mtime": 1780925502.280324,
+    "ast_hash": "47443af22d7dd7842cfb4da94ab74225",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\categories\\categories.module.ts": {
+    "mtime": 1780925506.183389,
+    "ast_hash": "9a558ec7e7da06ee1c9f91c1d04b76f1",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\categories\\categories.service.spec.ts": {
+    "mtime": 1780925616.163385,
+    "ast_hash": "653ae5faec922c51fd3f6162b675ea51",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\categories\\categories.service.ts": {
+    "mtime": 1780925497.5335746,
+    "ast_hash": "0ddaf373749de0f9d6e499f3363924e2",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\common\\validators\\is-cpf.validator.ts": {
+    "mtime": 1782499948.5292556,
+    "ast_hash": "ae976fb82300e2b2d918a590126017b3",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\community\\community-admin.controller.ts": {
+    "mtime": 1780927999.0013034,
+    "ast_hash": "241128845206836eb3427d0ffc285de4",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\community\\community-ranking.cron.ts": {
+    "mtime": 1780928067.246076,
+    "ast_hash": "c71f1a00f77cd7f93370efdbf5acfdab",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\community\\community.controller.ts": {
+    "mtime": 1780928118.6799526,
+    "ast_hash": "084e2cec073b5f5c497dc11e4549a7af",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\community\\community.module.ts": {
+    "mtime": 1780928072.9222047,
+    "ast_hash": "3740e239fa29e6cbdaea8ea4b9ad83a7",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\community\\community.service.spec.ts": {
+    "mtime": 1780928188.404584,
+    "ast_hash": "a032f8b3f748b9b95a49f1d38d80c0a1",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\community\\community.service.ts": {
+    "mtime": 1780928047.5135922,
+    "ast_hash": "3023e6a4a38de0ef464576b32e01c622",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\community\\dto\\community.dto.ts": {
+    "mtime": 1780927712.1734962,
+    "ast_hash": "91c8dbced8457ae0fcc4534dbd7ecde6",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\connect\\connect.controller.ts": {
+    "mtime": 1778851292.0937912,
+    "ast_hash": "9e82d09f65f2c6d00dbebcfe81629253",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\connect\\connect.module.ts": {
+    "mtime": 1778038960.3988142,
+    "ast_hash": "9cd8d9e48ba441956803701ef6fb7654",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\connect\\connect.service.ts": {
+    "mtime": 1778851216.841335,
+    "ast_hash": "b09ca76289da407ee05d22905e0f2252",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\backfill-auctions.ts": {
+    "mtime": 1783551041.2374125,
+    "ast_hash": "db49c34ecf2437faf410ced470791931",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\backfill-user-names.ts": {
+    "mtime": 1783560094.9137747,
+    "ast_hash": "5cbbd796feaa9207007bdf02831e570e",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\bootstrap-admin.ts": {
+    "mtime": 1783443056.7462506,
+    "ast_hash": "d0f305df9c2b7351aaaaf54c30e4e718",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\database.module.ts": {
+    "mtime": 1774473312.6874096,
+    "ast_hash": "508b5595255ef78ec80042f51d22903f",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\ensure-cpf-column.ts": {
+    "mtime": 1783551310.0537505,
+    "ast_hash": "2ebcb8eab4c8466ba45c6fb348414902",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\ensure-listing-dimensions.ts": {
+    "mtime": 1783554718.3623729,
+    "ast_hash": "950f2797e5cce3bdf72162ade34e6423",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\list-listings.ts": {
+    "mtime": 1783536412.3418794,
+    "ast_hash": "b937bb82e4b84a34fe34e0576194fd7c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\make-admin.ts": {
+    "mtime": 1783442555.8137958,
+    "ast_hash": "abb0b8f5c486ecea29427be4ef2acd8b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\merge-daniel-cleanup-placeholders.ts": {
+    "mtime": 1784038717.958263,
+    "ast_hash": "d940ee7ba21f59373817cb7fdd44748c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\reset-categories.ts": {
+    "mtime": 1780931018.1548572,
+    "ast_hash": "2f83bf734e36c9e41065e94569722cbf",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\schema.ts": {
+    "mtime": 1784910296.6728048,
+    "ast_hash": "048f25ed0521ac88d5ccb02c01dcee3e",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\seed-dev.ts": {
+    "mtime": 1780926254.4797902,
+    "ast_hash": "1c689804bd3e97254d0d66d7b37a0577",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\seed-founder-invites.ts": {
+    "mtime": 1784149426.3841896,
+    "ast_hash": "b8b83ea92167273510decf109a275a9d",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\start-auction-clocks.ts": {
+    "mtime": 1783556060.5971098,
+    "ast_hash": "1e87a21b46377ea8a02ada1d7e975fa5",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\deposits\\deposits.controller.ts": {
+    "mtime": 1782498308.2365017,
+    "ast_hash": "38fdce79c623cb12d0da90e57210ec00",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\deposits\\deposits.module.ts": {
+    "mtime": 1782498313.9800415,
+    "ast_hash": "4cf9a4b060a1e4b447ee6b3c0aa4dd52",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\deposits\\deposits.service.ts": {
+    "mtime": 1782498300.4525666,
+    "ast_hash": "00a6f7aa3806080b99129883eb4f144e",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\deposits\\dto\\deposit.dto.ts": {
+    "mtime": 1782499959.321139,
+    "ast_hash": "b056cf92486b0b7598abf8b3c4df92bf",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\disputes\\disputes.controller.ts": {
+    "mtime": 1784213311.8499944,
+    "ast_hash": "cf8979b94994576109164f3058ba577a",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\disputes\\disputes.module.ts": {
+    "mtime": 1784214077.3913844,
+    "ast_hash": "ee7ad09044d0d3d89a76e2143a515726",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\disputes\\disputes.service.ts": {
+    "mtime": 1784213303.6265273,
+    "ast_hash": "afcfacb6b5ed5f6d2c760006eb2556a9",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\disputes\\dto\\dispute.dto.ts": {
+    "mtime": 1784213272.6896057,
+    "ast_hash": "18b58d02684633d239a9326733d7488e",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\favorites\\favorites.controller.ts": {
+    "mtime": 1776884920.7496233,
+    "ast_hash": "ccbab183798d12f19a91fc39c4cca4a9",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\favorites\\favorites.module.ts": {
+    "mtime": 1776757772.845542,
+    "ast_hash": "c516903c6c8d5f65d897d5356a08a0ac",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\favorites\\favorites.service.spec.ts": {
+    "mtime": 1778704363.5177245,
+    "ast_hash": "d8ec2239976453a8f1e8a0a882bad14f",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\favorites\\favorites.service.ts": {
+    "mtime": 1776757764.0096285,
+    "ast_hash": "e77a76f13c48504f4106be5e5c0fe907",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\favorites\\dto\\favorite.dto.ts": {
+    "mtime": 1780922440.6181927,
+    "ast_hash": "bff4544cd4e20da80abf54b2fc500106",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\founder.constants.ts": {
+    "mtime": 1784151174.9127235,
+    "ast_hash": "d2cc1116ad1d0fe32c73feaab27403e6",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\founder.controller.ts": {
+    "mtime": 1784151207.8018692,
+    "ast_hash": "714a6b5762372bfef8ae4caf71e44d6c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\founder.cron.ts": {
+    "mtime": 1784144154.9885905,
+    "ast_hash": "f6a4a1815e65e2bfdf1b3b6ade4bf1ad",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\founder.module.ts": {
+    "mtime": 1784144172.5966544,
+    "ast_hash": "46056cb171d5623d892a01a860485954",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\founder.service.ts": {
+    "mtime": 1784151200.9472263,
+    "ast_hash": "6da9622366cfe20a17dd1537572b824f",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\dto\\redeem-invite.dto.ts": {
+    "mtime": 1784144170.743142,
+    "ast_hash": "3d9452ea63a8e597545b92d3dcede997",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\dto\\use-credit.dto.ts": {
+    "mtime": 1784151202.394601,
+    "ast_hash": "849e0de5d72e14cde107ae51a8a3cca1",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listing-publish-rules.ts": {
+    "mtime": 1784664109.6105168,
+    "ast_hash": "1c8d1fbe5a2d08bb71ad3ad26f548111",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listings.controller.ts": {
+    "mtime": 1784663606.0491354,
+    "ast_hash": "ad39853671382ae4d9d0c5230634e1c1",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listings.module.ts": {
+    "mtime": 1784144330.440843,
+    "ast_hash": "6400947bd4afe276213a4416f6355451",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listings.service.spec.ts": {
+    "mtime": 1784663705.7543676,
+    "ast_hash": "622e8294c248e798f0df452dc582eac0",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listings.service.ts": {
+    "mtime": 1784752347.7251945,
+    "ast_hash": "610368e508b64c3a33f287ae344431ce",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\dto\\listing.dto.ts": {
+    "mtime": 1784752347.7251945,
+    "ast_hash": "8616e78ef93b414176e214713cc4a980",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\media\\media.controller.ts": {
+    "mtime": 1779219116.6947725,
+    "ast_hash": "c0d3b9918182830e6095b099893f99ff",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\media\\media.module.ts": {
+    "mtime": 1779219120.6488008,
+    "ast_hash": "115118843a1701263b857a20c3bfce03",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\media\\media.service.ts": {
+    "mtime": 1779219100.716719,
+    "ast_hash": "47ce6a089dfc3625ee2c99e42c3d624e",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\messages\\messages.controller.ts": {
+    "mtime": 1780083986.6257663,
+    "ast_hash": "53fc15a29209e1577624d190bd811808",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\messages\\messages.module.ts": {
+    "mtime": 1778845010.514964,
+    "ast_hash": "a2f4ba17d9fe51f570ed4d7d992164b6",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\messages\\messages.service.spec.ts": {
+    "mtime": 1783531331.2258053,
+    "ast_hash": "6b2a0cd826930acd1dfd2b967b5544ca",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\messages\\messages.service.ts": {
+    "mtime": 1780083961.684308,
+    "ast_hash": "37d7e53240f2fcc677a60137f05166b5",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\messages\\dto\\messages.dto.ts": {
+    "mtime": 1777601452.9447484,
+    "ast_hash": "e8f84961a91a7ad49f70476b8cbb8894",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\notifications.module.ts": {
+    "mtime": 1782414732.7630267,
+    "ast_hash": "19ca0013bd56db9af823ca4d5e4dcea3",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\listeners\\kyc.listener.ts": {
+    "mtime": 1782414724.0888653,
+    "ast_hash": "a5a5ca14005c4a932049c468e085ea47",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\listeners\\order.listener.ts": {
+    "mtime": 1782405727.6171243,
+    "ast_hash": "1748b40a19e861e184a86db7fbf5c71d",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\mail\\mail.service.ts": {
+    "mtime": 1782409343.9004438,
+    "ast_hash": "640e9d42e598381b3100c7539de023e7",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\templates\\index.ts": {
+    "mtime": 1782414715.1302068,
+    "ast_hash": "50d7bdfff0bfd3cb6a2b747bdf19917c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\templates\\kyc-action-needed.ts": {
+    "mtime": 1782414797.6970828,
+    "ast_hash": "c469bf98eaca2cd4d098e57544364a0e",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\templates\\kyc-approved.ts": {
+    "mtime": 1782414795.8944993,
+    "ast_hash": "dee9216703eb545ba4705955e5b40a58",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\templates\\layout.ts": {
+    "mtime": 1782409310.5066593,
+    "ast_hash": "72fabb22a7b542e51fe7195e31c24d29",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\templates\\order-confirmed.ts": {
+    "mtime": 1782405674.7702255,
+    "ast_hash": "4107469bca1cbac007709f692ac9f3bf",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\notifications\\templates\\sale-made.ts": {
+    "mtime": 1782405682.657854,
+    "ast_hash": "740dcc70d84b1e0a2106efccb5691f33",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\orders\\orders.controller.ts": {
+    "mtime": 1784798279.7351463,
+    "ast_hash": "5e78f85ae75d564190df79d82a0dbff3",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\orders\\orders.installments.spec.ts": {
+    "mtime": 1784820936.6858003,
+    "ast_hash": "367b8308ee4256b0d5960d79ee080aeb",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\orders\\orders.module.ts": {
+    "mtime": 1784570258.8875284,
+    "ast_hash": "3909490cd52587f9cebb01b836a80d9b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\orders\\orders.service.spec.ts": {
+    "mtime": 1784798394.90621,
+    "ast_hash": "af66ce47e5822f34d17582d762e6072c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\orders\\orders.service.ts": {
+    "mtime": 1784897817.8415966,
+    "ast_hash": "207d44703233c458e992ad122a2e7bc0",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\orders\\release-balance.cron.ts": {
+    "mtime": 1784798297.288247,
+    "ast_hash": "38a7393df04d1188bf350fa7ed13e78e",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\orders\\dto\\create-order.dto.ts": {
+    "mtime": 1784793085.0316918,
+    "ast_hash": "b1b2113994933b40536d510fd24c1b76",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\pagarme\\pagarme-config.service.ts": {
+    "mtime": 1782496777.8442369,
+    "ast_hash": "dd53460f29b2180e8f89ff47928487ea",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\pagarme\\pagarme-split.ts": {
+    "mtime": 1784897794.7339656,
+    "ast_hash": "db1766e32bc84518989145fee1c97f2f",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\pagarme\\pagarme-webhook.controller.ts": {
+    "mtime": 1783528634.9589944,
+    "ast_hash": "08a82902bb31469714f9f356413c8178",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\pagarme\\pagarme.module.ts": {
+    "mtime": 1782498645.5963466,
+    "ast_hash": "f73db744196b36b49efa84d021703177",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\pagarme\\pagarme.service.spec.ts": {
+    "mtime": 1783528940.4369645,
+    "ast_hash": "cb96ada6980c392673e1cdc5b5d9bdc8",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\pagarme\\pagarme.service.ts": {
+    "mtime": 1782260678.3671367,
+    "ast_hash": "63490a4661dc6ac9ddf5b90f2088b59b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\recipients\\document-validation.ts": {
+    "mtime": 1782414606.0452921,
+    "ast_hash": "396079e3fe0014dae05d66a35371ad9c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\recipients\\recipient-payload.ts": {
+    "mtime": 1784755794.105133,
+    "ast_hash": "09d2864718e122362add6249e8135990",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\recipients\\recipients.controller.ts": {
+    "mtime": 1784653565.6700027,
+    "ast_hash": "bb02ef2cc2ae9f4d579b98cbd020a474",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\recipients\\recipients.module.ts": {
+    "mtime": 1784653598.0929046,
+    "ast_hash": "949263d0f06bdd59abf2718e5135ab97",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\recipients\\recipients.service.ts": {
+    "mtime": 1784632085.1733518,
+    "ast_hash": "0e37ae5ae3bb299a9810fa422acb98fb",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\recipients\\dto\\create-recipient.dto.ts": {
+    "mtime": 1784631833.573405,
+    "ast_hash": "90111ed5e7679db826961831a849bf76",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\reviews\\reviews.controller.ts": {
+    "mtime": 1780922025.2792802,
+    "ast_hash": "51b0e4ff015b54eb611be2232ebb9854",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\reviews\\reviews.module.ts": {
+    "mtime": 1780922028.8381312,
+    "ast_hash": "742372ab3defd81e64bb0ccd7ec7fe6c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\reviews\\reviews.service.spec.ts": {
+    "mtime": 1780922083.1971912,
+    "ast_hash": "cd48619dd96ee063fe2715870aa4ea3c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\reviews\\reviews.service.ts": {
+    "mtime": 1780922018.0905426,
+    "ast_hash": "24ff0839b2f45a80c2d6b9f03f7312bd",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\reviews\\dto\\review.dto.ts": {
+    "mtime": 1780922003.0815668,
+    "ast_hash": "ca801942488c5637e049a52101326327",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\sellers\\seller-self.controller.ts": {
+    "mtime": 1784213103.1037529,
+    "ast_hash": "4c48dfc7aeeab8fac76746c23ac20dcc",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\sellers\\sellers.controller.ts": {
+    "mtime": 1778847597.8361845,
+    "ast_hash": "e98b4666859331ab14ca17f5a55ad73b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\sellers\\sellers.module.ts": {
+    "mtime": 1784214072.205973,
+    "ast_hash": "7c77ecdfd6f459c5ea72c9e4071d4bd7",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\sellers\\sellers.service.ts": {
+    "mtime": 1784213093.5956159,
+    "ast_hash": "b8e27a84ba111c1ba8c45a577b49fba3",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\sellers\\dto\\seller-self.dto.ts": {
+    "mtime": 1784213070.978498,
+    "ast_hash": "03476aa95df9c7130fe832a0c9fd1599",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\shipping\\shipping.controller.ts": {
+    "mtime": 1783555435.0852056,
+    "ast_hash": "418b66c82e0b8f763f908111af268196",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\shipping\\shipping.module.ts": {
+    "mtime": 1777587135.0077217,
+    "ast_hash": "1cd1e3b89604a2a7a23b7f7fa80807c5",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\shipping\\shipping.service.spec.ts": {
+    "mtime": 1783555474.8833067,
+    "ast_hash": "a52a8efc8d8ac2f0d2c5bb6cb87581c7",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\shipping\\shipping.service.ts": {
+    "mtime": 1783555457.7198837,
+    "ast_hash": "f2f0a0140f3dac818538ffd769e6448a",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\shipping\\dto\\shipping.dto.ts": {
+    "mtime": 1783553374.390732,
+    "ast_hash": "4694d6becd5d4ddbfbceaeedcccbec59",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\stripe\\stripe-config.service.ts": {
+    "mtime": 1778038774.0483034,
+    "ast_hash": "390f872c6ac2906deb5cf86b3cc3fbbb",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\stripe\\stripe-core.module.ts": {
+    "mtime": 1778038962.409192,
+    "ast_hash": "79e73dd29acc4e3ef8ac257d4a17d48f",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\stripe\\stripe-thin-webhook.controller.ts": {
+    "mtime": 1778039263.5370274,
+    "ast_hash": "cba96ea1532243cb9467d63472703cf1",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\stripe\\stripe-webhook.controller.ts": {
+    "mtime": 1776757285.9404094,
+    "ast_hash": "607d80c8695a48ca3ec7fb40c5d68799",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\stripe\\stripe.service.ts": {
+    "mtime": 1778039283.2816951,
+    "ast_hash": "61d752274d8c1f9d98a7a5c54fb0460e",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\users\\users.controller.ts": {
+    "mtime": 1784150004.440863,
+    "ast_hash": "5cdbf16627f5f1bb12f41698e50306ab",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\users\\users.module.ts": {
+    "mtime": 1773859289.5191236,
+    "ast_hash": "6fcec1ac2325664f647b063cd2f0771b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\users\\users.service.spec.ts": {
+    "mtime": 1781639539.8967664,
+    "ast_hash": "0286d0ab0f75912e1b5fa70fcc7e479d",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\users\\users.service.ts": {
+    "mtime": 1784149995.0996299,
+    "ast_hash": "b927e1f352b9d307ad4a0e18d33b94e2",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\users\\dto\\consent.dto.ts": {
+    "mtime": 1784149985.3663335,
+    "ast_hash": "beb122889dcd490a6c3b6c86cff8eb78",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\users\\dto\\user.dto.ts": {
+    "mtime": 1780923297.0954516,
+    "ast_hash": "cc9b9e7e64e88c83000bfbb9c39aee64",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\wallet\\wallet.controller.ts": {
+    "mtime": 1776202055.7395155,
+    "ast_hash": "210ea303ab83269146e04e6773697752",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\wallet\\wallet.module.ts": {
+    "mtime": 1776884951.7565303,
+    "ast_hash": "ac8600b0cb93eba2963cb29a5249a235",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\wallet\\wallet.service.spec.ts": {
+    "mtime": 1774585148.6847577,
+    "ast_hash": "d22e86ddbede84f3a297dc79956d20b3",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\wallet\\wallet.service.ts": {
+    "mtime": 1784638698.6984537,
+    "ast_hash": "efb27673bc2c9e54aeffaa328133210b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\webhook\\webhook.controller.spec.ts": {
+    "mtime": 1774473312.6874096,
+    "ast_hash": "2137125d493ce0244636a51ccbe0c916",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\webhook\\webhook.controller.ts": {
+    "mtime": 1774473312.6874096,
+    "ast_hash": "c5864a55b093cfd38779172e7681bb25",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\webhook\\webhook.module.ts": {
+    "mtime": 1774473312.6874096,
+    "ast_hash": "defd683e12fbf3c9525081da32e63ebc",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\webhook\\webhook.service.spec.ts": {
+    "mtime": 1774473312.6874096,
+    "ast_hash": "7ea9bcc4263ab10f6235b40450114822",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\webhook\\webhook.service.ts": {
+    "mtime": 1774473312.6874096,
+    "ast_hash": "74ebc57949ed5fb45d9d73fb65f769a4",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\withdrawals\\withdrawals.controller.ts": {
+    "mtime": 1776163301.4779491,
+    "ast_hash": "f159a7cf1199082e9a6017af7600d2d8",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\withdrawals\\withdrawals.module.ts": {
+    "mtime": 1784635751.0484645,
+    "ast_hash": "c338c263b4153dc73d12305335b8c33a",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\withdrawals\\withdrawals.service.spec.ts": {
+    "mtime": 1784635801.914046,
+    "ast_hash": "d62afcd8c1e938cab9326a2647f12549",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\withdrawals\\withdrawals.service.ts": {
+    "mtime": 1784635744.5444121,
+    "ast_hash": "680cf395dc06bea81f116ba750521057",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\withdrawals\\dto\\withdrawal.dto.ts": {
+    "mtime": 1780922456.1365404,
+    "ast_hash": "db448f18ac01591d6d0e44c2086f7662",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\test\\admin.e2e-spec.ts": {
+    "mtime": 1780080501.2558746,
+    "ast_hash": "79f8e76951f8aa45c64a754d0cf5e278",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\test\\app.e2e-spec.ts": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "95cefce84f38e57b51becdf8fef72bc3",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\test\\auctions.e2e-spec.ts": {
+    "mtime": 1780080491.9503925,
+    "ast_hash": "4fd47c87622313de7b0ca61987ae6b0b",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\test\\jest-e2e.json": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "707a50895cb1c565825637916e9cf290",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\logs.txt": {
+    "mtime": 1778852562.1502392,
+    "ast_hash": "882a2b139ed5901f1fbbada03f458007",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\README.md": {
+    "mtime": 1772654893.414339,
+    "ast_hash": "ad12c0560e2e514d356da443998e8208",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\render.yaml": {
+    "mtime": 1783466026.9453619,
+    "ast_hash": "38182d402054cc9ba6c4ef4d1dddf272",
+    "semantic_hash": ""
+  }
+}

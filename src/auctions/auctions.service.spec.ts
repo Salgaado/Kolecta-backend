@@ -551,4 +551,316 @@ describe('AuctionsService', () => {
       expect(result).not.toContain('auction_exp_1');
     });
   });
+
+  // ── reauthorizeExpiringBids (Fase 3) ─────────────────────────────────────
+
+  describe('reauthorizeExpiringBids', () => {
+    const reauthRow = {
+      bidId: 'bid_001',
+      auctionId: mockAuctionId,
+      bidderId,
+      amountInCents: 6000,
+      chargeId: 'ch_old',
+      sellerId,
+    };
+
+    it('não faz nada quando não há pré-auth a expirar', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]); // nenhum lance na janela
+      service = await buildModule();
+
+      const result = await service.reauthorizeExpiringBids();
+
+      expect(result).toEqual({ reauthorized: [], failed: [] });
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+    });
+
+    it('renova a pré-auth: cria uma nova e cancela a antiga', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([reauthRow]) // lances líderes a expirar
+        .mockResolvedValueOnce([]); // sellerProfiles → sem recebedor (sem split)
+      service = await buildModule();
+
+      const result = await service.reauthorizeExpiringBids();
+
+      expect(result.reauthorized).toContain('bid_001');
+      expect(result.failed).toEqual([]);
+      // Criou nova pré-auth (capture:false).
+      expect(mockPagarmeService.post).toHaveBeenCalledWith(
+        '/orders',
+        expect.objectContaining({
+          payments: expect.arrayContaining([
+            expect.objectContaining({
+              credit_card: expect.objectContaining({ capture: false }),
+            }),
+          ]),
+        }),
+        expect.any(String),
+      );
+      // Cancelou a auth ANTIGA.
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith('/charges/ch_old');
+    });
+
+    it('pula (sem renovar) quando o bidder não tem mais cartão salvo', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([reauthRow]);
+      mockCardsService.getCardRef.mockReset().mockResolvedValue(null);
+      service = await buildModule();
+
+      const result = await service.reauthorizeExpiringBids();
+
+      expect(result.reauthorized).toEqual([]);
+      expect(result.failed).toEqual([]);
+      // Sem cartão → não tenta autorizar nem cancela a auth antiga.
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+      expect(mockPagarmeService.delete).not.toHaveBeenCalled();
+    });
+
+    it('desfaz a auth NOVA e não conta como renovada se o lance mudou no meio', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([reauthRow])
+        .mockResolvedValueOnce([]); // sellerProfiles
+      // Troca atômica não afeta linhas (lance superado/fechado no meio).
+      mockDb.returning.mockResolvedValueOnce([]);
+      service = await buildModule();
+
+      const result = await service.reauthorizeExpiringBids();
+
+      expect(result.reauthorized).toEqual([]);
+      // Rollback: cancela a auth NOVA (ch_1 do authorizedOrder), não a antiga.
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith('/charges/ch_1');
+      expect(mockPagarmeService.delete).not.toHaveBeenCalledWith(
+        '/charges/ch_old',
+      );
+    });
+
+    it('marca como falha e MANTÉM a auth antiga se o cartão é recusado agora', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([reauthRow])
+        .mockResolvedValueOnce([]); // sellerProfiles
+      // Cartão recusado na renovação.
+      mockPagarmeService.post.mockReset().mockResolvedValue({
+        id: 'or_x',
+        status: 'failed',
+        charges: [{ id: 'ch_x', status: 'failed' }],
+      });
+      service = await buildModule();
+
+      const result = await service.reauthorizeExpiringBids();
+
+      expect(result.failed).toContain('bid_001');
+      expect(result.reauthorized).toEqual([]);
+      // A auth ANTIGA é preservada (degrada para pending_payment no fecho).
+      expect(mockPagarmeService.delete).not.toHaveBeenCalledWith(
+        '/charges/ch_old',
+      );
+    });
+  });
+
+  // ── payAuctionOrder (Fase 4) ─────────────────────────────────────────────
+
+  describe('payAuctionOrder', () => {
+    const pendingOrder = {
+      id: 'order_1',
+      buyerId: bidderId,
+      sellerId,
+      listingId: mockListingId,
+      totalInCents: 6000,
+      sellerNetInCents: 5340,
+      platformFeeInCents: 660,
+      status: 'pending_payment',
+      paymentDeadlineAt: new Date(Date.now() + 12 * 60 * 60 * 1000),
+    };
+    const paidOrder = {
+      id: 'or_paid',
+      status: 'paid',
+      charges: [{ id: 'ch_paid', status: 'paid' }],
+    };
+
+    it('lança NotFound se o pedido não existe', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]);
+      service = await buildModule();
+      await expect(service.payAuctionOrder(bidderId, 'nope')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('lança Forbidden se o pedido é de outro comprador', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([{ ...pendingOrder, buyerId: 'x' }]);
+      service = await buildModule();
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('lança BadRequest se o pedido não está pending_payment', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([{ ...pendingOrder, status: 'paid' }]);
+      service = await buildModule();
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lança BadRequest se o prazo de pagamento expirou', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([
+        { ...pendingOrder, paymentDeadlineAt: new Date(Date.now() - 1000) },
+      ]);
+      service = await buildModule();
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+    });
+
+    it('lança BadRequest se o comprador não tem cartão salvo', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([pendingOrder]);
+      mockCardsService.getCardRef.mockReset().mockResolvedValue(null);
+      service = await buildModule();
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+    });
+
+    it('lança BadRequest e NÃO consolida se o cartão é recusado', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([pendingOrder])
+        .mockResolvedValueOnce([]); // sellerProfiles (sem split)
+      mockPagarmeService.post.mockReset().mockResolvedValue({
+        id: 'or_x',
+        status: 'failed',
+        charges: [{ id: 'ch_x', status: 'failed' }],
+      });
+      service = await buildModule();
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
+    });
+
+    it('paga com sucesso: cobra o cartão (à vista) e retém o líquido do vendedor', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([pendingOrder]) // order
+        .mockResolvedValueOnce([]) // sellerProfiles (sem split)
+        .mockResolvedValueOnce([{ id: 'auction_1' }]); // auction por listingId (_settle)
+      mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
+      service = await buildModule();
+
+      const result = await service.payAuctionOrder(bidderId, 'order_1');
+
+      expect(result).toEqual({ orderId: 'order_1', paid: true });
+      // Cobrança com captura imediata (capture:true), não pré-auth.
+      expect(mockPagarmeService.post).toHaveBeenCalledWith(
+        '/orders',
+        expect.objectContaining({
+          payments: expect.arrayContaining([
+            expect.objectContaining({
+              credit_card: expect.objectContaining({ capture: true }),
+            }),
+          ]),
+        }),
+        expect.any(String),
+      );
+      // Líquido do vendedor retido na wallet.
+      expect(mockWalletService.hold).toHaveBeenCalled();
+    });
+  });
+
+  // ── expireOverduePendingPayments (Fase 4) ────────────────────────────────
+
+  describe('expireOverduePendingPayments', () => {
+    const overdueOrder = {
+      id: 'order_ov',
+      buyerId: bidderId,
+      sellerId,
+      listingId: mockListingId,
+      totalInCents: 6000,
+      status: 'pending_payment',
+      paymentDeadlineAt: new Date(Date.now() - 1000),
+    };
+
+    // Override de update().set().where() para separar dos selects (que usam
+    // mockDb.where): o cancel usa .returning(); os demais updates são awaited.
+    const stubUpdatesWithCancel = (cancelResult: any[]) => {
+      mockDb.set = jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnValue({
+          returning: jest.fn().mockResolvedValue(cancelResult),
+        }),
+      });
+    };
+
+    it('retorna vazio quando não há pedidos vencidos', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]); // nenhum vencido
+      service = await buildModule();
+
+      const result = await service.expireOverduePendingPayments();
+
+      expect(result).toEqual({ expired: [], offered: [], reopened: [] });
+    });
+
+    it('REABRE o anúncio quando não há 2º colocado apto', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([overdueOrder]) // vencidos
+        .mockResolvedValueOnce([
+          { id: 'auction_1', reservePriceInCents: null },
+        ]); // auction por listingId
+      stubUpdatesWithCancel([overdueOrder]); // cancelou o pedido
+      // _findRunnerUp: só há lances do próprio vencedor faltoso → sem elegível.
+      mockDb.orderBy.mockResolvedValue([
+        { bidId: 'b1', bidderId, amountInCents: 6000, status: 'lost' },
+      ]);
+      service = await buildModule();
+
+      const result = await service.expireOverduePendingPayments();
+
+      expect(result.expired).toContain('order_ov');
+      expect(result.reopened).toContain('order_ov');
+      expect(result.offered).toEqual([]);
+    });
+
+    it('OFERECE ao 2º colocado quando existe lance elegível acima da reserva', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([overdueOrder]) // vencidos
+        .mockResolvedValueOnce([
+          { id: 'auction_1', reservePriceInCents: 3000 },
+        ]); // auction
+      stubUpdatesWithCancel([overdueOrder]);
+      // Vencedor faltoso (buyer_001) + 2º colocado (buyer_002) com lance válido.
+      mockDb.orderBy.mockResolvedValue([
+        { bidId: 'b1', bidderId, amountInCents: 6000, status: 'lost' },
+        { bidId: 'b2', bidderId: 'buyer_002', amountInCents: 5000, status: 'outbid' },
+      ]);
+      service = await buildModule();
+
+      const result = await service.expireOverduePendingPayments();
+
+      expect(result.expired).toContain('order_ov');
+      expect(result.offered).toContain('order_ov');
+      expect(result.reopened).toEqual([]);
+    });
+
+    it('não conta como expirado se o cancelamento perde a corrida (já pago)', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([overdueOrder]); // vencidos
+      stubUpdatesWithCancel([]); // cancel não afetou linhas → noop
+      service = await buildModule();
+
+      const result = await service.expireOverduePendingPayments();
+
+      expect(result.expired).toEqual([]);
+    });
+  });
 });

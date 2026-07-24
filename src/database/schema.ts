@@ -391,8 +391,15 @@ export const orders = sqliteTable('orders', {
   pagarmeOrderId: text('pagarme_order_id'),
   pagarmeChargeId: text('pagarme_charge_id'),
 
-  // pending | paid | shipped | delivered | cancelled | refunded
+  // pending | pending_payment | paid | shipped | delivered | cancelled | refunded
+  // pending_payment: arremate de leilão cuja captura da pré-auth falhou — o
+  // vencedor tem até `paymentDeadlineAt` para pagar (Fase 4).
   status: text('status').notNull().default('pending'),
+
+  // Prazo para o vencedor de um leilão pagar um pedido `pending_payment`. Depois
+  // dele, o cron expira o pedido e oferece ao 2º colocado (ou reabre). Ver
+  // AuctionsService.expireOverduePendingPayments (Fase 4).
+  paymentDeadlineAt: integer('payment_deadline_at', { mode: 'timestamp' }),
 
   // Código de rastreamento do envio
   trackingCode: text('tracking_code'),
