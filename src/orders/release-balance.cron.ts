@@ -56,7 +56,11 @@ export class ReleaseBalanceCron {
       .from(schema.orders)
       .where(
         and(
-          eq(schema.orders.status, 'delivered'),
+          // 'delivered' = entrega declarada (rastreio, retirada ou comprador).
+          // 'shipped'   = rede de segurança da postagem: o rastreio nunca acusou
+          //               a entrega e o comprador nunca confirmou. Sem isto o
+          //               saldo do vendedor ficaria retido para sempre.
+          inArray(schema.orders.status, ['delivered', 'shipped']),
           lte(schema.orders.autoReleaseAt, now),
         ),
       );
@@ -98,10 +102,16 @@ export class ReleaseBalanceCron {
         const sellerWallet = await this.walletService.getOrCreateWallet(
           order.sellerId,
         );
+        // O motivo aparece no extrato do vendedor — vale distinguir a liberação
+        // normal (entrega + 48h) da rede de segurança (postagem sem rastreio).
+        const motivo =
+          order.status === 'shipped'
+            ? 'Prazo de segurança da postagem'
+            : 'Auto-release 48h';
         await this.walletService.release(
           sellerWallet.id,
           sellerNetInCents,
-          `Auto-release 48h — Pedido #${order.id.slice(0, 8)}`,
+          `${motivo} — Pedido #${order.id.slice(0, 8)}`,
           order.id,
         );
 

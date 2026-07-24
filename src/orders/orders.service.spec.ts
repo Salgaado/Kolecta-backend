@@ -355,6 +355,58 @@ describe('OrdersService', () => {
   });
 
   // ── Cancelamento manual + varredura de PIX expirado ────────────────────────
+  // ── Quem declara a entrega ────────────────────────────────────────────────
+  // Retirada pessoal: vendedor marca "entregue" + comprador confirma.
+  // Com frete: o vendedor NÃO declara entrega (senão inicia o relógio de 48h
+  // sozinho, podendo nem ter postado) — fica com o rastreio ou o comprador.
+
+  describe('markAsDelivered', () => {
+    const base = {
+      id: 'order_123',
+      buyerId: 'user_buyer',
+      sellerId: 'user_seller',
+      listingId: 'listing_001',
+      status: 'paid',
+      sellerNetInCents: 9000,
+      totalInCents: 10000,
+    };
+
+    it('retirada pessoal: vendedor pode marcar como entregue', async () => {
+      const pickup = { ...base, deliveryMethod: 'pickup' };
+      selectChain.where.mockResolvedValueOnce([pickup]);
+      updateChain.returning.mockResolvedValueOnce([
+        { ...pickup, status: 'delivered' },
+      ]);
+
+      const result = await service.markAsDelivered('user_seller', 'order_123');
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'delivered' }),
+      );
+      expect(result.status).toBe('delivered');
+    });
+
+    it('com frete: vendedor NÃO pode marcar como entregue', async () => {
+      selectChain.where.mockResolvedValueOnce([
+        { ...base, deliveryMethod: 'shipping' },
+      ]);
+
+      await expect(
+        service.markAsDelivered('user_seller', 'order_123'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejeita marcar entrega em pedido de outro vendedor', async () => {
+      selectChain.where.mockResolvedValueOnce([
+        { ...base, deliveryMethod: 'pickup' },
+      ]);
+
+      await expect(
+        service.markAsDelivered('outro_seller', 'order_123'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
   describe('cancelOrder (manual)', () => {
     const pendingPixOrder = {
       id: 'order_123',

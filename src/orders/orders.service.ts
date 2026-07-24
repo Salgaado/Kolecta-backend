@@ -82,6 +82,17 @@ const PAGARME_CET_BY_INSTALLMENT: Readonly<Record<number, number>> = {
 const INSTALLMENT_INTEREST_ENABLED =
   (process.env.PAGARME_INSTALLMENT_INTEREST ?? 'on').toLowerCase() !== 'off';
 
+/**
+ * Rede de segurança do envio, em dias a partir da POSTAGEM. Só entra em cena
+ * quando o rastreio não acusou a entrega e o comprador nunca confirmou — sem
+ * isso o saldo do vendedor ficaria retido indefinidamente. A entrega detectada
+ * pelo Melhor Envio antecipa o prazo para entrega + 48h.
+ */
+const SHIPPING_FALLBACK_RELEASE_DAYS = parseInt(
+  process.env.SHIPPING_FALLBACK_RELEASE_DAYS ?? '14',
+  10,
+);
+
 /** Máximo de parcelas permitido no cartão. */
 const MAX_INSTALLMENTS = 12;
 
@@ -837,12 +848,29 @@ export class OrdersService {
       throw new ForbiddenException('Acesso negado para este pedido');
     }
 
+    // ── Rede de segurança da postagem ──
+    // Em pedido com frete, o vendedor não marca "entregue" (só a transportadora
+    // ou o comprador). Se o rastreio falhar E o comprador nunca confirmar, o
+    // dinheiro ficaria retido para sempre. Ao postar, agendamos um release de
+    // último recurso; quando o rastreio do Melhor Envio acusar a entrega, o
+    // prazo é ANTECIPADO para entrega + 48h.
+    const agendaFallback =
+      dto.status === 'shipped' &&
+      order.status !== 'shipped' &&
+      order.deliveryMethod !== 'pickup' &&
+      !order.autoReleaseAt;
+
     const [updated] = await this.db
       .update(schema.orders)
       .set({
         status: dto.status,
         ...(dto.trackingCode && { trackingCode: dto.trackingCode }),
         ...(dto.deliveryMethod && { deliveryMethod: dto.deliveryMethod }),
+        ...(agendaFallback && {
+          autoReleaseAt: new Date(
+            Date.now() + SHIPPING_FALLBACK_RELEASE_DAYS * 24 * 60 * 60 * 1000,
+          ),
+        }),
       })
       .where(eq(schema.orders.id, orderId))
       .returning();
@@ -1253,8 +1281,18 @@ export class OrdersService {
     });
   }
 
-  // ── Vendedor marca como entregue → inicia timer 48h ───────────────────────
+  // ── Vendedor marca como entregue (RETIRADA PESSOAL) ───────────────────────
 
+  /**
+   * Entrega em mãos: o vendedor declara que entregou, o comprador confirma que
+   * recebeu, e a validação das duas partes libera o saldo na hora.
+   *
+   * Restrito a `pickup` DE PROPÓSITO. Em pedido com frete quem declara a entrega
+   * é a transportadora, não o vendedor — senão ele inicia o relógio sozinho
+   * (podia marcar "entregue" logo após o pagamento) e o dinheiro sai em 48h sem
+   * o pacote ter saído do lugar. No envio, a entrega vem do rastreio do Melhor
+   * Envio (`meDeliveredAt`), com o prazo de segurança da postagem como rede.
+   */
   async markAsDelivered(sellerId: string, orderId: string) {
     const [order] = await this.db
       .select()
@@ -1264,6 +1302,12 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Pedido não encontrado');
     if (order.sellerId !== sellerId) {
       throw new ForbiddenException('Acesso negado para este pedido');
+    }
+    if (order.deliveryMethod !== 'pickup') {
+      throw new BadRequestException(
+        'Só a retirada pessoal é marcada como entregue pelo vendedor. ' +
+          'Em pedidos com frete, a entrega é confirmada pelo rastreio ou pelo comprador.',
+      );
     }
     if (order.status !== 'shipped' && order.status !== 'paid') {
       throw new BadRequestException(
@@ -1311,11 +1355,15 @@ export class OrdersService {
 
     const now = new Date();
 
-    // ── Retirada pessoal: libera NA HORA ──────────────────────────────────────
-    // Sem transporte (item entregue em mãos), não há risco de extravio, então a
-    // confirmação do comprador move o saldo retido → disponível imediatamente
-    // (sem a janela de 48h). Disputa aberta ainda congela o release.
-    if (order.deliveryMethod === 'pickup') {
+    // ── Confirmação do comprador libera NA HORA ───────────────────────────────
+    // Quem recebeu o item é a autoridade sobre a entrega: confirmou, o saldo vai
+    // de retido → disponível na mesma hora, na retirada pessoal e no envio.
+    // Disputa aberta ainda congela o release.
+    //
+    // Isto SUBSTITUI a decisão P5 de 21/07, que abria uma janela de 48h mesmo
+    // com a confirmação. Os 48h passam a ser só a garantia de quem NÃO confirma:
+    // dão ao vendedor a certeza de receber e ao comprador tempo de abrir disputa.
+    {
       try {
         const openDisputes = await this.db
           .select({ id: schema.disputes.id })
@@ -1332,10 +1380,14 @@ export class OrdersService {
           const sellerWallet = await this.walletService.getOrCreateWallet(
             order.sellerId,
           );
+          const rotulo =
+            order.deliveryMethod === 'pickup'
+              ? 'Retirada pessoal confirmada'
+              : 'Recebimento confirmado';
           await this.walletService.release(
             sellerWallet.id,
             sellerNetInCents,
-            `Retirada pessoal confirmada — Pedido #${order.id.slice(0, 8)}`,
+            `${rotulo} — Pedido #${order.id.slice(0, 8)}`,
             order.id,
           );
 
@@ -1350,33 +1402,29 @@ export class OrdersService {
             .returning();
 
           this.logger.log(
-            `✅ Pedido ${orderId} (retirada pessoal): comprador confirmou → ` +
+            `✅ Pedido ${orderId} (${order.deliveryMethod}): comprador confirmou → ` +
               `saldo liberado NA HORA (${sellerNetInCents / 100} BRL) para seller ${order.sellerId}.`,
           );
           return completed;
         }
 
         this.logger.warn(
-          `Pedido ${orderId} (retirada pessoal) com disputa aberta — ` +
+          `Pedido ${orderId} com disputa aberta — ` +
             `release imediato congelado; segue janela padrão.`,
         );
       } catch (err: any) {
         // Se o release falhar (ex.: hold ausente), não quebra a confirmação:
         // cai no fluxo padrão e o ReleaseBalanceCron tenta depois.
         this.logger.error(
-          `Falha no release imediato do pedido ${orderId} (retirada pessoal): ${err.message}. Caindo para janela padrão.`,
+          `Falha no release imediato do pedido ${orderId}: ${err.message}. Caindo para janela padrão.`,
         );
       }
     }
 
+    // Chegou aqui = disputa aberta ou falha no release imediato. Mantém a janela
+    // de 48h como caminho de recuperação: o ReleaseBalanceCron tenta de novo
+    // quando o prazo vencer e não houver disputa.
     const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
-
-    // P5 (decidido 21/07): a confirmação do comprador NÃO libera na hora —
-    // abre uma janela de 48h (proteção contra disputa/arrependimento). O
-    // release efetivo (held → available) fica com o ReleaseBalanceCron quando
-    // auto_release_at vencer E não houver disputa aberta.
-    // "O que vier primeiro": mantém o auto_release_at mais cedo entre o já
-    // existente (ex.: entrega marcada) e agora+48h.
     const autoReleaseAt =
       order.autoReleaseAt && order.autoReleaseAt < in48h
         ? order.autoReleaseAt
