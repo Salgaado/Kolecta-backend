@@ -4,9 +4,14 @@ import { alias } from 'drizzle-orm/sqlite-core';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
-import { UpdateUserRoleDto, ResolveDisputeDto } from './dto/admin.dto';
+import {
+  UpdateUserRoleDto,
+  ResolveDisputeDto,
+  SendTestEmailDto,
+} from './dto/admin.dto';
 import { ListingsService } from '../listings/listings.service';
 import { FounderService } from '../founder/founder.service';
+import { MailService } from '../notifications/mail/mail.service';
 
 @Injectable()
 export class AdminService {
@@ -15,6 +20,7 @@ export class AdminService {
     private readonly db: LibSQLDatabase<typeof schema>,
     private readonly listingsService: ListingsService,
     private readonly founderService: FounderService,
+    private readonly mailService: MailService,
   ) {}
 
   /** Alias da tabela `users` para o moderador (users já é usado p/ o vendedor). */
@@ -154,6 +160,69 @@ export class AdminService {
       .returning();
 
     return updated;
+  }
+
+  // ── POST /api/admin/test-email ───────────────────────────────────────────
+
+  /**
+   * Dispara um e-mail real pelo MailService para validar a configuração do
+   * ambiente (RESEND_API_KEY, remetente, domínio verificado) sem depender de
+   * uma venda acontecer. Devolve o desfecho lido do `email_log`, então o admin
+   * distingue os três casos sem acesso ao banco:
+   *   sent    → provedor aceitou (vem o providerId do Resend)
+   *   skipped → MailService desligado (falta MAIL_ENABLED=true / API key)
+   *   failed  → provedor recusou (o motivo vem em `error`)
+   */
+  async sendTestEmail(dto: SendTestEmailDto) {
+    const template = dto.template ?? 'kyc-approved';
+    // refId único: a idempotência do MailService não deve pular reenvios de teste.
+    const refId = `admin-test-${Date.now()}`;
+
+    // Dados de amostra por template (nenhum toca dado real de pedido).
+    const sample: Record<string, Record<string, unknown>> = {
+      'kyc-approved': { name: 'Teste Kolecta' },
+      'kyc-action-needed': { name: 'Teste Kolecta', status: 'refused' },
+      'order-confirmed': {
+        buyerName: 'Teste Kolecta',
+        orderId: refId,
+        listingTitle: 'Anúncio de teste',
+        totalInCents: 12345,
+      },
+      'sale-made': {
+        sellerName: 'Teste Kolecta',
+        orderId: refId,
+        listingTitle: 'Anúncio de teste',
+        totalInCents: 12345,
+      },
+    };
+
+    await this.mailService.send({
+      to: dto.to,
+      template,
+      data: sample[template],
+      refId,
+    });
+
+    const [log] = await this.db
+      .select()
+      .from(schema.emailLog)
+      .where(eq(schema.emailLog.refId, refId))
+      .limit(1);
+
+    return {
+      to: dto.to,
+      template,
+      refId,
+      status: log?.status ?? 'sem registro',
+      providerId: log?.providerId ?? null,
+      error: log?.error ?? null,
+      hint:
+        log?.status === 'skipped'
+          ? 'MailService desligado: confira MAIL_ENABLED=true e RESEND_API_KEY no ambiente.'
+          : log?.status === 'failed'
+            ? 'O provedor recusou o envio — veja `error` (remetente/domínio costumam ser a causa).'
+            : null,
+    };
   }
 
   // ── GET /api/admin/listings ──────────────────────────────────────────────

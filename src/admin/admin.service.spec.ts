@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AdminService } from './admin.service';
 import { ListingsService } from '../listings/listings.service';
 import { FounderService } from '../founder/founder.service';
+import { MailService } from '../notifications/mail/mail.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 
@@ -89,6 +90,7 @@ describe('AdminService', () => {
   let mockDb: any;
   let listingsService: { updateStatus: jest.Mock };
   let founderService: { listCandidates: jest.Mock; grantFounder: jest.Mock };
+  let mailService: { send: jest.Mock };
 
   const buildModule = async () => {
     listingsService = { updateStatus: jest.fn() };
@@ -96,12 +98,14 @@ describe('AdminService', () => {
       listCandidates: jest.fn(),
       grantFounder: jest.fn(),
     };
+    mailService = { send: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
         { provide: ListingsService, useValue: listingsService },
         { provide: FounderService, useValue: founderService },
+        { provide: MailService, useValue: mailService },
       ],
     }).compile();
 

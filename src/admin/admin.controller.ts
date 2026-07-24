@@ -15,7 +15,11 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { AdminService } from './admin.service';
-import { UpdateUserRoleDto, ResolveDisputeDto } from './dto/admin.dto';
+import {
+  UpdateUserRoleDto,
+  ResolveDisputeDto,
+  SendTestEmailDto,
+} from './dto/admin.dto';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -31,6 +35,16 @@ export class AdminController {
   @Get('stats')
   async getStats() {
     return { data: await this.adminService.getStats() };
+  }
+
+  // ── POST /api/admin/test-email ───────────────────────────────────────────
+  // Valida a config de e-mail do ambiente sem esperar uma venda real.
+  // Ex: { "to": "voce@exemplo.com" } → devolve sent | skipped | failed.
+
+  @Post('test-email')
+  @HttpCode(HttpStatus.OK)
+  async sendTestEmail(@Body() dto: SendTestEmailDto) {
+    return { data: await this.adminService.sendTestEmail(dto) };
   }
 
   // ── Agregações (dashboards) ──────────────────────────────────────────────
