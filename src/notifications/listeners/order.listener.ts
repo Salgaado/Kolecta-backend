@@ -17,6 +17,14 @@ interface OrderPaidEvent {
   totalInCents: number;
 }
 
+// Emitido em orders.service.ts (`order.shipped`), na transição para 'shipped'.
+interface OrderShippedEvent {
+  orderId: string;
+  buyerId: string;
+  listingId: string;
+  trackingCode: string | null;
+}
+
 @Injectable()
 export class OrderListener {
   private readonly logger = new Logger(OrderListener.name);
@@ -64,6 +72,40 @@ export class OrderListener {
         orderId: event.orderId,
         listingTitle: event.listingTitle,
         totalInCents: event.totalInCents,
+      },
+    });
+  }
+
+  @OnEvent('order.shipped')
+  async handleOrderShipped(event: OrderShippedEvent): Promise<void> {
+    const [buyer] = await this.db
+      .select({ name: schema.users.name, email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.id, event.buyerId));
+
+    if (!buyer?.email) {
+      this.logger.warn(
+        `Comprador ${event.buyerId} sem e-mail — "order-shipped" do pedido ${event.orderId} não enviado.`,
+      );
+      return;
+    }
+
+    const [listing] = await this.db
+      .select({ title: schema.listings.title })
+      .from(schema.listings)
+      .where(eq(schema.listings.id, event.listingId));
+
+    await this.mail.send({
+      to: buyer.email,
+      template: 'order-shipped',
+      // refId inclui o rastreio: se o vendedor corrigir o código depois, o
+      // comprador recebe o código certo em vez de ficar com o errado.
+      refId: `order-shipped-${event.orderId}-${event.trackingCode ?? 'sem-codigo'}`,
+      data: {
+        buyerName: buyer.name,
+        orderId: event.orderId,
+        listingTitle: listing?.title ?? 'seu item',
+        trackingCode: event.trackingCode,
       },
     });
   }

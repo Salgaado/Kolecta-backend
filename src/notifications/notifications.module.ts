@@ -4,6 +4,10 @@ import { OrderListener } from './listeners/order.listener';
 import { KycListener } from './listeners/kyc.listener';
 import { UserListener } from './listeners/user.listener';
 import { ListingListener } from './listeners/listing.listener';
+import { AuctionListener } from './listeners/auction.listener';
+import { MessageListener } from './listeners/message.listener';
+import { FinanceListener } from './listeners/finance.listener';
+import { DisputeListener } from './listeners/dispute.listener';
 
 /**
  * Módulo de notificações transacionais (e-mail).
@@ -15,14 +19,17 @@ import { ListingListener } from './listeners/listing.listener';
  * DatabaseModule é @Global, então a conexão (DATABASE_CONNECTION) já está
  * disponível sem import explícito.
  *
- * Cobertura atual:
- *  - pedido pago  → order-confirmed (comprador) + sale-made (vendedor)
- *  - KYC          → kyc-approved / kyc-action-needed
- *  - cadastro     → welcome (`user.registered`, do webhook do Clerk)
- *  - moderação    → listing-approved / listing-rejected (`listing.moderated`)
- *
- * Ainda sem gatilho (templates existem no kit do front): envio de pedido,
- * lances, arremate, mensagem, repasse e disputa.
+ * Cobertura (14 templates, todos com gatilho):
+ *  - cadastro     → welcome                          (`user.registered`)
+ *  - moderação    → listing-approved / -rejected     (`listing.moderated`)
+ *  - pedido pago  → order-confirmed + sale-made      (`order.paid`)
+ *  - postagem     → order-shipped                    (`order.shipped`)
+ *  - leilão       → bid-received + bid-outbid        (`auction.bid.placed`)
+ *  - arremate     → auction-won                      (`auction.won`)
+ *  - conversa     → message-received                 (`message.received`)
+ *  - financeiro   → payout-released                  (`payout.released`)
+ *  - disputa      → dispute-opened                   (`dispute.opened`)
+ *  - KYC          → kyc-approved / -action-needed    (`recipient.kyc.*`)
  */
 @Module({
   providers: [
@@ -31,6 +38,10 @@ import { ListingListener } from './listeners/listing.listener';
     KycListener,
     UserListener,
     ListingListener,
+    AuctionListener,
+    MessageListener,
+    FinanceListener,
+    DisputeListener,
   ],
   exports: [MailService],
 })

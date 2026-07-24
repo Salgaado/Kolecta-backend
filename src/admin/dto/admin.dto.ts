@@ -1,4 +1,8 @@
 import { IsEmail, IsIn, IsOptional, IsString } from 'class-validator';
+import { TEMPLATES } from '../../notifications/templates';
+// `import type` obrigatório: o tipo é usado num campo decorado e, com
+// isolatedModules + emitDecoratorMetadata, o TS exige a forma type-only.
+import type { TemplateSlug } from '../../notifications/templates';
 
 export class UpdateUserRoleDto {
   @IsIn(['user', 'admin'])
@@ -22,23 +26,12 @@ export class SendTestEmailDto {
   @IsEmail({}, { message: 'Informe um e-mail de destino válido.' })
   to: string;
 
-  /** Template a renderizar. Default: `kyc-approved` (não depende de pedido). */
+  /**
+   * Template a renderizar. Default: `kyc-approved` (não depende de pedido).
+   * A lista vem do próprio registro de templates — registrar um novo já o
+   * habilita aqui, sem uma segunda lista para esquecer de atualizar.
+   */
   @IsOptional()
-  @IsIn([
-    'kyc-approved',
-    'kyc-action-needed',
-    'order-confirmed',
-    'sale-made',
-    'welcome',
-    'listing-approved',
-    'listing-rejected',
-  ])
-  template?:
-    | 'kyc-approved'
-    | 'kyc-action-needed'
-    | 'order-confirmed'
-    | 'sale-made'
-    | 'welcome'
-    | 'listing-approved'
-    | 'listing-rejected';
+  @IsIn(Object.keys(TEMPLATES))
+  template?: TemplateSlug;
 }

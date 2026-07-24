@@ -847,6 +847,19 @@ export class OrdersService {
       .where(eq(schema.orders.id, orderId))
       .returning();
 
+    // Pedido postado → avisa o comprador com o rastreio. Só na TRANSIÇÃO para
+    // 'shipped': reenviar o mesmo status (ex.: corrigir o código) não deve
+    // disparar de novo — a idempotência do MailService cobre, mas evitamos o
+    // trabalho à toa.
+    if (dto.status === 'shipped' && order.status !== 'shipped') {
+      this.eventEmitter.emit('order.shipped', {
+        orderId,
+        buyerId: updated.buyerId,
+        listingId: updated.listingId,
+        trackingCode: updated.trackingCode ?? null,
+      });
+    }
+
     return updated;
   }
 

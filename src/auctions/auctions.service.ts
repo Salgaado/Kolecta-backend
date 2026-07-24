@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { eq, and, desc, lte, lt, ne, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { WalletService } from '../wallet/wallet.service';
@@ -67,6 +68,7 @@ export class AuctionsService {
     private readonly founderService: FounderService,
     private readonly cardsService: CardsService,
     private readonly pagarme: PagarmeService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   private readonly auctionListingSelect = {
@@ -372,6 +374,22 @@ export class AuctionsService {
     if (prevAuth?.chargeId) {
       await this._voidPreAuth(prevAuth.chargeId);
     }
+
+    // Avisa o vendedor (lance novo) e quem foi superado. O listener resolve
+    // e-mails e contagem. `prevWinnerId` só conta quando é OUTRA pessoa: subir
+    // o próprio lance não é ser superado por ninguém.
+    this.eventEmitter.emit('auction.bid.placed', {
+      auctionId,
+      listingId: auction.listingId,
+      listingTitle: listing.title,
+      sellerId: listing.sellerId,
+      bidderId,
+      amountInCents: dto.amountInCents,
+      previousWinnerId:
+        prevWinnerId && prevWinnerId !== bidderId ? prevWinnerId : null,
+      previousBidInCents: auction.currentBidInCents ?? null,
+      endsAt: auction.endsAt ?? null,
+    });
 
     return bid;
   }
@@ -1202,6 +1220,17 @@ export class AuctionsService {
         `⚠️ Leilão ${auction.id}: captura da pré-auth falhou (${err?.message}). ` +
           `Pedido ${orderId} → 'pending_payment' (aguardando pagamento do vencedor — Fase 4).`,
       );
+
+      // Arremate COM pendência de pagamento: o vencedor precisa agir dentro do
+      // prazo, senão a peça volta ao vendedor. É o caso mais urgente dos dois.
+      this.eventEmitter.emit('auction.won', {
+        orderId,
+        winnerId: auction.currentWinnerId!,
+        listingTitle: listing!.title,
+        finalAmountInCents: totalInCents,
+        needsPayment: true,
+        paymentDeadlineHours: PAYMENT_DEADLINE_HOURS,
+      });
       return;
     }
 
@@ -1249,6 +1278,16 @@ export class AuctionsService {
         );
 
       return order.id as string;
+    });
+
+    // Arremate PAGO: a captura passou, então é só aviso — o pedido já nasce
+    // 'paid' e segue o fluxo normal de envio.
+    this.eventEmitter.emit('auction.won', {
+      orderId,
+      winnerId: auction.currentWinnerId!,
+      listingTitle: listing!.title,
+      finalAmountInCents: totalInCents,
+      needsPayment: false,
     });
 
     // Espelha o líquido do vendedor como retido na wallet (buyer protection).

@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { WalletService } from './wallet.service';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
+// Emissor de eventos: só precisamos observar o que foi emitido.
+const mockEventEmitter = { emit: jest.fn() };
 
 describe('WalletService', () => {
   let service: WalletService;
@@ -41,6 +45,7 @@ describe('WalletService', () => {
           provide: 'DATABASE_CONNECTION',
           useValue: mockDb,
         },
+        { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
 

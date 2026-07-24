@@ -8,6 +8,13 @@ import * as kycActionNeeded from './kyc-action-needed';
 import * as welcome from './welcome';
 import * as listingApproved from './listing-approved';
 import * as listingRejected from './listing-rejected';
+import * as orderShipped from './order-shipped';
+import * as bidReceived from './bid-received';
+import * as bidOutbid from './bid-outbid';
+import * as auctionWon from './auction-won';
+import * as messageReceived from './message-received';
+import * as payoutReleased from './payout-released';
+import * as disputeOpened from './dispute-opened';
 
 export interface EmailTemplate {
   subject: (data: any) => string;
@@ -27,6 +34,13 @@ export const TEMPLATES = {
   welcome: welcome,
   'listing-approved': listingApproved,
   'listing-rejected': listingRejected,
+  'order-shipped': orderShipped,
+  'bid-received': bidReceived,
+  'bid-outbid': bidOutbid,
+  'auction-won': auctionWon,
+  'message-received': messageReceived,
+  'payout-released': payoutReleased,
+  'dispute-opened': disputeOpened,
 } satisfies Record<string, EmailTemplate>;
 
 export type TemplateSlug = keyof typeof TEMPLATES;

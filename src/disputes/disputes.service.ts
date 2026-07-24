@@ -15,11 +15,13 @@ import {
   listings,
   users,
 } from '../database/schema';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class DisputesService {
   constructor(
     @Inject(DATABASE_CONNECTION) private readonly db: LibSQLDatabase<any>,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   private parseFirstImage(raw: string | null): string | null {
@@ -149,6 +151,16 @@ export class DisputesService {
         content: dto.description,
       },
     ]);
+
+    // Avisa o VENDEDOR: o repasse dele acabou de ser congelado e ele tem prazo
+    // para responder. Quem abriu (comprador) já sabe, não precisa de e-mail.
+    this.eventEmitter.emit('dispute.opened', {
+      disputeId: created.id,
+      orderId: dto.orderId,
+      sellerId: order.sellerId,
+      listingId: order.listingId,
+      reason: dto.reason,
+    });
 
     return this.findOne(userId, created.id);
   }

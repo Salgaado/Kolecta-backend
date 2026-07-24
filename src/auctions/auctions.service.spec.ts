@@ -5,6 +5,10 @@ import { WalletService } from '../wallet/wallet.service';
 import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
+// Emissor de eventos: só precisamos observar o que foi emitido.
+const mockEventEmitter = { emit: jest.fn() };
 import {
   NotFoundException,
   BadRequestException,
@@ -131,6 +135,7 @@ describe('AuctionsService', () => {
         { provide: FounderService, useValue: mockFounderService },
         { provide: CardsService, useValue: mockCardsService },
         { provide: PagarmeService, useValue: mockPagarmeService },
+        { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
 

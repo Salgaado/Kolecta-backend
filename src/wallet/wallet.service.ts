@@ -5,13 +5,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as schema from '../database/schema';
 
 type Database = any;
 
 @Injectable()
 export class WalletService {
-  constructor(@Inject('DATABASE_CONNECTION') private readonly db: Database) {}
+  constructor(
+    @Inject('DATABASE_CONNECTION') private readonly db: Database,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
   async getOrCreateWallet(userId: string) {
     let wallet = await this.db.query.wallets.findFirst({
@@ -174,6 +178,15 @@ export class WalletService {
         status: 'completed',
         description,
         orderId,
+      });
+
+      // Ponto único de "repasse liberado": vale tanto para a confirmação
+      // manual do comprador quanto para o release automático de 48h.
+      this.eventEmitter.emit('payout.released', {
+        walletId,
+        userId: wallet.userId,
+        amountInCents,
+        orderId: orderId ?? null,
       });
 
       return { success: true };

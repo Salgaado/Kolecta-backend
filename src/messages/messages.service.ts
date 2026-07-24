@@ -11,11 +11,13 @@ import { alias } from 'drizzle-orm/sqlite-core';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { StartConversationDto, SendMessageDto } from './dto/messages.dto';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class MessagesService {
   constructor(
     @Inject(DATABASE_CONNECTION) private db: LibSQLDatabase<typeof schema>,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async getConversations(userId: string) {
@@ -243,6 +245,19 @@ export class MessagesService {
     await this.db.update(schema.conversations)
       .set({ updatedAt: new Date() })
       .where(eq(schema.conversations.id, conversationId));
+
+    // Avisa o OUTRO lado da conversa. Quem manda não recebe e-mail do próprio
+    // recado; o destinatário é sempre a contraparte.
+    this.eventEmitter.emit('message.received', {
+      conversationId,
+      senderId: userId,
+      recipientId:
+        conversation.buyerId === userId
+          ? conversation.sellerId
+          : conversation.buyerId,
+      listingId: conversation.listingId ?? null,
+      content: dto.content,
+    });
 
     return newMessage[0];
   }

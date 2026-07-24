@@ -206,6 +206,54 @@ export class AdminService {
         listingTitle: 'Hot Wheels Porsche 917K — anúncio de teste',
         reason: 'As fotos estão desfocadas. Reenvie com 3 fotos nítidas.',
       },
+      'order-shipped': {
+        buyerName: 'Teste Kolecta',
+        orderId: refId,
+        listingTitle: 'Anúncio de teste',
+        carrier: 'Correios',
+        trackingCode: 'AA123456789BR',
+      },
+      'bid-received': {
+        sellerName: 'Teste Kolecta',
+        auctionId: 'teste',
+        listingTitle: 'Shelby GT500 — leilão de teste',
+        amountInCents: 15000,
+        totalBids: 4,
+      },
+      'bid-outbid': {
+        bidderName: 'Teste Kolecta',
+        auctionId: 'teste',
+        listingTitle: 'Shelby GT500 — leilão de teste',
+        yourBidInCents: 12000,
+        currentBidInCents: 15000,
+        endsIn: '2 dias',
+      },
+      'auction-won': {
+        winnerName: 'Teste Kolecta',
+        orderId: refId,
+        listingTitle: 'Shelby GT500 — leilão de teste',
+        finalAmountInCents: 15000,
+        needsPayment: true,
+        paymentDeadlineHours: 48,
+      },
+      'message-received': {
+        recipientName: 'Teste Kolecta',
+        senderName: 'Comprador Teste',
+        excerpt: 'Boa tarde! Esse item ainda está disponível?',
+        listingTitle: 'Anúncio de teste',
+      },
+      'payout-released': {
+        sellerName: 'Teste Kolecta',
+        amountInCents: 24500,
+        orderId: refId,
+      },
+      'dispute-opened': {
+        sellerName: 'Teste Kolecta',
+        orderId: refId,
+        listingTitle: 'Anúncio de teste',
+        reason: 'Item não corresponde à descrição',
+        responseDeadlineDays: 3,
+      },
     };
 
     await this.mailService.send({

@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { MessagesService } from './messages.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
+// Emissor de eventos: só precisamos observar o que foi emitido.
+const mockEventEmitter = { emit: jest.fn() };
 import {
   NotFoundException,
   ForbiddenException,
@@ -89,6 +93,7 @@ describe('MessagesService', () => {
       providers: [
         MessagesService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
+        { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
 
@@ -201,6 +206,39 @@ describe('MessagesService', () => {
       await expect(
         service.sendMessage('hacker_999', 'conv_123', { content: 'Hack' }),
       ).rejects.toThrow(ForbiddenException);
+    });
+
+    // ── Destinatário do e-mail é sempre a CONTRAPARTE ──
+    // Quem escreve não pode receber aviso do próprio recado.
+
+    it('comprador escrevendo → e-mail vai para o vendedor', async () => {
+      queryMock.conversations.findFirst.mockResolvedValueOnce(fakeConversation);
+      insertChain.returning.mockResolvedValueOnce([{ id: 'm1' }]);
+
+      await service.sendMessage('buyer_123', 'conv_123', { content: 'Oi' });
+
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'message.received',
+        expect.objectContaining({
+          senderId: 'buyer_123',
+          recipientId: 'seller_123',
+        }),
+      );
+    });
+
+    it('vendedor escrevendo → e-mail vai para o comprador', async () => {
+      queryMock.conversations.findFirst.mockResolvedValueOnce(fakeConversation);
+      insertChain.returning.mockResolvedValueOnce([{ id: 'm2' }]);
+
+      await service.sendMessage('seller_123', 'conv_123', { content: 'Olá' });
+
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'message.received',
+        expect.objectContaining({
+          senderId: 'seller_123',
+          recipientId: 'buyer_123',
+        }),
+      );
     });
   });
 });
