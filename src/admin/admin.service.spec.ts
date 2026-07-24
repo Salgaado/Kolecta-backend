@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AdminService } from './admin.service';
 import { ListingsService } from '../listings/listings.service';
+import { FounderService } from '../founder/founder.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 
@@ -87,14 +88,20 @@ describe('AdminService', () => {
   let service: AdminService;
   let mockDb: any;
   let listingsService: { updateStatus: jest.Mock };
+  let founderService: { listCandidates: jest.Mock; grantFounder: jest.Mock };
 
   const buildModule = async () => {
     listingsService = { updateStatus: jest.fn() };
+    founderService = {
+      listCandidates: jest.fn(),
+      grantFounder: jest.fn(),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
         { provide: DATABASE_CONNECTION, useValue: mockDb },
         { provide: ListingsService, useValue: listingsService },
+        { provide: FounderService, useValue: founderService },
       ],
     }).compile();
 
@@ -479,7 +486,12 @@ describe('AdminService', () => {
 
       const result = await service.updateListingStatus('listing_001', 'active');
 
-      expect(listingsService.updateStatus).toHaveBeenCalledWith('listing_001', 'active');
+      // Agora repassa opts (reason/moderatorId) — undefined quando não fornecido.
+      expect(listingsService.updateStatus).toHaveBeenCalledWith(
+        'listing_001',
+        'active',
+        undefined,
+      );
       expect(result.status).toBe('active');
     });
 

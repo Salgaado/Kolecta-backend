@@ -1,10 +1,12 @@
 import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
 import { eq, count, sum, desc, and, inArray } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { UpdateUserRoleDto, ResolveDisputeDto } from './dto/admin.dto';
 import { ListingsService } from '../listings/listings.service';
+import { FounderService } from '../founder/founder.service';
 
 @Injectable()
 export class AdminService {
@@ -12,7 +14,11 @@ export class AdminService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
     private readonly listingsService: ListingsService,
+    private readonly founderService: FounderService,
   ) {}
+
+  /** Alias da tabela `users` para o moderador (users já é usado p/ o vendedor). */
+  private readonly moderatorAlias = alias(schema.users, 'moderator_user');
 
   // ── GET /api/admin/stats ─────────────────────────────────────────────────
 
@@ -153,13 +159,25 @@ export class AdminService {
   // ── GET /api/admin/listings ──────────────────────────────────────────────
 
   async listListings(status?: string, limit = 50, offset = 0) {
+    // Junta a config do leilão (2.2): a fila de moderação precisa mostrar lance
+    // inicial, incremento, reserva e duração para leilões antes de aprovar.
     const rows = await this.db
       .select({
         listing: schema.listings,
         sellerName: schema.users.name,
+        moderatorName: this.moderatorAlias.name,
+        auction: schema.auctions,
       })
       .from(schema.listings)
       .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .leftJoin(
+        this.moderatorAlias,
+        eq(schema.listings.moderatedBy, this.moderatorAlias.id),
+      )
+      .leftJoin(
+        schema.auctions,
+        eq(schema.auctions.listingId, schema.listings.id),
+      )
       .where(status ? eq(schema.listings.status, status) : undefined)
       .orderBy(desc(schema.listings.createdAt))
       .limit(limit)
@@ -168,6 +186,20 @@ export class AdminService {
     return rows.map((r) => ({
       ...r.listing,
       sellerName: r.sellerName ?? null,
+      // Auditoria de moderação (2.4).
+      moderatorName: r.moderatorName ?? null,
+      // Config do leilão quando aplicável (2.2) — null para venda direta.
+      auction:
+        r.listing.type === 'auction' && r.auction
+          ? {
+              startingBidInCents: r.auction.startingBidInCents,
+              minIncrementInCents: r.auction.minIncrementInCents,
+              reservePriceInCents: r.auction.reservePriceInCents,
+              durationHours: r.auction.durationHours,
+              endsAt: r.auction.endsAt,
+              antiSniper: r.auction.antiSniper,
+            }
+          : null,
     }));
   }
 
@@ -517,10 +549,27 @@ export class AdminService {
 
   // ── PATCH /api/admin/listings/:id/status ────────────────────────────────
 
-  async updateListingStatus(listingId: string, status: string) {
+  async updateListingStatus(
+    listingId: string,
+    status: string,
+    opts?: { reason?: string | null; moderatorId?: string },
+  ) {
     // Delega ao ListingsService (fonte única): além de atualizar o status, ele
     // inicia o relógio do leilão quando um anúncio de leilão é ativado
     // (startAuctionClockIfPending). Fazer o update aqui direto pularia isso.
-    return this.listingsService.updateStatus(listingId, status);
+    // Persiste também o motivo da reprovação e a auditoria (quem/quando).
+    return this.listingsService.updateStatus(listingId, status, opts);
+  }
+
+  // ── Programa Fundador (concessão pela equipe) ────────────────────────────
+
+  /** Fila de candidatos a fundador + próximo número livre (delegado). */
+  async listFounderCandidates() {
+    return this.founderService.listCandidates();
+  }
+
+  /** Concede o selo a um candidato com número escolhido pela equipe (delegado). */
+  async grantFounder(userId: string, founderNumber: number) {
+    return this.founderService.grantFounder(userId, founderNumber);
   }
 }

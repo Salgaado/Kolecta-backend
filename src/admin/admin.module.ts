@@ -4,9 +4,10 @@ import { AdminController } from './admin.controller';
 import { DatabaseModule } from '../database/database.module';
 import { AuthModule } from '../auth/auth.module';
 import { ListingsModule } from '../listings/listings.module';
+import { FounderModule } from '../founder/founder.module';
 
 @Module({
-  imports: [DatabaseModule, AuthModule, ListingsModule],
+  imports: [DatabaseModule, AuthModule, ListingsModule, FounderModule],
   controllers: [AdminController],
   providers: [AdminService],
 })

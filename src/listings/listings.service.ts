@@ -278,7 +278,11 @@ export class ListingsService {
 
   // ── Atualizar status (admin/sistema) ─────────────────────────────────────
 
-  async updateStatus(id: string, status: string): Promise<ListingRecord> {
+  async updateStatus(
+    id: string,
+    status: string,
+    opts?: { reason?: string | null; moderatorId?: string },
+  ): Promise<ListingRecord> {
     const listing = await this.findById(id); // garante existência
 
     // ── Peneira de publicação ──
@@ -297,9 +301,27 @@ export class ListingsService {
       }
     }
 
+    const now = new Date();
+    // Auditoria de moderação: quando o admin passa `moderatorId`, grava quem/quando.
+    // Motivo: persistido quando fornecido (reprovação); ao APROVAR (→ active),
+    // limpa o motivo antigo para não sobrar razão obsoleta.
+    const setFields: Partial<typeof schema.listings.$inferInsert> = {
+      status,
+      updatedAt: now,
+    };
+    if (opts?.moderatorId) {
+      setFields.moderatedBy = opts.moderatorId;
+      setFields.moderatedAt = now;
+    }
+    if (opts?.reason !== undefined) {
+      setFields.rejectionReason = opts.reason || null;
+    } else if (status === 'active') {
+      setFields.rejectionReason = null;
+    }
+
     await this.db
       .update(schema.listings)
-      .set({ status, updatedAt: new Date() })
+      .set(setFields)
       .where(eq(schema.listings.id, id));
 
     this.logger.log(`[updateStatus] Anúncio ${id} → status: ${status}`);
@@ -329,15 +351,35 @@ export class ListingsService {
   /** Lista (legível) de requisitos faltantes p/ publicar; vazio = pode ir ao ar. */
   async getPublishBlockers(listing: ListingRecord): Promise<string[]> {
     let startingBidInCents: number | null | undefined;
+    let reservePriceInCents: number | null | undefined;
     if (listing.type === 'auction') {
       const [auction] = await this.db
-        .select({ startingBidInCents: schema.auctions.startingBidInCents })
+        .select({
+          startingBidInCents: schema.auctions.startingBidInCents,
+          reservePriceInCents: schema.auctions.reservePriceInCents,
+        })
         .from(schema.auctions)
         .where(eq(schema.auctions.listingId, listing.id))
         .limit(1);
       startingBidInCents = auction?.startingBidInCents;
+      reservePriceInCents = auction?.reservePriceInCents;
     }
-    return listingPublishBlockers(listing, startingBidInCents);
+
+    // Slug da categoria → campos obrigatórios específicos (marca/escala/jogo…).
+    let categorySlug: string | null = null;
+    if (listing.categoryId) {
+      const [cat] = await this.db
+        .select({ slug: schema.categories.slug })
+        .from(schema.categories)
+        .where(eq(schema.categories.id, listing.categoryId))
+        .limit(1);
+      categorySlug = cat?.slug ?? null;
+    }
+
+    return listingPublishBlockers(listing, startingBidInCents, {
+      reservePriceInCents,
+      categorySlug,
+    });
   }
 
   // ── Publicar (vendedor) — draft → active, passando pela peneira ──────────

@@ -234,8 +234,17 @@ export const listings = sqliteTable('listings', {
   // URLs das fotos separadas por vírgula (simples para MVP, migra p/ tabela futura)
   images: text('images'), // JSON array stringificado: '["url1","url2"]'
 
-  // draft | pending_review | active | sold | cancelled
+  // draft | pending_review | active | sold | cancelled | pending_payment
   status: text('status').notNull().default('draft'),
+
+  // ── Moderação (admin) ──
+  // Motivo da reprovação (quando status = 'rejected'/'cancelled' pela moderação):
+  // o motivo escolhido pelo admin + observação livre, mostrado ao vendedor e no
+  // e-mail de reprovação. Auditoria: quem moderou e quando (última mudança de
+  // status pela moderação). Ver docs/pendencias-backend.md (2.1, 2.4).
+  rejectionReason: text('rejection_reason'),
+  moderatedBy: text('moderated_by').references(() => users.id),
+  moderatedAt: integer('moderated_at', { mode: 'timestamp' }),
 
   // ── Dados de envio (frete) ──
   // Peso e dimensões do pacote, usados na cotação/etiqueta do Melhor Envio.

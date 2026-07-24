@@ -90,23 +90,23 @@
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\admin.controller.ts": {
-    "mtime": 1784245696.8651347,
-    "ast_hash": "3242c9f3503c733ab75761a8bf409bc6",
+    "mtime": 1784912807.0642982,
+    "ast_hash": "173377001f48fb2c047fd6d335cb320d",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\admin.module.ts": {
-    "mtime": 1783556020.147413,
-    "ast_hash": "fdf7cda564684f091033819d4b8f0b3a",
+    "mtime": 1784912706.4035516,
+    "ast_hash": "914c26c86e3a3edc8f8ecf49cb0aeb32",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\admin.service.spec.ts": {
-    "mtime": 1784554493.3091722,
-    "ast_hash": "7015abf512ea17fce954ff18ed8e0413",
+    "mtime": 1784913050.318354,
+    "ast_hash": "770c39e1f2c26d4b1f88c185f8afc3e8",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\admin.service.ts": {
-    "mtime": 1784554436.2571926,
-    "ast_hash": "d31997ddcaeabe5237f974d1f67e4f14",
+    "mtime": 1784912790.7544985,
+    "ast_hash": "e2aca43f017c74616947fe1d77609710",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\admin\\dto\\admin.dto.ts": {
@@ -340,8 +340,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\schema.ts": {
-    "mtime": 1784910296.6728048,
-    "ast_hash": "048f25ed0521ac88d5ccb02c01dcee3e",
+    "mtime": 1784912726.9105906,
+    "ast_hash": "b338d6b437a092938e92b60793e0b45d",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\database\\seed-dev.ts": {
@@ -445,8 +445,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\founder.service.ts": {
-    "mtime": 1784151200.9472263,
-    "ast_hash": "6da9622366cfe20a17dd1537572b824f",
+    "mtime": 1784912701.1166346,
+    "ast_hash": "28bf9683afe1d8af15bcd454efdf1c52",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\dto\\redeem-invite.dto.ts": {
@@ -460,8 +460,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listing-publish-rules.ts": {
-    "mtime": 1784664109.6105168,
-    "ast_hash": "1c8d1fbe5a2d08bb71ad3ad26f548111",
+    "mtime": 1784912911.4995775,
+    "ast_hash": "c282b483b7bf01a13bac60fa8f8feca0",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listings.controller.ts": {
@@ -475,13 +475,13 @@
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listings.service.spec.ts": {
-    "mtime": 1784663705.7543676,
-    "ast_hash": "622e8294c248e798f0df452dc582eac0",
+    "mtime": 1784913109.0932145,
+    "ast_hash": "8cad17e96de4ba0e54157c80229ea12a",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listings.service.ts": {
-    "mtime": 1784752347.7251945,
-    "ast_hash": "610368e508b64c3a33f287ae344431ce",
+    "mtime": 1784912921.696046,
+    "ast_hash": "cee2b581d54c33481cd5e8d4771862cd",
     "semantic_hash": ""
   },
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\dto\\listing.dto.ts": {
@@ -907,6 +907,21 @@
   "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\render.yaml": {
     "mtime": 1783466026.9453619,
     "ast_hash": "38182d402054cc9ba6c4ef4d1dddf272",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\scripts\\reset-auto-founders.ts": {
+    "mtime": 1784913235.5307736,
+    "ast_hash": "45a9867d289f229ab862808cf4f27f24",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\founder\\founder.service.spec.ts": {
+    "mtime": 1784913214.0943265,
+    "ast_hash": "cb5caf852d73e451391a31aa684bb481",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\salga\\OneDrive\\Desktop\\kolecta\\kolecta-backend\\src\\listings\\listing-publish-rules.spec.ts": {
+    "mtime": 1784913188.6247036,
+    "ast_hash": "12a5ec834b3665a78fccabcd3424c969",
     "semantic_hash": ""
   }
 }

@@ -1,16 +1,19 @@
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Body,
   Param,
   Query,
+  Req,
   UseGuards,
   HttpCode,
   HttpStatus,
   ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { AdminService } from './admin.service';
 import { UpdateUserRoleDto, ResolveDisputeDto } from './dto/admin.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -126,9 +129,37 @@ export class AdminController {
   @Patch('listings/:id/status')
   @HttpCode(HttpStatus.OK)
   async updateListingStatus(
+    @Req() req: Request,
     @Param('id') id: string,
     @Body('status') status: string,
+    @Body('reason') reason?: string,
   ) {
-    return { data: await this.adminService.updateListingStatus(id, status) };
+    const moderatorId = (req as any).auth?.userId as string | undefined;
+    return {
+      data: await this.adminService.updateListingStatus(id, status, {
+        reason,
+        moderatorId,
+      }),
+    };
+  }
+
+  // ── Programa Fundador — concessão pela equipe ────────────────────────────
+
+  // GET /api/admin/founders/candidates — fila de candidatos + próximo nº livre
+  @Get('founders/candidates')
+  async listFounderCandidates() {
+    return { data: await this.adminService.listFounderCandidates() };
+  }
+
+  // POST /api/admin/founders/:userId/grant — concede o selo com número manual
+  @Post('founders/:userId/grant')
+  @HttpCode(HttpStatus.OK)
+  async grantFounder(
+    @Param('userId') userId: string,
+    @Body('number', ParseIntPipe) founderNumber: number,
+  ) {
+    return {
+      data: await this.adminService.grantFounder(userId, founderNumber),
+    };
   }
 }

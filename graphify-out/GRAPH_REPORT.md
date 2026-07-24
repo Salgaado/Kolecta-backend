@@ -1,16 +1,16 @@
 # Graph Report - kolecta-backend  (2026-07-24)
 
 ## Corpus Check
-- 180 files · ~120,587 words
+- 183 files · ~123,084 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1228 nodes · 2093 edges · 79 communities (51 shown, 28 thin omitted)
+- 1252 nodes · 2134 edges · 76 communities (50 shown, 26 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 2 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `7b4785bc`
+- Built from commit: `b4956edf`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -81,28 +81,25 @@
 - [[_COMMUNITY_Community 63|Community 63]]
 - [[_COMMUNITY_Community 64|Community 64]]
 - [[_COMMUNITY_Community 65|Community 65]]
-- [[_COMMUNITY_Community 66|Community 66]]
-- [[_COMMUNITY_Community 67|Community 67]]
 - [[_COMMUNITY_Community 68|Community 68]]
 - [[_COMMUNITY_Community 69|Community 69]]
 - [[_COMMUNITY_Community 70|Community 70]]
 - [[_COMMUNITY_Community 71|Community 71]]
 - [[_COMMUNITY_Community 72|Community 72]]
-- [[_COMMUNITY_Community 73|Community 73]]
 - [[_COMMUNITY_Community 74|Community 74]]
 - [[_COMMUNITY_Community 75|Community 75]]
 - [[_COMMUNITY_Community 76|Community 76]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `CommunityService` - 31 edges
-2. `AuctionsService` - 28 edges
-3. `AuthGuard` - 28 edges
-4. `FounderService` - 27 edges
+1. `FounderService` - 32 edges
+2. `CommunityService` - 31 edges
+3. `AuctionsService` - 28 edges
+4. `AuthGuard` - 28 edges
 5. `ListingsService` - 26 edges
 6. `OrdersService` - 26 edges
-7. `WalletService` - 23 edges
-8. `compilerOptions` - 22 edges
-9. `AdminService` - 22 edges
+7. `AdminService` - 24 edges
+8. `WalletService` - 23 edges
+9. `compilerOptions` - 22 edges
 10. `RolesGuard` - 21 edges
 
 ## Surprising Connections (you probably didn't know these)
@@ -117,15 +114,11 @@
 - `html()` --calls--> `formatBRL()`  [EXTRACTED]
   src/notifications/templates/sale-made.ts → src/notifications/templates/layout.ts
 
-## Communities (79 total, 28 thin omitted)
+## Communities (76 total, 26 thin omitted)
 
 ### Community 0 - "Community 0"
-Cohesion: 0.06
-Nodes (39): AddressesModule, AdminModule, AuctionsModule, AuthModule, DevAuthMiddleware, BlingModule, Database, BlingSyncService (+31 more)
-
-### Community 1 - "Community 1"
 Cohesion: 0.05
-Nodes (25): CreateListingDto, UpdateListingDto, RedeemInviteDto, UseCreditDto, INVITE_RANGE, LANDING_RANGE, SUBMITTED_LISTING_STATUSES, FounderController (+17 more)
+Nodes (33): AddressesModule, AdminModule, AuctionsModule, AuthModule, DevAuthMiddleware, BlingController, BlingModule, BlingService (+25 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.07
@@ -133,11 +126,11 @@ Nodes (24): KycActionNeededEvent, KycApprovedEvent, KycListener, OrderListener, 
 
 ### Community 3 - "Community 3"
 Cohesion: 0.06
-Nodes (19): CreateOrderDto, OrderItemDto, UpdateOrderStatusDto, CreateDepositDto, em12, em2, { options }, { OrdersService } (+11 more)
+Nodes (18): CreateOrderDto, OrderItemDto, UpdateOrderStatusDto, CreateDepositDto, em12, em2, { options }, { OrdersService } (+10 more)
 
 ### Community 4 - "Community 4"
-Cohesion: 0.06
-Nodes (10): ConnectController, ConnectService, Database, StripeConfigService, StripeService, RawRequest, StripeThinWebhookController, Database (+2 more)
+Cohesion: 0.07
+Nodes (12): ConnectController, ConnectAccountsModule, ConnectService, Database, StripeConfigService, StripeCoreModule, StripeService, RawRequest (+4 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.07
@@ -146,10 +139,6 @@ Nodes (11): CommunityRankingCron, CommunityService, computePostScore(), base, db
 ### Community 6 - "Community 6"
 Cohesion: 0.10
 Nodes (21): AddressDto, BankAccountDto, CreateRecipientDto, ManagingPartnerDto, isValidCnpj(), isValidCpf(), isValidDocument(), buildRecipientPayload() (+13 more)
-
-### Community 7 - "Community 7"
-Cohesion: 0.10
-Nodes (12): countImages(), listingPublishBlockers(), ListingPublishFields, ListingsService, bySeller, client, key, listing (+4 more)
 
 ### Community 8 - "Community 8"
 Cohesion: 0.09
@@ -160,8 +149,8 @@ Cohesion: 0.11
 Nodes (11): GenerateLabelDto, QuoteShippingDto, VolumesDto, ShippingController, ShippingModule, ShippingService, dto, fromAddress (+3 more)
 
 ### Community 10 - "Community 10"
-Cohesion: 0.11
-Nodes (3): AuctionsService, CloseAuctionsCron, buildSplit()
+Cohesion: 0.09
+Nodes (9): AuctionsService, AUTH_VALIDITY_DAYS, PAYMENT_DEADLINE_HOURS, REAUTH_WINDOW_HOURS, CloseAuctionsCron, CreateAuctionDto, PlaceBidDto, buildSplit() (+1 more)
 
 ### Community 11 - "Community 11"
 Cohesion: 0.07
@@ -169,7 +158,7 @@ Nodes (27): devDependencies, drizzle-kit, eslint, eslint-config-prettier, @eslin
 
 ### Community 12 - "Community 12"
 Cohesion: 0.08
-Nodes (25): addresses, auctions, bids, blingConnections, categories, communityBans, communityComments, communityPins (+17 more)
+Nodes (24): addresses, auctions, bids, blingConnections, communityBans, communityComments, communityPins, communityPostLikes (+16 more)
 
 ### Community 13 - "Community 13"
 Cohesion: 0.08
@@ -192,12 +181,12 @@ Cohesion: 0.13
 Nodes (11): mockWebhookService, WebhookController, WebhookModule, mockDb, mockDelete, mockInsert, mockUpdate, userCreatedEvt (+3 more)
 
 ### Community 18 - "Community 18"
-Cohesion: 0.13
+Cohesion: 0.12
 Nodes (7): CommunityController, userId(), APPLY, ClerkUser, db, fetchClerkUsers(), main()
 
 ### Community 19 - "Community 19"
-Cohesion: 0.31
-Nodes (4): AuthGuard, Roles(), RolesGuard, AuthedRequest
+Cohesion: 0.05
+Nodes (33): AuthGuard, Roles(), RolesGuard, FeedSort, DepositsController, BanUserDto, CreateCommentDto, CreatePostDto (+25 more)
 
 ### Community 20 - "Community 20"
 Cohesion: 0.13
@@ -216,8 +205,8 @@ Cohesion: 0.14
 Nodes (7): MessagesService, fakeConversation, fakeMessage, insertChain, mockDb, queryMock, updateChain
 
 ### Community 26 - "Community 26"
-Cohesion: 0.14
-Nodes (4): Database, mockDb, mockTx, WalletService
+Cohesion: 0.10
+Nodes (6): Database, ReleaseBalanceCron, Database, mockDb, mockTx, WalletService
 
 ### Community 29 - "Community 29"
 Cohesion: 0.15
@@ -248,28 +237,28 @@ Cohesion: 0.15
 Nodes (12): baseDto, fakeListingActive, fakeListingOwn, fakeListingSold, insertChain, mockDb, mockPagarmeService, mockTx (+4 more)
 
 ### Community 36 - "Community 36"
-Cohesion: 0.31
-Nodes (9): FeedSort, BanUserDto, CreateCommentDto, CreatePostDto, CreateReportDto, POST_TYPES, PostType, REPORT_REASONS (+1 more)
+Cohesion: 0.13
+Nodes (18): CATEGORY_REQUIRED_FIELDS, COLUMN_KEYS, countImages(), hasFieldValue(), listingPublishBlockers(), ListingPublishContext, ListingPublishFields, parseAttributes() (+10 more)
 
 ### Community 38 - "Community 38"
-Cohesion: 0.22
-Nodes (8): AUTH_VALIDITY_DAYS, PAYMENT_DEADLINE_HOURS, REAUTH_WINDOW_HOURS, MaskedCard, PagarmeCard, PagarmeCustomer, CreateAuctionDto, PlaceBidDto
+Cohesion: 0.50
+Nodes (3): MaskedCard, PagarmeCard, PagarmeCustomer
 
 ### Community 39 - "Community 39"
-Cohesion: 0.22
-Nodes (4): MediaController, MediaModule, ALLOWED_MIMETYPES, MediaService
+Cohesion: 0.17
+Nodes (7): CategoriesController, CategoriesModule, CategoriesService, db, mockCategories, service, categories
 
-### Community 40 - "Community 40"
-Cohesion: 0.24
-Nodes (4): UpdateNotificationPrefsDto, UpdateSellerPoliciesDto, UpdateSellerProfileDto, SellerSelfController
+### Community 41 - "Community 41"
+Cohesion: 0.14
+Nodes (13): auctionListing, deleteChain, dto, fakeListing, incompleto, insertChain, insertedTables, mockDb (+5 more)
 
 ### Community 43 - "Community 43"
 Cohesion: 0.22
 Nodes (9): jest, collectCoverageFrom, coverageDirectory, moduleFileExtensions, rootDir, testEnvironment, testRegex, transform (+1 more)
 
 ### Community 44 - "Community 44"
-Cohesion: 0.22
-Nodes (5): AuthGuardAllow, AuthGuardDeny, mockAuction, mockAuctionsService, mockBid
+Cohesion: 0.31
+Nodes (7): CreateListingDto, UpdateListingDto, INVITE_RANGE, LANDING_RANGE, SUBMITTED_LISTING_STATUSES, SellerProfile, ListingRecord
 
 ### Community 45 - "Community 45"
 Cohesion: 0.28
@@ -291,6 +280,10 @@ Nodes (6): author, description, license, name, private, version
 Cohesion: 0.29
 Nodes (6): moduleFileExtensions, rootDir, testEnvironment, testRegex, transform, ^.+\\.(t|j)s$
 
+### Community 55 - "Community 55"
+Cohesion: 0.22
+Nodes (3): RedeemInviteDto, UseCreditDto, FounderController
+
 ### Community 56 - "Community 56"
 Cohesion: 0.33
 Nodes (5): collection, compilerOptions, deleteOutDir, $schema, sourceRoot
@@ -304,8 +297,8 @@ Cohesion: 0.33
 Nodes (4): client, db, devUsers, mockCategories
 
 ### Community 61 - "Community 61"
-Cohesion: 0.60
-Nodes (3): AddDisputeMessageDto, CreateDisputeDto, DISPUTE_REASONS
+Cohesion: 0.33
+Nodes (5): APPLY, client, ids, placeholders, rows
 
 ### Community 64 - "Community 64"
 Cohesion: 0.50
@@ -316,24 +309,24 @@ Cohesion: 0.50
 Nodes (4): codeFor(), db, DRY, main()
 
 ## Knowledge Gaps
-- **357 isolated node(s):** `$schema`, `collection`, `sourceRoot`, `deleteOutDir`, `name` (+352 more)
+- **368 isolated node(s):** `$schema`, `collection`, `sourceRoot`, `deleteOutDir`, `name` (+363 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **28 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **26 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `CommunityService` connect `Community 5` to `Community 0`, `Community 36`?**
-  _High betweenness centrality (0.061) - this node is a cross-community bridge._
-- **Why does `AuthGuard` connect `Community 19` to `Community 0`, `Community 1`, `Community 36`, `Community 40`, `Community 9`, `Community 8`, `Community 44`, `Community 14`, `Community 20`, `Community 24`, `Community 61`, `Community 62`, `Community 31`?**
-  _High betweenness centrality (0.036) - this node is a cross-community bridge._
-- **Why does `AuctionsService` connect `Community 10` to `Community 0`, `Community 38`, `Community 44`, `Community 13`, `Community 19`?**
-  _High betweenness centrality (0.033) - this node is a cross-community bridge._
+- **Why does `CommunityService` connect `Community 5` to `Community 0`, `Community 19`?**
+  _High betweenness centrality (0.070) - this node is a cross-community bridge._
+- **Why does `AuctionsService` connect `Community 10` to `Community 0`, `Community 19`, `Community 13`?**
+  _High betweenness centrality (0.041) - this node is a cross-community bridge._
+- **Why does `ListingsService` connect `Community 7` to `Community 0`, `Community 71`, `Community 41`, `Community 44`, `Community 18`, `Community 19`, `Community 30`?**
+  _High betweenness centrality (0.040) - this node is a cross-community bridge._
 - **What connects `$schema`, `collection`, `sourceRoot` to the rest of the system?**
-  _357 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _368 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Community 0` be split into smaller, more focused modules?**
-  _Cohesion score 0.05661729574773053 - nodes in this community are weakly interconnected._
-- **Should `Community 1` be split into smaller, more focused modules?**
-  _Cohesion score 0.0544464609800363 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.05446727185857621 - nodes in this community are weakly interconnected._
 - **Should `Community 2` be split into smaller, more focused modules?**
   _Cohesion score 0.0730804810360777 - nodes in this community are weakly interconnected._
+- **Should `Community 3` be split into smaller, more focused modules?**
+  _Cohesion score 0.06342494714587738 - nodes in this community are weakly interconnected._

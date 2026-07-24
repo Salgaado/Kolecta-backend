@@ -13,7 +13,6 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import {
   FOUNDER_QUALIFY_LISTINGS,
-  FOUNDER_TOTAL_SLOTS,
   LANDING_RANGE,
   INVITE_RANGE,
   FOUNDER_HIGHLIGHT_CREDITS,
@@ -95,94 +94,178 @@ export class FounderService {
     return Number(row?.count ?? 0) > 0;
   }
 
-  // ── T2: Qualificação + atribuição de número ──────────────────────────────────
+  // ── T2: Qualificação (candidato) — SEM concessão automática ─────────────────
 
   /**
-   * Avalia (idempotente) se o usuário deve virar fundador. Chamável a qualquer
-   * momento — na leitura do perfil ou após enviar um anúncio.
-   * Retorna o perfil atualizado.
+   * Avalia (idempotente) o PROGRESSO do usuário no programa e ajusta só o
+   * `founderStatus` da fase de candidatura — NUNCA concede o selo. A seleção dos
+   * 100 fundadores é curada pela equipe (ver `grantFounder`). Estados:
+   *  - `pending`   → ainda não bateu a meta de anúncios (mostra progresso);
+   *  - `qualified` → bateu a meta (é CANDIDATO, aguardando concessão do admin).
+   * Fundador já concedido (founderNumber != null) ou 'active'/'lapsed' não muda.
    */
   async evaluate(userId: string): Promise<SellerProfile> {
     const profile = await this.getOrCreateProfile(userId);
 
-    // Já é fundador (active/lapsed) → nada a promover; número é permanente.
-    if (profile.founderNumber != null) return profile;
-
-    const submitted = await this.countSubmittedListings(userId);
-
-    if (submitted < FOUNDER_QUALIFY_LISTINGS) {
-      // Ainda não qualificou: marca 'pending' se estava 'none' (mostra progresso).
-      if (profile.founderStatus === 'none') {
-        const [updated] = await this.db
-          .update(schema.sellerProfiles)
-          .set({ founderStatus: 'pending', updatedAt: this.base() })
-          .where(eq(schema.sellerProfiles.userId, userId))
-          .returning();
-        return updated;
-      }
+    // Já é fundador (número atribuído pela equipe) → estado curado, não mexe.
+    if (
+      profile.founderNumber != null ||
+      profile.founderStatus === 'active' ||
+      profile.founderStatus === 'lapsed'
+    ) {
       return profile;
     }
 
-    // Qualificou: tenta atribuir o próximo número livre da faixa da landing.
-    return this.promoteToActive(userId);
+    const submitted = await this.countSubmittedListings(userId);
+    const desired =
+      submitted >= FOUNDER_QUALIFY_LISTINGS ? 'qualified' : 'pending';
+
+    if (profile.founderStatus === desired) return profile;
+
+    const [updated] = await this.db
+      .update(schema.sellerProfiles)
+      .set({ founderStatus: desired, updatedAt: this.base() })
+      .where(eq(schema.sellerProfiles.userId, userId))
+      .returning();
+    return updated;
+  }
+
+  // ── T2b: Concessão do selo pela EQUIPE (admin) ───────────────────────────────
+
+  /**
+   * Concede o selo de Fundador a um CANDIDATO, com número escolhido pela equipe
+   * (faixa da landing 51..100). Valida qualificação, faixa e unicidade do número;
+   * o índice único `uq_seller_founder_number` é o backstop contra corrida.
+   * Ativa o fundador, grava `founderSince` e concede os créditos de destaque.
+   */
+  async grantFounder(
+    userId: string,
+    founderNumber: number,
+  ): Promise<SellerProfile> {
+    if (
+      !Number.isInteger(founderNumber) ||
+      founderNumber < LANDING_RANGE.min ||
+      founderNumber > LANDING_RANGE.max
+    ) {
+      throw new BadRequestException(
+        `Número deve estar entre ${LANDING_RANGE.min} e ${LANDING_RANGE.max}.`,
+      );
+    }
+
+    const profile = await this.getOrCreateProfile(userId);
+    if (profile.founderNumber != null) {
+      throw new ConflictException(
+        `Este usuário já é fundador (#${profile.founderNumber}).`,
+      );
+    }
+
+    // Candidato = atingiu a meta de anúncios enviados.
+    const submitted = await this.countSubmittedListings(userId);
+    if (submitted < FOUNDER_QUALIFY_LISTINGS) {
+      throw new BadRequestException(
+        `Candidato não qualificado (${submitted}/${FOUNDER_QUALIFY_LISTINGS} anúncios enviados).`,
+      );
+    }
+
+    // Número livre? (checagem explícita além do índice único, p/ erro claro.)
+    const [taken] = await this.db
+      .select({ userId: schema.sellerProfiles.userId })
+      .from(schema.sellerProfiles)
+      .where(eq(schema.sellerProfiles.founderNumber, founderNumber));
+    if (taken) {
+      throw new ConflictException(`Número #${founderNumber} já está em uso.`);
+    }
+
+    const now = this.base();
+    try {
+      const [updated] = await this.db
+        .update(schema.sellerProfiles)
+        .set({
+          founderNumber,
+          founderStatus: 'active',
+          founderSince: now,
+          founderLastActiveListingAt: now,
+          updatedAt: now,
+        })
+        .where(eq(schema.sellerProfiles.userId, userId))
+        .returning();
+
+      await this.grantCredits(userId, now);
+      this.logger.log(
+        `🏅 Fundador CONCEDIDO pela equipe: ${userId} → #${String(founderNumber).padStart(3, '0')}`,
+      );
+      return updated;
+    } catch (err: any) {
+      if (this.isUniqueViolation(err)) {
+        throw new ConflictException(`Número #${founderNumber} já está em uso.`);
+      }
+      throw err;
+    }
   }
 
   /**
-   * Atribui número (faixa landing 51..100) e ativa o fundador, de forma
-   * resiliente a concorrência: o índice único uq_seller_founder_number é o
-   * backstop; em colisão, tenta o próximo número.
+   * Lista os CANDIDATOS a fundador (qualificaram por anúncios, ainda sem número)
+   * para a fila de concessão do admin, com o próximo número livre sugerido.
    */
-  private async promoteToActive(userId: string): Promise<SellerProfile> {
-    const now = this.base();
+  async listCandidates(): Promise<{
+    candidates: Array<{
+      userId: string;
+      name: string | null;
+      email: string | null;
+      submitted: number;
+      founderStatus: string;
+    }>;
+    nextNumber: number | null;
+  }> {
+    const counts = await this.db
+      .select({
+        sellerId: schema.listings.sellerId,
+        n: sql<number>`count(*)`,
+      })
+      .from(schema.listings)
+      .where(inArray(schema.listings.status, [...SUBMITTED_LISTING_STATUSES]))
+      .groupBy(schema.listings.sellerId);
 
-    for (let attempt = 0; attempt < FOUNDER_TOTAL_SLOTS; attempt++) {
-      const nextNumber = await this.nextLandingNumber();
-      if (nextNumber == null) {
-        // Vagas esgotadas — mantém 'pending'. Decisão de produto (fila x encerrar)
-        // ainda em aberto; por ora não vira fundador.
-        this.logger.warn(
-          `Vagas de fundador esgotadas ao avaliar ${userId} (100/100).`,
-        );
-        const [p] = await this.db
-          .select()
-          .from(schema.sellerProfiles)
-          .where(eq(schema.sellerProfiles.userId, userId));
-        return p;
-      }
-
-      try {
-        const [updated] = await this.db
-          .update(schema.sellerProfiles)
-          .set({
-            founderNumber: nextNumber,
-            founderStatus: 'active',
-            founderSince: now,
-            founderLastActiveListingAt: now,
-            updatedAt: now,
-          })
-          .where(eq(schema.sellerProfiles.userId, userId))
-          .returning();
-
-        await this.grantCredits(userId, now);
-        this.logger.log(
-          `🏅 Fundador ativado: ${userId} → #${String(nextNumber).padStart(3, '0')}`,
-        );
-        return updated;
-      } catch (err: any) {
-        // Colisão no índice único: outro usuário pegou esse número. Tenta o próximo.
-        if (this.isUniqueViolation(err)) {
-          this.logger.warn(
-            `Colisão de número #${nextNumber} p/ ${userId}; tentando próximo.`,
-          );
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    throw new ConflictException(
-      'Não foi possível atribuir um número de fundador. Tente novamente.',
+    const qualified = counts.filter(
+      (c) => Number(c.n) >= FOUNDER_QUALIFY_LISTINGS,
     );
+    const nextNumber = await this.nextLandingNumber();
+    if (qualified.length === 0) return { candidates: [], nextNumber };
+
+    const ids = qualified.map((c) => c.sellerId);
+    const [profiles, users] = await Promise.all([
+      this.db
+        .select({
+          userId: schema.sellerProfiles.userId,
+          founderNumber: schema.sellerProfiles.founderNumber,
+          founderStatus: schema.sellerProfiles.founderStatus,
+        })
+        .from(schema.sellerProfiles)
+        .where(inArray(schema.sellerProfiles.userId, ids)),
+      this.db
+        .select({
+          id: schema.users.id,
+          name: schema.users.name,
+          email: schema.users.email,
+        })
+        .from(schema.users)
+        .where(inArray(schema.users.id, ids)),
+    ]);
+    const profByUser = new Map(profiles.map((p) => [p.userId, p]));
+    const userById = new Map(users.map((u) => [u.id, u]));
+
+    const candidates = qualified
+      // Ainda NÃO concedido (sem número). Já-fundadores saem da fila.
+      .filter((c) => (profByUser.get(c.sellerId)?.founderNumber ?? null) == null)
+      .map((c) => ({
+        userId: c.sellerId,
+        name: userById.get(c.sellerId)?.name ?? null,
+        email: userById.get(c.sellerId)?.email ?? null,
+        submitted: Number(c.n),
+        founderStatus: profByUser.get(c.sellerId)?.founderStatus ?? 'qualified',
+      }));
+
+    return { candidates, nextNumber };
   }
 
   /** Próximo número livre em [51..100], ou null se a faixa acabou. */

@@ -311,6 +311,7 @@ describe('ListingsService', () => {
       selectChain.limit
         .mockResolvedValueOnce([validDraft]) // findById em publish
         .mockResolvedValueOnce([validDraft]) // findById em updateStatus
+        .mockResolvedValueOnce([]) // categoria em getPublishBlockers (slug desconhecido → pula campos)
         .mockResolvedValueOnce([{ ...validDraft, status: 'active' }]); // findById final
 
       await service.publish('listing_001', 'user_seller');
