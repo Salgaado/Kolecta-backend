@@ -43,17 +43,33 @@ export class MailService {
     private readonly db: LibSQLDatabase<typeof schema>,
   ) {
     const apiKey = process.env.RESEND_API_KEY;
+    // Aceita os dois vocabulários: MAIL_* (usado no código desde sempre) e
+    // EMAIL_* (nomes do kit/documentação). Evita a pegadinha silenciosa de
+    // configurar no Render com o nome do doc e o serviço ignorar.
     this.from =
-      process.env.MAIL_FROM || 'Kolecta <notificacoes@kolecta.com.br>';
-    this.replyTo = process.env.MAIL_REPLY_TO || 'suporte@kolecta.com.br';
+      process.env.MAIL_FROM ||
+      process.env.EMAIL_REMETENTE ||
+      'Kolecta <notificacoes@kolecta.com.br>';
+    this.replyTo =
+      process.env.MAIL_REPLY_TO ||
+      process.env.EMAIL_RESPOSTA ||
+      'suporte@kolecta.com.br';
     // Liga só se explicitamente habilitado E com API key presente.
     this.enabled = process.env.MAIL_ENABLED === 'true' && !!apiKey;
     this.resend = apiKey ? new Resend(apiKey) : null;
 
     if (!this.enabled) {
+      // Diz exatamente o que falta — "desabilitado" sem motivo custou tempo.
+      const faltando = [
+        process.env.MAIL_ENABLED === 'true' ? null : 'MAIL_ENABLED=true',
+        apiKey ? null : 'RESEND_API_KEY',
+      ].filter(Boolean);
       this.logger.warn(
-        'MailService DESABILITADO (defina MAIL_ENABLED=true e RESEND_API_KEY para enviar).',
+        `MailService DESABILITADO — faltando: ${faltando.join(' e ')}. ` +
+          'Nenhum e-mail sai; os envios ficam registrados como "skipped" em email_log.',
       );
+    } else {
+      this.logger.log(`MailService ATIVO — remetente: ${this.from}`);
     }
   }
 
