@@ -245,6 +245,53 @@ export class OrdersService {
     return criado;
   }
 
+  /**
+   * Traduz a recusa do cartão para algo acionável.
+   *
+   * `gateway_response.code` é o status da chamada ao gateway (200 = ok) e não
+   * diz nada sobre a decisão do emissor — quem recusa é o adquirente, e o
+   * motivo vem em `acquirer_message`/`acquirer_return_code`. Sem isso o log
+   * mostrava `{"code":"200"}` para uma compra recusada.
+   *
+   * Devolve duas coisas: `log` (completo, para o Render) e `mensagem` (o que o
+   * comprador lê — "tente outro cartão" não ajuda quem só precisa liberar a
+   * compra no app do banco).
+   */
+  private motivoDaRecusa(tx: any): { log: string; mensagem: string } {
+    const gwErro = tx?.gateway_response?.errors?.[0]?.message;
+    const codigo = String(tx?.acquirer_return_code ?? '').trim();
+    const adquirente = tx?.acquirer_message;
+
+    const log = JSON.stringify({
+      status: tx?.status ?? null,
+      acquirer_return_code: tx?.acquirer_return_code ?? null,
+      acquirer_message: adquirente ?? null,
+      gateway_response: tx?.gateway_response ?? null,
+    });
+
+    // Códigos ISO-8583 mais comuns no varejo brasileiro. Só os que mudam o que
+    // o comprador deve FAZER — o resto cai na mensagem genérica.
+    const porCodigo: Record<string, string> = {
+      '51': 'Saldo ou limite insuficiente no cartão.',
+      '05': 'O banco emissor não autorizou a compra. Ligue para ele ou tente outro cartão.',
+      '57': 'O emissor não permite este tipo de transação neste cartão.',
+      '54': 'Cartão vencido. Confira a validade.',
+      '82': 'CVV incorreto. Confira os 3 dígitos do verso.',
+      '78': 'Cartão bloqueado ou ainda não desbloqueado pelo banco.',
+      '62': 'Cartão com restrição para esta compra.',
+      '63': 'Compra bloqueada por segurança do emissor.',
+      '59': 'Compra bloqueada por suspeita de fraude no emissor.',
+    };
+
+    const mensagem =
+      porCodigo[codigo] ||
+      gwErro ||
+      adquirente ||
+      'Cartão recusado pelo emissor. Verifique os dados ou tente outro cartão.';
+
+    return { log, mensagem };
+  }
+
   async createOrders(buyerId: string, dto: CreateOrderDto) {
     if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException('O carrinho está vazio');
@@ -728,18 +775,18 @@ export class OrdersService {
       const paid =
         pagarmeOrder.status === 'paid' || charge?.status === 'paid';
       if (!paid) {
-        const gw = tx?.gateway_response as
-          | { errors?: Array<{ message?: string }> }
-          | undefined;
+        // O motivo da recusa NÃO está no gateway_response — ele traz o status
+        // da chamada ao gateway (code 200 = a chamada foi bem), não a decisão
+        // do emissor. Quem recusa é o adquirente, em `acquirer_*`. Logar só o
+        // gateway_response deixava "{code: 200}" no Render e ninguém sabia por
+        // quê.
+        const motivo = this.motivoDaRecusa(tx);
         this.logger.warn(
           `Cartão recusado (order ${order.id} / pagarme ${pagarmeOrder.id}, ` +
-            `status ${pagarmeOrder.status}/${charge?.status}): ${JSON.stringify(tx?.gateway_response ?? {})}`,
+            `status ${pagarmeOrder.status}/${charge?.status}): ${motivo.log}`,
         );
         await rollbackCheckout('cartão recusado');
-        throw new BadRequestException(
-          gw?.errors?.[0]?.message ||
-            'Cartão recusado. Verifique os dados ou tente outro cartão.',
-        );
+        throw new BadRequestException(motivo.mensagem);
       }
 
       // Persiste ids + juros antes de confirmar (bookkeeping).

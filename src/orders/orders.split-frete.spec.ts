@@ -325,3 +325,40 @@ describe('OrdersService — endereço digitado no checkout', () => {
     ).rejects.toThrow(/não pertence à sua conta/i);
   });
 });
+
+/**
+ * "{"code":"200"}" foi o que sobrou no log de uma compra real recusada — o
+ * gateway_response conta se a CHAMADA ao gateway deu certo, não se o emissor
+ * autorizou. A decisão vem em acquirer_return_code/acquirer_message.
+ */
+describe('OrdersService.motivoDaRecusa', () => {
+  const chamar = (tx: any) =>
+    (new (OrdersService as any)(null, null, null, null, null)).motivoDaRecusa(tx);
+
+  it('traduz o código do adquirente para algo acionável', () => {
+    const r = chamar({
+      status: 'not_authorized',
+      acquirer_return_code: '51',
+      acquirer_message: 'Insufficient funds',
+      gateway_response: { code: '200', errors: [] },
+    });
+    expect(r.mensagem).toMatch(/saldo ou limite/i);
+    // O log guarda tudo, inclusive o que não viramos mensagem.
+    expect(r.log).toContain('not_authorized');
+    expect(r.log).toContain('51');
+  });
+
+  it('cai na mensagem do adquirente quando o código é desconhecido', () => {
+    const r = chamar({
+      acquirer_return_code: '99',
+      acquirer_message: 'Erro exótico do emissor',
+      gateway_response: { code: '200' },
+    });
+    expect(r.mensagem).toBe('Erro exótico do emissor');
+  });
+
+  it('não deixa o comprador sem explicação quando não vem nada', () => {
+    const r = chamar({ gateway_response: { code: '200' } });
+    expect(r.mensagem).toMatch(/recusado pelo emissor/i);
+  });
+});
