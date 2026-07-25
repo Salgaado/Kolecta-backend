@@ -76,6 +76,7 @@ export class AuctionsService {
   ) {}
 
   private readonly auctionListingSelect = {
+    pausedAt: schema.auctions.pausedAt,
     id: schema.auctions.id,
     listingId: schema.auctions.listingId,
     startingBidInCents: schema.auctions.startingBidInCents,
@@ -290,6 +291,12 @@ export class AuctionsService {
     // parcial.
     if (!CARTAO_HABILITADO) {
       throw new BadRequestException(LANCE_INDISPONIVEL);
+    }
+    if (auction.pausedAt) {
+      throw new BadRequestException(
+        'Este leilão está pausado no momento. Ele volta com o mesmo tempo que ' +
+          'faltava — nenhum lance se perde.',
+      );
     }
 
     const billingAddress = await this._getBillingAddress(bidderId);
@@ -1195,7 +1202,15 @@ export class AuctionsService {
     const expired = await this.db
       .select()
       .from(schema.auctions)
-      .where(and(eq(schema.auctions.status, 'active'), lte(schema.auctions.endsAt, now)));
+      .where(
+        and(
+          eq(schema.auctions.status, 'active'),
+          lte(schema.auctions.endsAt, now),
+          // Pausado não encerra: o relógio dele está congelado e ninguém pôde
+          // disputar enquanto o lance esteve suspenso.
+          isNull(schema.auctions.pausedAt),
+        ),
+      );
 
     if (expired.length === 0) return [];
 

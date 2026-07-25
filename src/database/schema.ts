@@ -303,6 +303,19 @@ export const auctions = sqliteTable('auctions', {
   durationHours: integer('duration_hours').notNull().default(48),
   endsAt: integer('ends_at', { mode: 'timestamp' }),
 
+  // ─── Pausa do leilão ────────────────────────────────────────────────────────
+  // Leilão pausado continua `active` (segue aparecendo na vitrine e na aba de
+  // lances), mas não recebe lance nem é encerrado pelo cron. Usado quando o
+  // pagamento por cartão fica indisponível: o lance é garantido por cartão,
+  // então deixar o relógio correndo encerraria leilões que ninguém pôde
+  // disputar.
+  // null = não pausado.
+  pausedAt: integer('paused_at', { mode: 'timestamp' }),
+  // Quanto tempo faltava no instante da pausa. Ao retomar, `endsAt` vira
+  // `agora + isto` — o leilão volta com o tempo que tinha, não com o que
+  // sobrou de um relógio que continuou correndo.
+  pausedRemainingMs: integer('paused_remaining_ms'),
+
   // Anti-sniper: estende tempo se houver lance nos últimos minutos
   antiSniper: integer('anti_sniper', { mode: 'boolean' })
     .notNull()

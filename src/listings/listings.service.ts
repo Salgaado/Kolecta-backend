@@ -76,6 +76,10 @@ export class ListingsService {
     reservePriceInCents: schema.auctions.reservePriceInCents,
     endsAt: schema.auctions.endsAt,
     auctionStatus: schema.auctions.status,
+    // Pausado continua `active` na vitrine — quem some da lista é leilão
+    // encerrado. A tela usa isto para mostrar "pausado" no lugar da contagem
+    // regressiva, que estaria congelada e pareceria defeito.
+    auctionPausedAt: schema.auctions.pausedAt,
     bidsCount: sql<number>`(
       SELECT COUNT(*) FROM ${schema.bids} WHERE ${schema.bids.auctionId} = ${schema.auctions.id}
     )`.as('bids_count'),
