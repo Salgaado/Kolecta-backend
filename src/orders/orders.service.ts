@@ -283,8 +283,11 @@ export class OrdersService {
       );
     }
 
-    // Comprador paga item + frete. O frete vai 100% ao vendedor no split
-    // (ele paga a etiqueta) e a comissão NÃO incide sobre ele.
+    // Comprador paga item + frete. O FRETE VAI PARA A KOLECTA no split, junto
+    // com a comissão: é ela que compra a etiqueta no Melhor Envio e manda o PDF
+    // ao vendedor. Antes o frete ia 100% ao vendedor — com a emissão automática
+    // isso fazia a Kolecta pagar o frete DUAS vezes (repassava e ainda comprava
+    // a etiqueta). A comissão continua incidindo só sobre o item.
     // Retirada pessoal (pickup): sem frete, sem etiqueta; libera na hora ao confirmar.
     const deliveryMethod: 'shipping' | 'pickup' =
       dto.deliveryMethod === 'pickup' ? 'pickup' : 'shipping';
@@ -488,11 +491,12 @@ export class OrdersService {
       const commissionPct = await this.founderService.resolveCommissionPercent(
         listing.sellerId,
       );
-      // Comissão só sobre o item. Sem wallet, chargeAmount == item + frete;
-      // o vendedor recebe chargeAmount - itemFee = (item líquido + frete inteiro).
-      const platformFeeInCents = Math.round(
-        (itemInCents * commissionPct) / 100,
-      );
+      // Comissão sobre o ITEM + o frete inteiro. Ex.: item R$ 100, frete
+      // R$ 15,50, comissão 11% → comprador paga 115,50; vendedor fica com
+      // 89,00 (100 − 11%) e a Kolecta com 26,50 (11,00 + 15,50), de onde sai a
+      // etiqueta.
+      const platformFeeInCents =
+        Math.round((itemInCents * commissionPct) / 100) + shippingInCents;
       // Juros do comprador entram no recebedor da PLATAFORMA (compensa a
       // antecipação cobrada pela Pagar.me — não é margem). Seller amount fica
       // igual ao caso à vista: amountCharged - (platformFee + juros).
@@ -504,7 +508,10 @@ export class OrdersService {
       );
       this.logger.log(
         `Split pedido ${order.id}: vendedor ${(chargeAmount - platformFeeInCents) / 100} / ` +
-          `plataforma ${platformFeeInCents / 100} + juros ${interestInCents / 100} BRL ` +
+          `plataforma ${platformFeeInCents / 100} (comissão ${
+            Math.round((itemInCents * commissionPct) / 100) / 100
+          } + frete ${shippingInCents / 100}) ` +
+          `+ juros ${interestInCents / 100} BRL ` +
           `(comissão ${commissionPct}%, ${instrument}${instrument === 'credit_card' ? ` ${installments}x` : ''})`,
       );
     } else if (walletDeducted === 0 && sellerRecipientId && !PLATFORM_RECIPIENT_ID) {
@@ -1275,9 +1282,14 @@ export class OrdersService {
     const platformFeePercent = await this.founderService.resolveCommissionPercent(
       order.sellerId,
     );
-    // Comissão só sobre o item (frete vai 100% pro vendedor).
-    const itemInCents = order.totalInCents - (order.shippingInCents ?? 0);
-    const platformFeeInCents = Math.round(itemInCents * platformFeePercent / 100);
+    // O frete fica com a Kolecta (ela compra a etiqueta), então entra na parte
+    // da plataforma junto com a comissão — que continua incidindo só sobre o
+    // item. Espelha o split; se divergir, o vendedor vê um valor retido
+    // diferente do que cai no recebedor dele.
+    const shippingInCents = order.shippingInCents ?? 0;
+    const itemInCents = order.totalInCents - shippingInCents;
+    const platformFeeInCents =
+      Math.round((itemInCents * platformFeePercent) / 100) + shippingInCents;
     // Taxa do gateway (Pagar.me): incide apenas sobre o valor pago externamente
     // (não sobre a parcela paga com saldo da wallet). Cartão custa mais que PIX —
     // usa a taxa do instrumento. Percentual configurável via env; default 0 até o

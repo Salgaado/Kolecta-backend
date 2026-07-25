@@ -394,8 +394,10 @@ export const orders = sqliteTable('orders', {
   // Valor total em centavos (item + frete)
   totalInCents: integer('total_in_cents').notNull(),
 
-  // Frete cobrado do comprador, em centavos. Vai 100% para o vendedor no split
-  // (ele paga a etiqueta); a comissão da Kolecta NÃO incide sobre o frete.
+  // Frete cobrado do comprador, em centavos. Vai para a KOLECTA no split, junto
+  // com a comissão: é ela que compra a etiqueta no Melhor Envio (o token é da
+  // plataforma) e manda o PDF ao vendedor. A comissão continua incidindo só
+  // sobre o item — o frete entra inteiro, sem percentual em cima.
   shippingInCents: integer('shipping_in_cents').default(0),
 
   // Método de entrega: 'shipping' (envio via transportadora) | 'pickup' (retirada
