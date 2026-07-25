@@ -168,17 +168,39 @@ export class ShippingService {
     const declaredValue =
       dto.declared_value ?? Number((order.totalInCents / 100).toFixed(2));
 
+    // Falha cedo e por escrito: sem documento o Melhor Envio recusa o carrinho
+    // com um erro que não diz o que fazer, e o vendedor só via "Falha ao gerar
+    // etiqueta".
+    const fromDoc =
+      this.buildPartyDocument(dto.from_document) ??
+      this.buildPartyDocument(seller?.cpf);
+    const toDoc =
+      this.buildPartyDocument(dto.to_document) ??
+      this.buildPartyDocument(buyer?.cpf);
+
+    if (!fromDoc || !toDoc) {
+      const quem = !fromDoc ? 'do vendedor' : 'do comprador';
+      throw new BadRequestException(
+        `CPF ${quem} não encontrado — o Melhor Envio exige documento nas duas ` +
+          `pontas para emitir a etiqueta.`,
+      );
+    }
+
     const payload = {
       service: dto.service_id,
+      // Documento (CPF/CNPJ) é OBRIGATÓRIO nos dois lados: sem ele o Melhor
+      // Envio recusa o carrinho inteiro. O front não manda esses campos, então
+      // caímos no CPF já guardado do usuário — o do comprador é capturado no
+      // checkout (exigência da Pagar.me) e o do vendedor no cadastro.
       from: this.buildParty(fromAddress, {
         email: seller?.email,
         name: fromAddress.recipientName || seller?.name,
-        document: dto.from_document,
+        document: fromDoc,
       }),
       to: this.buildParty(toAddress, {
         email: buyer?.email,
         name: toAddress.recipientName || buyer?.name,
-        document: dto.to_document,
+        document: toDoc,
       }),
       products: [
         {
@@ -302,6 +324,12 @@ export class ShippingService {
   }
 
   /** Monta um lado (from/to) do envio a partir de uma linha de `addresses`. */
+  /** CPF/CNPJ só com dígitos; vazio vira undefined (o ME recusa string vazia). */
+  private buildPartyDocument(raw?: string | null): string | undefined {
+    const digits = String(raw ?? '').replace(/\D/g, '');
+    return digits.length >= 11 ? digits : undefined;
+  }
+
   private buildParty(
     addr: typeof schema.addresses.$inferSelect,
     extra: { email?: string | null; name?: string | null; document?: string },

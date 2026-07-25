@@ -83,10 +83,19 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
     db.query.addresses.findFirst
       .mockResolvedValueOnce(toAddress)
       .mockResolvedValueOnce(fromAddress);
-    // 1ª = comprador; 2ª = vendedor
+    // 1ª = comprador; 2ª = vendedor. O CPF é obrigatório: o Melhor Envio exige
+    // documento nas duas pontas e recusa o carrinho inteiro sem ele.
     db.query.users.findFirst
-      .mockResolvedValueOnce({ email: 'b@x.com', name: 'Comprador' })
-      .mockResolvedValueOnce({ email: 's@x.com', name: 'Vendedor' });
+      .mockResolvedValueOnce({
+        email: 'b@x.com',
+        name: 'Comprador',
+        cpf: '52998224725',
+      })
+      .mockResolvedValueOnce({
+        email: 's@x.com',
+        name: 'Vendedor',
+        cpf: '11144477735',
+      });
     db.query.listings.findFirst.mockResolvedValue({ title: 'Hot Wheels RLC' });
     httpPost.mockReturnValue(of({ data: { id: 123, protocol: 'ORD-XYZ' } }));
   }
