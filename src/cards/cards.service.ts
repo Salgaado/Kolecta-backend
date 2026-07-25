@@ -151,23 +151,22 @@ export class CardsService {
     if (!card) return null;
 
     const [user] = await this.db
-      .select({
-        customerId: schema.users.pagarmeCustomerId,
-        cpf: schema.users.cpf,
-        phone: schema.users.phone,
-      })
+      .select({ customerId: schema.users.pagarmeCustomerId })
       .from(schema.users)
       .where(eq(schema.users.id, userId));
     if (!user?.customerId) return null;
 
-    // Auto-conserto: `users.cpf`/`users.phone` vazios sao o sinal de que o
-    // customer nasceu incompleto (antes desta correcao) e a cobranca falharia. Como o lance le o
-    // cartao por aqui e nao passa pelo `saveCard`, completamos neste ponto —
-    // senao quem ja tinha cartao salvo ficaria travado para sempre. Depois do
-    // PUT o CPF fica gravado e esta checagem nao repete.
-    if (!user.cpf || !user.phone) {
-      await this.completarCadastroDoCustomer(user.customerId, userId);
-    }
+    // Auto-conserto do customer ANTES de devolver o cartao: o lance le o cartao
+    // por aqui e nao passa pelo `saveCard`, entao quem ja tinha cartao salvo
+    // ficaria travado para sempre sem este ponto.
+    //
+    // De proposito SEM guarda por campo local (ex.: "so quando users.phone
+    // estiver vazio"): o que importa e o estado REMOTO, e ele pode estar
+    // incompleto mesmo com o nosso banco preenchido — foi exatamente o que
+    // aconteceu ao gravar o telefone na mao para destravar um vendedor. O custo
+    // e um GET por lance, e `completarCadastroDoCustomer` sai na hora quando o
+    // customer ja esta completo.
+    await this.completarCadastroDoCustomer(user.customerId, userId);
 
     return { customerId: user.customerId, cardId: card.cardId };
   }
