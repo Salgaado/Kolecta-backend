@@ -430,6 +430,23 @@ export class AuctionsService {
     };
   }
 
+  /**
+   * Endereço de entrega do comprador no leilão.
+   *
+   * Compra direta escolhe o endereço no checkout; o leilão não tem checkout —
+   * o lance é só o valor da peça. Sem `orders.addressId` a etiqueta do Melhor
+   * Envio nem chega a ser pedida, então puxamos o endereço padrão do cadastro.
+   * Todo bidder tem endereço: `placeBid` exige um para a retenção no cartão.
+   */
+  private async _getDefaultAddressId(userId: string): Promise<string | null> {
+    const enderecos = await this.db
+      .select({ id: schema.addresses.id, isDefault: schema.addresses.isDefault })
+      .from(schema.addresses)
+      .where(eq(schema.addresses.userId, userId));
+    const end = enderecos.find((e) => e.isDefault) ?? enderecos[0];
+    return end?.id ?? null;
+  }
+
   /** Recebedor apto do vendedor (p/ split), ou null (→ auth sem split). */
   private async _getSellerRecipientId(
     sellerId: string,
@@ -1008,11 +1025,15 @@ export class AuctionsService {
         (runnerUp.amountInCents * platformFeePercent) / 100,
       );
       const sellerNetInCents = runnerUp.amountInCents - platformFeeInCents;
+      const enderecoRunnerUp = await this._getDefaultAddressId(
+        runnerUp.bidderId,
+      );
       await this.db.transaction(async (tx: any) => {
         await tx.insert(schema.orders).values({
           buyerId: runnerUp.bidderId,
           sellerId: order.sellerId,
           listingId: order.listingId,
+          addressId: enderecoRunnerUp,
           totalInCents: runnerUp.amountInCents,
           sellerNetInCents,
           platformFeeInCents,
@@ -1249,6 +1270,9 @@ export class AuctionsService {
       }
       await this._captureCharge(winnerAuth.chargeId, totalInCents);
     } catch (err: any) {
+      const enderecoVencedor = await this._getDefaultAddressId(
+        auction.currentWinnerId!,
+      );
       const orderId: string = await this.db.transaction(async (tx: any) => {
         await tx
           .update(schema.auctions)
@@ -1260,6 +1284,7 @@ export class AuctionsService {
             buyerId: auction.currentWinnerId!,
             sellerId: listing!.sellerId,
             listingId: auction.listingId,
+            addressId: enderecoVencedor,
             totalInCents,
             sellerNetInCents,
             platformFeeInCents,
@@ -1300,6 +1325,9 @@ export class AuctionsService {
     }
 
     // Captura OK → cria pedido pago e retém o líquido do vendedor (espelho).
+    const enderecoVencedor = await this._getDefaultAddressId(
+      auction.currentWinnerId!,
+    );
     const orderId: string = await this.db.transaction(async (tx: any) => {
       await tx
         .update(schema.auctions)
@@ -1312,6 +1340,7 @@ export class AuctionsService {
           buyerId: auction.currentWinnerId!,
           sellerId: listing!.sellerId,
           listingId: auction.listingId,
+          addressId: enderecoVencedor,
           totalInCents,
           sellerNetInCents,
           platformFeeInCents,

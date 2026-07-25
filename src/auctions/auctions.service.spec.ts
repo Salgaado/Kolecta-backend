@@ -107,6 +107,9 @@ const makeDrizzleMock = () => {
   chain.returning = jest.fn().mockResolvedValue([mockAuction]);
   chain.update = jest.fn().mockReturnValue(chain);
   chain.set = jest.fn().mockReturnValue(chain);
+  // Guarda cada tx: o insert do pedido acontece DENTRO da transação, então é
+  // no tx (e não no chain) que ficam os valores a inspecionar.
+  chain.txs = [] as any[];
   chain.transaction = jest.fn().mockImplementation(async (fn: any) => {
     const tx: any = {};
     tx.insert = jest.fn().mockReturnValue(tx);
@@ -117,6 +120,7 @@ const makeDrizzleMock = () => {
     tx.update = jest.fn().mockReturnValue(tx);
     tx.set = jest.fn().mockReturnValue(tx);
     tx.where = jest.fn().mockReturnValue(tx);
+    chain.txs.push(tx);
     return fn(tx);
   });
   return chain;
@@ -390,6 +394,39 @@ describe('AuctionsService', () => {
 
   // ── endAuction ────────────────────────────────────────────────────────────
 
+  /**
+   * O leilão não passa por checkout, então o pedido nascia sem endereço e a
+   * etiqueta do Melhor Envio nem chegava a ser pedida ("Pedido sem endereço de
+   * entrega"). O endereço agora vem do cadastro do vencedor.
+   */
+  describe('_getDefaultAddressId', () => {
+    const chamar = async (enderecos: any[]) => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce(enderecos);
+      service = await buildModule();
+      return (service as any)._getDefaultAddressId('user_1');
+    };
+
+    it('prefere o endereço marcado como padrão', async () => {
+      await expect(
+        chamar([
+          { id: 'end_a', isDefault: false },
+          { id: 'end_b', isDefault: true },
+        ]),
+      ).resolves.toBe('end_b');
+    });
+
+    it('cai no primeiro quando nenhum é padrão', async () => {
+      await expect(
+        chamar([{ id: 'end_a', isDefault: false }]),
+      ).resolves.toBe('end_a');
+    });
+
+    it('devolve null quando o usuário não tem endereço', async () => {
+      await expect(chamar([])).resolves.toBeNull();
+    });
+  });
+
   describe('endAuction', () => {
     it('deve lançar NotFoundException se leilão não existe', async () => {
       mockDb = makeDrizzleMock();
@@ -469,7 +506,8 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([winnerAuction])                  // auction (com vencedor)
         .mockResolvedValueOnce([mockListing])                    // listing
         .mockResolvedValueOnce([{ id: sellerId, role: 'user' }]) // requester = seller
-        .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }]); // _getActiveBidAuth
+        .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }]) // _getActiveBidAuth
+        .mockResolvedValueOnce([{ id: 'end_1', isDefault: true }]); // endereço do vencedor
       // Captura da pré-auth confirmada.
       mockPagarmeService.post.mockReset().mockResolvedValue({ status: 'paid' });
       service = await buildModule();
@@ -484,6 +522,13 @@ describe('AuctionsService', () => {
       );
       // Espelhou o líquido do vendedor como retido na wallet.
       expect(mockWalletService.hold).toHaveBeenCalled();
+      // O pedido nasce COM endereço: sem ele a etiqueta do Melhor Envio nem
+      // chega a ser pedida, e o leilão não tem checkout para escolher um.
+      const pedido = mockDb.txs
+        .flatMap((tx: any) => tx.values.mock.calls)
+        .map((c: any[]) => c[0])
+        .find((v: any) => v?.buyerId === bidderId);
+      expect(pedido?.addressId).toBe('end_1');
     });
 
     it('deve deixar o pedido pending_payment se a captura falhar (Fase 4)', async () => {
@@ -497,7 +542,8 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([winnerAuction])
         .mockResolvedValueOnce([mockListing])
         .mockResolvedValueOnce([{ id: sellerId, role: 'user' }])
-        .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }]);
+        .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }])
+        .mockResolvedValueOnce([{ id: 'end_1', isDefault: true }]); // endereço do vencedor
       // Captura NÃO confirmada → _captureCharge lança → ramo pending_payment.
       mockPagarmeService.post.mockReset().mockResolvedValue({ status: 'failed' });
       service = await buildModule();
@@ -853,7 +899,11 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([overdueOrder]) // vencidos
         .mockResolvedValueOnce([
           { id: 'auction_1', reservePriceInCents: 3000 },
-        ]); // auction
+        ]) // auction
+        // _findRunnerUp segue a cadeia até orderBy — precisa do chain, não de
+        // um array; só depois dele vem a consulta do endereço.
+        .mockReturnValueOnce(mockDb)
+        .mockResolvedValueOnce([{ id: 'end_2', isDefault: true }]); // endereço do 2º
       stubUpdatesWithCancel([overdueOrder]);
       // Vencedor faltoso (buyer_001) + 2º colocado (buyer_002) com lance válido.
       mockDb.orderBy.mockResolvedValue([
