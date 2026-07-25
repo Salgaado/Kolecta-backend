@@ -144,10 +144,22 @@ export class CardsService {
     if (!card) return null;
 
     const [user] = await this.db
-      .select({ customerId: schema.users.pagarmeCustomerId })
+      .select({
+        customerId: schema.users.pagarmeCustomerId,
+        cpf: schema.users.cpf,
+      })
       .from(schema.users)
       .where(eq(schema.users.id, userId));
     if (!user?.customerId) return null;
+
+    // Auto-conserto: `users.cpf` vazio e o sinal de que o customer nasceu SEM
+    // documento (antes desta correcao) e a cobranca falharia. Como o lance le o
+    // cartao por aqui e nao passa pelo `saveCard`, completamos neste ponto —
+    // senao quem ja tinha cartao salvo ficaria travado para sempre. Depois do
+    // PUT o CPF fica gravado e esta checagem nao repete.
+    if (!user.cpf) {
+      await this.completarDocumentoDoCustomer(user.customerId, userId);
+    }
 
     return { customerId: user.customerId, cardId: card.cardId };
   }
@@ -226,6 +238,48 @@ export class CardsService {
     return null;
   }
 
+  /**
+   * Garante que um customer JA existente tenha documento na Pagar.me.
+   *
+   * Customers criados antes desta correcao nasceram sem documento, e a cobranca
+   * no cartao falha sem ele. Recriar o customer nao serve: o cartao salvo esta
+   * vinculado ao antigo e seria perdido. Entao completamos no lugar, via PUT.
+   *
+   * Nao derruba o fluxo se a consulta falhar: se o customer ja estiver correto
+   * ou a Pagar.me responder outra coisa, seguimos — quem valida de verdade e a
+   * cobranca, e o erro dela agora chega legivel a quem deu o lance.
+   */
+  private async completarDocumentoDoCustomer(
+    customerId: string,
+    userId: string,
+  ): Promise<void> {
+    let remoto: { document?: string | null } | null = null;
+    try {
+      remoto = await this.pagarme.get(`/customers/${customerId}`);
+    } catch {
+      return; // sem leitura, deixa a cobranca decidir
+    }
+    if (remoto?.document) return; // ja tem documento
+
+    const doc = await this.resolveDocument(userId);
+    if (!doc) {
+      throw new BadRequestException(
+        'Informe seu CPF ou CNPJ para usar o cartao — a operadora exige o ' +
+          'documento do titular para autorizar cobrancas.',
+      );
+    }
+
+    await this.pagarme.put(`/customers/${customerId}`, {
+      type: doc.type,
+      document: doc.document,
+      document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
+    });
+    await this.persistCpf(userId, doc.document);
+    this.logger.log(
+      `Documento completado no customer ${customerId} (user ${userId}).`,
+    );
+  }
+
   private async ensureCustomer(userId: string): Promise<string> {
     const [user] = await this.db
       .select()
@@ -233,7 +287,14 @@ export class CardsService {
       .where(eq(schema.users.id, userId));
 
     if (!user) throw new NotFoundException('Usuario nao encontrado');
-    if (user.pagarmeCustomerId) return user.pagarmeCustomerId;
+
+    // Customer que JA existe pode ter nascido sem documento (era o caso antes
+    // desta correcao). Devolver ele direto deixaria o usuario preso: o cartao
+    // salva e a cobranca falha para sempre. Completa o documento no lugar.
+    if (user.pagarmeCustomerId) {
+      await this.completarDocumentoDoCustomer(user.pagarmeCustomerId, userId);
+      return user.pagarmeCustomerId;
+    }
 
     // Sem documento a Pagar.me cria o customer, mas recusa a cobranca depois.
     // Falhar aqui, dizendo o que fazer, evita o cartao "salvo" que nao paga.

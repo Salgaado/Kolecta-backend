@@ -48,6 +48,16 @@ export class PagarmeService {
     });
   }
 
+  /** Atualiza um recurso existente (ex.: completar o documento do customer). */
+  async put<T = any>(path: string, body: unknown): Promise<T> {
+    return this.request<T>({
+      method: 'PUT',
+      url: this.buildUrl(path),
+      data: body,
+      headers: this.buildHeaders(),
+    });
+  }
+
   async delete<T = any>(path: string): Promise<T> {
     return this.request<T>({
       method: 'DELETE',
