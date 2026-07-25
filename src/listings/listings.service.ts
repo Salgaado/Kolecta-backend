@@ -259,12 +259,30 @@ export class ListingsService {
       );
     }
 
-    // ── Reprovado + editado = reenviado para a fila ──
-    // Sem isto o anúncio reprovado é um beco sem saída: `publish` recusa o
-    // status 'rejected', o front não mostra o botão de publicar e a fila do
-    // admin só busca draft/pending_review. O vendedor corrigiria para sempre
-    // sem nunca voltar à moderação — e o e-mail de reprovação promete que volta.
-    const voltouParaFila = listing.status === 'rejected';
+    // ── Quando a edição devolve o anúncio para a fila ──
+    //
+    // (a) REPROVADO: sem isto vira beco sem saída — `publish` recusava 'rejected',
+    //     o front não mostrava o botão e a fila do admin não busca esse status.
+    //     O vendedor corrigiria para sempre sem nunca voltar à moderação.
+    //
+    // (b) ATIVO com campo MODERÁVEL alterado: fecha o furo de aprovar um anúncio
+    //     limpo e trocar o conteúdo depois. Só os campos que a equipe realmente
+    //     avalia derrubam — preço, SKU e frete não tiram o anúncio do ar, senão
+    //     corrigir um centavo custaria uma reanálise e uma venda perdida.
+    const camposModeraveis = [
+      'title',
+      'description',
+      'images',
+      'categoryId',
+    ] as const;
+    const mexeuEmModeravel = camposModeraveis.some(
+      (campo) =>
+        dto[campo] !== undefined && dto[campo] !== (listing as any)[campo],
+    );
+
+    const voltouParaFila =
+      listing.status === 'rejected' ||
+      (listing.status === 'active' && mexeuEmModeravel);
 
     await this.db
       .update(schema.listings)
@@ -276,7 +294,10 @@ export class ListingsService {
       .where(eq(schema.listings.id, id));
 
     this.logger.log(
-      `[update] Anúncio atualizado: ${id}${voltouParaFila ? ' (reprovado → pending_review, de volta à fila)' : ''}`,
+      `[update] Anúncio atualizado: ${id}` +
+        (voltouParaFila
+          ? ` (${listing.status} → pending_review, de volta à fila)`
+          : ''),
     );
 
     return this.findById(id);
@@ -309,12 +330,18 @@ export class ListingsService {
     const listing = await this.findById(id); // garante existência
 
     // ── Peneira de publicação ──
-    // Ao ir ao ar pela primeira vez (draft/pending_review → active), o anúncio
-    // precisa atender aos requisitos mínimos. Bloqueia com a lista do que falta.
-    if (
+    // Roda ao ENTRAR NA FILA (draft/rejected → pending_review) e ao IR AO AR
+    // (→ active). Na fila é onde ela mais serve: barra o anúncio incompleto
+    // antes de custar um ciclo de moderação. Na ativação continua valendo como
+    // rede — o admin não deve conseguir aprovar um anúncio sem frete.
+    const entrandoNaFila =
+      status === 'pending_review' &&
+      (listing.status === 'draft' || listing.status === 'rejected');
+    const indoAoAr =
       status === 'active' &&
-      (listing.status === 'draft' || listing.status === 'pending_review')
-    ) {
+      ['draft', 'pending_review', 'rejected'].includes(listing.status);
+
+    if (entrandoNaFila || indoAoAr) {
       const missing = await this.getPublishBlockers(listing);
       if (missing.length > 0) {
         throw new BadRequestException({
@@ -428,40 +455,52 @@ export class ListingsService {
     });
   }
 
-  // ── Publicar (vendedor) — draft → active, passando pela peneira ──────────
+  // ── Enviar para análise (vendedor) — draft → pending_review ──────────────
 
   /**
-   * O vendedor publica o próprio anúncio. Só vai ao ar se passar na peneira de
-   * requisitos (descrição, preço/lance, ≥3 fotos, categoria, condição, frete).
-   * Caso contrário, lança 400 com a lista do que falta.
+   * O vendedor ENVIA o anúncio para a fila de moderação. Não vai ao ar aqui:
+   * `active` só é alcançável pelo admin (`PATCH /api/admin/listings/:id/status`),
+   * que é a decisão do dono — a moderação é sempre quem ativa.
+   *
+   * Passa pela peneira ANTES de entrar na fila: é melhor o vendedor descobrir
+   * na hora que faltam 3 fotos do que a equipe gastar um ciclo reprovando isso.
+   *
+   * Exceção: `paused` volta direto para `active`. O anúncio já foi aprovado uma
+   * vez e pausar é decisão do vendedor, não da moderação — mandar para a fila
+   * de novo seria retrabalho puro.
    */
   async publish(id: string, sellerId: string): Promise<ListingRecord> {
     const listing = await this.findById(id);
 
     if (listing.sellerId !== sellerId) {
       throw new ForbiddenException(
-        'Você não tem permissão para publicar este anúncio.',
+        'Você não tem permissão para enviar este anúncio.',
       );
     }
-    if (!['draft', 'pending_review', 'paused'].includes(listing.status)) {
+    if (listing.status === 'pending_review') {
       throw new BadRequestException(
-        `Anúncio não pode ser publicado a partir do status '${listing.status}'.`,
+        'Este anúncio já está na fila de análise.',
+      );
+    }
+    if (!['draft', 'rejected', 'paused'].includes(listing.status)) {
+      throw new BadRequestException(
+        `Anúncio não pode ser enviado a partir do status '${listing.status}'.`,
       );
     }
 
-    // Reaproveita updateStatus, que aplica a peneira em draft/pending_review → active.
-    // (para 'paused', valida aqui também, já que a reativação não repassa a peneira)
+    // Reativação de anúncio pausado: valida aqui porque não passa pela fila.
     if (listing.status === 'paused') {
       const missing = await this.getPublishBlockers(listing);
       if (missing.length > 0) {
         throw new BadRequestException({
-          message: `Não é possível publicar. Faltam: ${missing.join('; ')}.`,
+          message: `Não é possível reativar. Faltam: ${missing.join('; ')}.`,
           missing,
         });
       }
+      return this.updateStatus(id, 'active');
     }
 
-    return this.updateStatus(id, 'active');
+    return this.updateStatus(id, 'pending_review');
   }
 
   /**

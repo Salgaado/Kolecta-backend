@@ -247,13 +247,51 @@ describe('ListingsService', () => {
       );
     });
 
-    it('editar anúncio ATIVO não mexe no status', async () => {
+    // ── Edição de anúncio ATIVO ──
+    // Campo que a moderação avalia derruba para reanálise; o resto não. Fecha o
+    // furo de aprovar limpo e trocar o conteúdo depois, sem punir quem corrige
+    // o preço.
+
+    it('mexer no TÍTULO de um anúncio ativo devolve para a fila', async () => {
       const ativo = { ...fakeListing, status: 'active' };
       selectChain.limit
         .mockResolvedValueOnce([ativo])
         .mockResolvedValueOnce([ativo]);
 
-      await service.update('listing_001', 'user_seller', { title: 'Ajuste' });
+      await service.update('listing_001', 'user_seller', { title: 'Outro item' });
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'pending_review' }),
+      );
+    });
+
+    it('mexer só no PREÇO de um anúncio ativo não tira do ar', async () => {
+      const ativo = { ...fakeListing, status: 'active' };
+      selectChain.limit
+        .mockResolvedValueOnce([ativo])
+        .mockResolvedValueOnce([ativo]);
+
+      await service.update('listing_001', 'user_seller', {
+        priceInCents: 12345,
+      });
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.not.objectContaining({ status: expect.anything() }),
+      );
+    });
+
+    it('reenviar o MESMO título não derruba o anúncio', async () => {
+      // O front manda o formulário inteiro no PATCH; comparar valor (e não só
+      // presença da chave) evita reanálise por edição que não mudou nada.
+      const ativo = { ...fakeListing, status: 'active' };
+      selectChain.limit
+        .mockResolvedValueOnce([ativo])
+        .mockResolvedValueOnce([ativo]);
+
+      await service.update('listing_001', 'user_seller', {
+        title: ativo.title,
+        priceInCents: 999,
+      });
 
       expect(updateChain.set).toHaveBeenCalledWith(
         expect.not.objectContaining({ status: expect.anything() }),
@@ -402,12 +440,45 @@ describe('ListingsService', () => {
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it('publica (active) quando todos os requisitos são atendidos', async () => {
+    // ── A moderação é sempre quem ativa (decisão do dono, 24/07) ──
+    // O vendedor ENVIA; `active` só pelo admin. Antes, `publish` colocava no ar
+    // direto e a fila de moderação era decorativa.
+
+    it('envia para a fila (pending_review), não para o ar', async () => {
       selectChain.limit
         .mockResolvedValueOnce([validDraft]) // findById em publish
         .mockResolvedValueOnce([validDraft]) // findById em updateStatus
         .mockResolvedValueOnce([]) // categoria em getPublishBlockers (slug desconhecido → pula campos)
-        .mockResolvedValueOnce([{ ...validDraft, status: 'active' }]); // findById final
+        .mockResolvedValueOnce([{ ...validDraft, status: 'pending_review' }]);
+
+      await service.publish('listing_001', 'user_seller');
+
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'pending_review' }),
+      );
+      expect(updateChain.set).not.toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'active' }),
+      );
+    });
+
+    it('recusa reenviar o que já está na fila', async () => {
+      selectChain.limit.mockResolvedValueOnce([
+        { ...validDraft, status: 'pending_review' },
+      ]);
+
+      await expect(
+        service.publish('listing_001', 'user_seller'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('anúncio PAUSADO volta direto ao ar, sem passar pela fila', async () => {
+      // Já foi aprovado uma vez; pausar é decisão do vendedor, não da moderação.
+      const pausado = { ...validDraft, status: 'paused' };
+      selectChain.limit
+        .mockResolvedValueOnce([pausado]) // findById em publish
+        .mockResolvedValueOnce([]) // categoria em getPublishBlockers
+        .mockResolvedValueOnce([pausado]) // findById em updateStatus
+        .mockResolvedValueOnce([{ ...pausado, status: 'active' }]);
 
       await service.publish('listing_001', 'user_seller');
 
