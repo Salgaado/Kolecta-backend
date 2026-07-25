@@ -92,6 +92,11 @@ export class ListingsService {
       .select({
         ...getTableColumns(schema.listings),
         sellerName: this.sellerDisplayName,
+        // Número do Fundador junto do anúncio, como o nome do vendedor. Sem
+        // isto o front buscava o perfil de cada vendedor só para saber se
+        // mostra o selo: numa lista de 20 itens, 20 requisições de ~3s.
+        sellerFounderNumber: schema.sellerProfiles.founderNumber,
+        sellerFounderStatus: schema.sellerProfiles.founderStatus,
         ...this.auctionPublicFields,
       })
       .from(schema.listings)
@@ -121,6 +126,11 @@ export class ListingsService {
       .select({
         ...getTableColumns(schema.listings),
         sellerName: this.sellerDisplayName,
+        // Número do Fundador junto do anúncio, como o nome do vendedor. Sem
+        // isto o front buscava o perfil de cada vendedor só para saber se
+        // mostra o selo: numa lista de 20 itens, 20 requisições de ~3s.
+        sellerFounderNumber: schema.sellerProfiles.founderNumber,
+        sellerFounderStatus: schema.sellerProfiles.founderStatus,
         ...this.auctionPublicFields,
       })
       .from(schema.listings)

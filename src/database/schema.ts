@@ -244,6 +244,10 @@ export const listings = sqliteTable('listings', {
   // travaria a publicação dele. O mesmo código pode se repetir entre vendedores
   // diferentes — cada um só enxerga o próprio.
   sku: text('sku'),
+  // Quantidade em estoque. O front já coleta (criação, edição e planilha) e o
+  // backend descartava — o valor sumia e o estoque não aparecia em lugar
+  // nenhum. null = não informado (o MVP vende 1 unidade por anúncio).
+  stock: integer('stock'),
 
   // draft | pending_review | active | sold | cancelled | pending_payment
   status: text('status').notNull().default('draft'),

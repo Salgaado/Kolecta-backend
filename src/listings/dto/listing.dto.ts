@@ -47,6 +47,14 @@ export class CreateListingDto {
   @IsString()
   sku?: string;
 
+  // Quantidade em estoque. O front já mandava e era descartado (o campo nem
+  // existia aqui, e o ValidationPipe com whitelist removia em silêncio).
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  stock?: number;
+
   // lacrado | novo | mint | usado
   @IsString()
   @IsNotEmpty()
@@ -171,6 +179,13 @@ export class UpdateListingDto {
   @IsOptional()
   @IsString()
   sku?: string;
+
+  // Estoque também na edição — o vendedor precisa poder corrigir depois.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  stock?: number;
 
   @IsOptional()
   @IsString()

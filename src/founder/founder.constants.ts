@@ -10,6 +10,14 @@ export const FOUNDER_TOTAL_SLOTS = 100;
 /** Faixa de números atribuída via landing (qualificação por anúncios). */
 export const LANDING_RANGE = { min: 51, max: 100 } as const;
 
+/**
+ * O #0 é a CASA: a conta da marca-mãe, fundadora zero da Kolecta. Fica fora das
+ * duas faixas (1–50 do evento, 51–100 da landing) e é concedido só pelo admin.
+ * O front já oferece esse número; sem isto aqui, a concessão era recusada com
+ * "Número deve estar entre 51 e 100".
+ */
+export const NUMERO_DA_CASA = 0;
+
 /** Faixa reservada aos códigos de convite do evento presencial. */
 export const INVITE_RANGE = { min: 1, max: 50 } as const;
 

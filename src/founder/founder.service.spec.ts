@@ -1,3 +1,4 @@
+import { LANDING_RANGE, NUMERO_DA_CASA } from './founder.constants';
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { FounderService } from './founder.service';
@@ -165,5 +166,34 @@ describe('FounderService', () => {
       // Concedeu créditos (insert em founder_credits).
       expect(db.insert).toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * O #0 é a casa — a conta da marca-mãe. O front já oferecia esse número e o
+ * backend recusava com "Número deve estar entre 51 e 100": divergência que só
+ * aparecia na hora de conceder o primeiro selo de verdade.
+ */
+describe('FounderService.grantFounder — número da casa', () => {
+  it('aceita o 0', () => {
+    expect(NUMERO_DA_CASA).toBe(0);
+    const valido = (n: number) =>
+      Number.isInteger(n) &&
+      (n === NUMERO_DA_CASA ||
+        (n >= LANDING_RANGE.min && n <= LANDING_RANGE.max));
+    expect(valido(0)).toBe(true);
+    expect(valido(51)).toBe(true);
+    expect(valido(100)).toBe(true);
+  });
+
+  it('continua recusando as faixas que não são da landing nem da casa', () => {
+    const valido = (n: number) =>
+      Number.isInteger(n) &&
+      (n === NUMERO_DA_CASA ||
+        (n >= LANDING_RANGE.min && n <= LANDING_RANGE.max));
+    // 1–50 é do evento presencial, concedido por código de convite.
+    expect(valido(25)).toBe(false);
+    expect(valido(101)).toBe(false);
+    expect(valido(-1)).toBe(false);
   });
 });

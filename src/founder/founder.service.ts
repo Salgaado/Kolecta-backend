@@ -14,6 +14,7 @@ import * as schema from '../database/schema';
 import {
   FOUNDER_QUALIFY_LISTINGS,
   LANDING_RANGE,
+  NUMERO_DA_CASA,
   INVITE_RANGE,
   FOUNDER_HIGHLIGHT_CREDITS,
   FOUNDER_HIGHLIGHT_DAYS,
@@ -142,13 +143,15 @@ export class FounderService {
     userId: string,
     founderNumber: number,
   ): Promise<SellerProfile> {
+    const naFaixaDaLanding =
+      founderNumber >= LANDING_RANGE.min && founderNumber <= LANDING_RANGE.max;
     if (
       !Number.isInteger(founderNumber) ||
-      founderNumber < LANDING_RANGE.min ||
-      founderNumber > LANDING_RANGE.max
+      (founderNumber !== NUMERO_DA_CASA && !naFaixaDaLanding)
     ) {
       throw new BadRequestException(
-        `Número deve estar entre ${LANDING_RANGE.min} e ${LANDING_RANGE.max}.`,
+        `Número deve ser ${NUMERO_DA_CASA} (a casa) ou estar entre ` +
+          `${LANDING_RANGE.min} e ${LANDING_RANGE.max}.`,
       );
     }
 
