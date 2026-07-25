@@ -104,7 +104,9 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
     seedHappyPath();
     const service = new ShippingService(http, db as any);
 
-    const result = await service.generateLabel(dto);
+    // `createCart` e nao `generateLabel`: a montagem do payload continua a
+    // mesma, mas quem a dispara agora e a emissao automatica.
+    const result = await (service as any).createCart(dto);
 
     expect(httpPost).toHaveBeenCalledTimes(1);
     const [url, payload, config] = httpPost.mock.calls[0];
@@ -144,7 +146,7 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
     seedHappyPath();
     const service = new ShippingService(http, db as any);
 
-    await service.generateLabel({ ...dto, declared_value: 999.5 });
+    await (service as any).createCart({ ...dto, declared_value: 999.5 });
 
     const payload = httpPost.mock.calls[0][1];
     expect(payload.products[0].unitary_value).toBe(999.5);
@@ -181,14 +183,30 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
     expect(httpPost).not.toHaveBeenCalled();
   });
 
-  it('vendedor dono do pedido → gera normalmente', async () => {
+  /**
+   * Quem escolhe a forma de envio e o COMPRADOR, no checkout — e e ela que ele
+   * paga. O botao do vendedor recotava e deixava escolher outro servico, o que
+   * permitia despachar diferente do cobrado E criava um segundo carrinho
+   * (carteira da Kolecta debitada duas vezes pelo mesmo pedido).
+   */
+  it('vendedor dono do pedido → delega para a emissão e IGNORA o serviço do corpo', async () => {
     seedHappyPath(); // order.sellerId === 'seller-1'
     const service = new ShippingService(http, db as any);
+    const emissao = jest
+      .spyOn(service, 'emitirEtiquetaDoPedido')
+      .mockResolvedValue({
+        status: 'ready',
+        cartId: 'cart-1',
+        labelUrl: 'https://me/etiqueta.pdf',
+        trackingCode: null,
+        jaEstavaPronta: false,
+      });
 
-    const result = await service.generateLabel(dto, 'seller-1');
+    await service.generateLabel({ ...dto, service_id: 999 }, 'seller-1');
 
-    expect(httpPost).toHaveBeenCalledTimes(1);
-    expect(result.success).toBe(true);
+    expect(emissao).toHaveBeenCalledWith('ord-1');
+    // Nada foi montado com o service_id do corpo.
+    expect(httpPost).not.toHaveBeenCalled();
   });
 });
 

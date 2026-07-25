@@ -96,15 +96,31 @@ export class ShippingService {
   }
 
   /**
-   * Gera a etiqueta (escopo "cart + link ao painel"): monta o envio real via
-   * `POST /me/cart` e devolve a URL do painel Melhor Envio para o vendedor
-   * pagar/imprimir lá. NÃO chama checkout (que debita saldo real da conta ME).
+   * Emite a etiqueta de um pedido a pedido do vendedor.
    *
-   * Diferente da cotação, aqui NÃO há fallback mock: falta de token ou de dados
-   * falha de forma visível (a etiqueta é uma ação, não uma leitura).
+   * NÃO usa o `service_id`/`origin_address_id` do corpo, de propósito. Quem
+   * escolhe a forma de envio é o COMPRADOR, no checkout, e é ela que ele paga —
+   * deixar o vendedor escolher de novo aqui permitia despachar num serviço
+   * diferente do que foi cobrado, e criava um SEGUNDO carrinho (a carteira da
+   * Kolecta era debitada duas vezes pelo mesmo pedido).
+   *
+   * Os campos continuam aceitos no DTO só para não quebrar clientes antigos.
    */
   async generateLabel(dto: GenerateLabelDto, sellerId?: string) {
-    return this.createCart(dto, sellerId);
+    if (sellerId) {
+      const order = await this.db.query.orders.findFirst({
+        where: eq(schema.orders.id, dto.order_id),
+      });
+      if (!order) {
+        throw new NotFoundException(`Pedido ${dto.order_id} não encontrado.`);
+      }
+      if (order.sellerId !== sellerId) {
+        throw new ForbiddenException(
+          'Você não tem permissão para gerar a etiqueta deste pedido.',
+        );
+      }
+    }
+    return this.emitirEtiquetaDoPedido(dto.order_id);
   }
 
   private async createCart(dto: GenerateLabelDto, sellerId?: string) {
