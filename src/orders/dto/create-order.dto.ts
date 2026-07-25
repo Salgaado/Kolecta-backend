@@ -20,6 +20,52 @@ export class OrderItemDto {
   listingId: string;
 }
 
+/**
+ * Endereço digitado no checkout por quem ainda não tem nenhum salvo.
+ *
+ * Existe porque o checkout precisa aceitar os DOIS caminhos — endereço salvo e
+ * endereço novo. Antes o digitado era simplesmente descartado: o pedido nascia
+ * sem destino, o `billing_address` do cartão não era montado (a Pagar.me recusa
+ * com validation_error | billing) e a etiqueta ficava impossível.
+ */
+export class ShippingAddressDto {
+  @IsString()
+  @IsNotEmpty()
+  recipientName: string;
+
+  @IsString()
+  @IsNotEmpty()
+  street: string;
+
+  @IsString()
+  @IsNotEmpty()
+  number: string;
+
+  @IsOptional()
+  @IsString()
+  complement?: string;
+
+  @IsOptional()
+  @IsString()
+  neighborhood?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  city: string;
+
+  @IsString()
+  @IsNotEmpty()
+  state: string;
+
+  @IsString()
+  @IsNotEmpty()
+  zip: string;
+
+  @IsOptional()
+  @IsString()
+  country?: string;
+}
+
 export class CreateOrderDto {
   @IsArray()
   @ValidateNested({ each: true })
@@ -27,9 +73,17 @@ export class CreateOrderDto {
   @ArrayMinSize(1)
   items: OrderItemDto[];
 
+  // Endereço JÁ salvo do comprador. Tem prioridade sobre `shippingAddress`.
   @IsString()
   @IsOptional()
   addressId?: string;
+
+  // Endereço digitado agora. Usado quando o comprador não escolheu um salvo —
+  // o backend cria a linha em `addresses` e usa o id resultante no pedido.
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ShippingAddressDto)
+  shippingAddress?: ShippingAddressDto;
 
   // Frete escolhido pelo comprador, em centavos. Somado ao total cobrado e
   // repassado 100% ao vendedor no split (comissão só sobre o item).

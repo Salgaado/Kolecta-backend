@@ -132,8 +132,8 @@ describe('OrdersService — frete no split vai para a Kolecta', () => {
     selectChain.where
       .mockResolvedValueOnce([listing]) // listing
       .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
-      .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }])
-      .mockResolvedValueOnce([endereco]);
+      .mockResolvedValueOnce([endereco]) // endereço de entrega (salvo)
+      .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]);
   };
 
   it('vendedor fica só com o item menos a comissão; frete + comissão vão para a Kolecta', async () => {
@@ -185,5 +185,143 @@ describe('OrdersService — frete no split vai para a Kolecta', () => {
 
     expect(vendedor.amount).toBe(8900);
     expect(kolecta.amount).toBe(1100);
+  });
+});
+
+/**
+ * O checkout precisa aceitar os DOIS caminhos: endereço já salvo e endereço
+ * digitado na hora. O digitado era descartado — o pedido nascia sem destino, o
+ * `billing_address` não era montado e a Pagar.me recusava o cartão inteiro
+ * (validation_error | billing). Quem comprava pela primeira vez, sem endereço
+ * cadastrado, não conseguia pagar nem escolhendo retirada.
+ */
+describe('OrdersService — endereço digitado no checkout', () => {
+  let service: any;
+  let selectChain: any;
+  let insertValues: jest.Mock;
+  let pagarme: any;
+
+  const digitado = {
+    recipientName: 'Artminis Toys',
+    street: 'Rua Nova',
+    number: '42',
+    neighborhood: 'Centro',
+    city: 'Santo André',
+    state: 'SP',
+    zip: '09010-000',
+  };
+
+  beforeEach(async () => {
+    selectChain = {
+      from: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      where: jest.fn(),
+    };
+    const updateChain: any = {
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      returning: jest.fn().mockResolvedValue([{ id: 'order_123' }]),
+      then: (resolve: any) => resolve(undefined),
+    };
+    insertValues = jest.fn().mockReturnThis();
+    const insertChain: any = {
+      values: insertValues,
+      returning: jest.fn().mockResolvedValue([
+        // Serve tanto ao insert do endereço quanto ao do pedido.
+        { id: 'addr_novo', ...digitado, userId: 'user_buyer', country: 'BR' },
+      ]),
+    };
+    const db = {
+      select: () => selectChain,
+      update: () => updateChain,
+      insert: () => insertChain,
+      transaction: jest.fn(async (cb: any) =>
+        cb({ update: () => updateChain, insert: () => insertChain }),
+      ),
+    };
+    pagarme = {
+      post: jest.fn().mockResolvedValue({
+        id: 'or_test',
+        status: 'pending',
+        charges: [{ id: 'ch', last_transaction: { qr_code: 'p', qr_code_url: 'u' } }],
+      }),
+      get: jest.fn(),
+    };
+
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        OrdersService,
+        { provide: DATABASE_CONNECTION, useValue: db },
+        {
+          provide: WalletService,
+          useValue: {
+            hold: jest.fn(),
+            getOrCreateWallet: jest
+              .fn()
+              .mockResolvedValue({ id: 'w1', balanceInCents: 0 }),
+          },
+        },
+        { provide: PagarmeService, useValue: pagarme },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        {
+          provide: FounderService,
+          useValue: {
+            resolveCommissionPercent: jest.fn().mockResolvedValue(COMISSAO_PCT),
+          },
+        },
+      ],
+    }).compile();
+    service = mod.get(OrdersService);
+  });
+
+  it('salva o endereço digitado e usa o id dele no pedido', async () => {
+    selectChain.where
+      .mockResolvedValueOnce([listing])
+      .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+      .mockResolvedValueOnce([]) // o comprador ainda não tem endereço nenhum
+      .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]);
+
+    await service.createCheckout('user_buyer', {
+      items: [{ listingId: 'listing_001' }],
+      buyerCpf: '529.982.247-25',
+      buyerPhone: '11987654321',
+      shippingAddress: digitado, // SEM addressId
+      shippingInCents: FRETE,
+      deliveryMethod: 'shipping',
+    });
+
+    const gravados = insertValues.mock.calls.map((c: any[]) => c[0]);
+
+    // O endereço foi salvo na conta do comprador, com CEP só em dígitos.
+    const endereco = gravados.find((v: any) => v?.street === 'Rua Nova');
+    expect(endereco).toBeDefined();
+    expect(endereco.userId).toBe('user_buyer');
+    expect(endereco.zip).toBe('09010000');
+    // Primeiro endereço da conta vira o padrão.
+    expect(endereco.isDefault).toBe(true);
+
+    // E o pedido aponta para ele — sem isso não há etiqueta.
+    const pedido = gravados.find((v: any) => v?.listingId === 'listing_001');
+    expect(pedido.addressId).toBe('addr_novo');
+  });
+
+  it('recusa endereço salvo que é de outra conta', async () => {
+    selectChain.where
+      .mockResolvedValueOnce([listing])
+      .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+      // Endereço existe, mas pertence a outra pessoa: emitir etiqueta com ele
+      // mandaria a peça para a casa dela.
+      .mockResolvedValueOnce([{ ...endereco, userId: 'outra_pessoa' }]);
+
+    await expect(
+      service.createCheckout('user_buyer', {
+        items: [{ listingId: 'listing_001' }],
+        buyerCpf: '529.982.247-25',
+        buyerPhone: '11987654321',
+        addressId: 'addr_1',
+        shippingInCents: FRETE,
+        deliveryMethod: 'shipping',
+      }),
+    ).rejects.toThrow(/não pertence à sua conta/i);
   });
 });

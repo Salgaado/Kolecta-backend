@@ -232,6 +232,7 @@ describe('OrdersService', () => {
       selectChain.where
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
+        .mockResolvedValueOnce([fakeAddress]) // endereço de entrega (salvo)
         .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]); // buyer
 
       const result = await service.createCheckout('user_buyer', baseDto);
@@ -247,8 +248,8 @@ describe('OrdersService', () => {
       selectChain.where
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
+        .mockResolvedValueOnce([fakeAddress]) // endereço de entrega (salvo)
         .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
-        .mockResolvedValueOnce([fakeAddress]) // endereço de cobrança (cartão)
         // confirmOrderPayment (inline): order → buyer → listing
         .mockResolvedValueOnce([
           {
@@ -296,8 +297,8 @@ describe('OrdersService', () => {
       selectChain.where
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
-        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
-        .mockResolvedValueOnce([fakeAddress]); // endereco de cobranca
+        .mockResolvedValueOnce([fakeAddress]) // endereço de entrega (salvo)
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]); // buyer
 
       mockPagarmeService.post.mockResolvedValueOnce({
         id: 'or_card',
@@ -336,6 +337,7 @@ describe('OrdersService', () => {
       selectChain.where
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
+        .mockResolvedValueOnce([fakeAddress]) // endereço de entrega (salvo)
         .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
         .mockResolvedValueOnce([
           {

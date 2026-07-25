@@ -179,6 +179,72 @@ export class OrdersService {
       .where(eq(schema.users.id, buyerId));
   }
 
+  /**
+   * Endereço de entrega do pedido, aceitando os DOIS caminhos do checkout.
+   *
+   * O comprador escolhe um endereço salvo ou digita um novo — a política de
+   * entrega é dele. Os dois têm que terminar numa linha de `addresses`, porque
+   * é de lá que saem o destino da etiqueta e o `billing_address` do cartão.
+   * O digitado era descartado: o pedido nascia sem destino e o cartão era
+   * recusado pela Pagar.me (validation_error | billing), inclusive em retirada.
+   *
+   * O endereço novo fica salvo na conta do comprador — é o mesmo cadastro de
+   * "Meus endereços", e ele não precisa redigitar na próxima compra. Vira
+   * padrão só se for o primeiro (não mexe na escolha de quem já tem outros).
+   */
+  private async resolverEnderecoDeEntrega(
+    buyerId: string,
+    dto: CreateOrderDto,
+  ): Promise<typeof schema.addresses.$inferSelect | null> {
+    if (dto.addressId) {
+      const [existente] = await this.db
+        .select()
+        .from(schema.addresses)
+        .where(eq(schema.addresses.id, dto.addressId));
+
+      if (!existente) {
+        throw new BadRequestException('Endereço de entrega não encontrado.');
+      }
+      // Endereço de outra pessoa viraria etiqueta para a casa dela.
+      if (existente.userId !== buyerId) {
+        throw new ForbiddenException(
+          'Este endereço não pertence à sua conta.',
+        );
+      }
+      return existente;
+    }
+
+    if (!dto.shippingAddress) return null;
+
+    const novo = dto.shippingAddress;
+    const jaTem = await this.db
+      .select({ id: schema.addresses.id })
+      .from(schema.addresses)
+      .where(eq(schema.addresses.userId, buyerId));
+
+    const [criado] = await this.db
+      .insert(schema.addresses)
+      .values({
+        userId: buyerId,
+        recipientName: novo.recipientName,
+        street: novo.street,
+        number: novo.number,
+        complement: novo.complement || null,
+        neighborhood: novo.neighborhood || null,
+        city: novo.city,
+        state: novo.state,
+        zip: String(novo.zip).replace(/\D/g, ''),
+        country: (novo.country || 'BR').toUpperCase(),
+        isDefault: jaTem.length === 0,
+      })
+      .returning();
+
+    this.logger.log(
+      `Endereço novo salvo no checkout para ${buyerId}: ${criado.id}`,
+    );
+    return criado;
+  }
+
   async createOrders(buyerId: string, dto: CreateOrderDto) {
     if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException('O carrinho está vazio');
@@ -366,6 +432,15 @@ export class OrdersService {
       sellerRecipientId = sellerProfile.recipientId;
     }
 
+    // Endereço de entrega: salvo OU digitado agora. Os dois caminhos precisam
+    // terminar com uma linha em `addresses`, porque dela saem o destino da
+    // etiqueta E o `billing_address` do cartão.
+    //
+    // Resolvido só DEPOIS das validações e do gate de recebedor: um endereço
+    // novo é uma escrita, e criar linha para um checkout que vai ser recusado
+    // deixaria lixo no cadastro do comprador.
+    const enderecoEntrega = await this.resolverEnderecoDeEntrega(buyerId, dto);
+
     // Transação atômica: bloqueia o listing + cria o pedido
     const order = await this.db.transaction(async (tx) => {
       await tx
@@ -381,7 +456,7 @@ export class OrdersService {
           listingId: listing.id,
           // Endereço de entrega do checkout — antes era descartado, deixando o
           // pedido sem destino e travando a geração da etiqueta.
-          addressId: dto.addressId ?? null,
+          addressId: enderecoEntrega?.id ?? null,
           totalInCents,
           shippingInCents,
           // Só faz sentido com envio: em retirada não há etiqueta.
@@ -531,11 +606,8 @@ export class OrdersService {
       country: string;
     } | null = null;
 
-    if (instrument === 'credit_card' && dto.addressId) {
-      const [end] = await this.db
-        .select()
-        .from(schema.addresses)
-        .where(eq(schema.addresses.id, dto.addressId));
+    if (instrument === 'credit_card') {
+      const end = enderecoEntrega;
 
       if (end) {
         billingAddress = {
