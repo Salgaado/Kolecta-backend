@@ -116,6 +116,9 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
 
   // ─── Perfil público da loja (editável pelo vendedor) ────────────────────────
   storeName: text('store_name'),
+  // Foto da loja. Upload próprio (R2, via /api/media/upload) ou a imagem do
+  // Clerk copiada no primeiro acesso. null = cai nas iniciais no front.
+  avatarUrl: text('avatar_url'),
   city: text('city'),
   state: text('state'),
   website: text('website'),

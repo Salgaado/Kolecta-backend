@@ -23,6 +23,7 @@ export class SellersService {
         name: users.name,
         email: users.email,
         bio: sellerProfiles.bio,
+        avatarUrl: sellerProfiles.avatarUrl,
         isVerified: sellerProfiles.isVerified,
         createdAt: users.createdAt,
       })
@@ -126,6 +127,7 @@ export class SellersService {
 
     return {
       storeName: profile?.storeName ?? null,
+      avatarUrl: profile?.avatarUrl ?? null,
       bio: profile?.bio ?? null,
       city: profile?.city ?? null,
       state: profile?.state ?? null,
@@ -152,6 +154,7 @@ export class SellersService {
     userId: string,
     dto: {
       storeName?: string;
+      avatarUrl?: string;
       bio?: string;
       city?: string;
       state?: string;
@@ -162,6 +165,8 @@ export class SellersService {
     await this.ensureProfile(userId);
     const patch: Record<string, unknown> = {};
     if (dto.storeName !== undefined) patch.storeName = dto.storeName;
+    // String vazia = remover a foto (volta para as iniciais)
+    if (dto.avatarUrl !== undefined) patch.avatarUrl = dto.avatarUrl || null;
     if (dto.bio !== undefined) patch.bio = dto.bio;
     if (dto.city !== undefined) patch.city = dto.city;
     if (dto.state !== undefined) patch.state = dto.state;

@@ -37,6 +37,12 @@ export class UpdateSellerProfileDto {
   @MaxLength(200)
   website?: string;
 
+  /** URL da foto da loja (R2 ou Clerk). String vazia remove a foto. */
+  @IsString()
+  @IsOptional()
+  @MaxLength(500)
+  avatarUrl?: string;
+
   @IsArray()
   @IsString({ each: true })
   @IsOptional()
