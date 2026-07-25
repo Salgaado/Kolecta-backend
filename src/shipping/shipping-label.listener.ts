@@ -66,13 +66,29 @@ export class ShippingLabelListener {
     await this.emitir(event.orderId, 'arremate de leilão');
   }
 
+  /**
+   * O e-mail com o PDF sai daqui, e não do fluxo da compra: a etiqueta também é
+   * emitida pelo botão "tentar de novo" do vendedor, que não passa por evento
+   * de pedido. Quem emite avisa; quem avisa dispara o e-mail.
+   */
+  @OnEvent('shipping.label.ready')
+  async aoFicarPronta(evento: {
+    orderId: string;
+    labelUrl: string | null;
+  }): Promise<void> {
+    try {
+      await this.enviarEtiquetaAoVendedor(evento.orderId, evento.labelUrl);
+    } catch (err: any) {
+      this.logger.error(
+        `Falha ao enviar a etiqueta do pedido ${evento.orderId}: ${err?.message ?? err}`,
+      );
+    }
+  }
+
   private async emitir(orderId: string, origem: string): Promise<void> {
     try {
-      const resultado = await this.shipping.emitirEtiquetaDoPedido(orderId);
-      if (resultado.jaEstavaPronta) return;
-
-      await this.enviarEtiquetaAoVendedor(orderId, resultado.labelUrl);
-      this.logger.log(`Etiqueta de ${origem} pronta e enviada (${orderId}).`);
+      await this.shipping.emitirEtiquetaDoPedido(orderId);
+      this.logger.log(`Etiqueta de ${origem} emitida (${orderId}).`);
     } catch (err: any) {
       // A venda já aconteceu — etiqueta que falha não pode derrubar nada.
       this.logger.error(

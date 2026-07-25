@@ -577,3 +577,100 @@ describe('ShippingService — emissão automática da etiqueta', () => {
     expect(db.patches.some((p: any) => p.shippingCartId === 'cart-9')).toBe(true);
   });
 });
+
+/**
+ * O envio do PDF morava no listener de `order.paid`/`auction.won`. O botão
+ * "tentar de novo" chama o serviço direto, sem evento de pedido — a etiqueta
+ * saía e o vendedor nunca recebia o e-mail. Aconteceu na primeira etiqueta
+ * real: status `ready`, PDF gerado, caixa de entrada vazia.
+ */
+describe('ShippingService — aviso de etiqueta pronta', () => {
+  const pedido = {
+    id: 'ord-1',
+    addressId: 'addr-to',
+    buyerId: 'buyer-1',
+    sellerId: 'seller-1',
+    listingId: 'lst-1',
+    totalInCents: 15000,
+    status: 'paid',
+    deliveryMethod: 'shipping',
+    shippingServiceId: 2,
+  };
+
+  const fazerDb = (over: any = {}) => {
+    const db: any = {
+      query: {
+        orders: { findFirst: jest.fn().mockResolvedValue({ ...pedido, ...over }) },
+        addresses: {
+          findFirst: jest.fn().mockResolvedValue({ ...toAddress, userId: 'buyer-1' }),
+        },
+        users: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValueOnce({ email: 'b@x.com', name: 'C', cpf: '52998224725' })
+            .mockResolvedValueOnce({ email: 's@x.com', name: 'V', cpf: '11144477735' }),
+        },
+        listings: { findFirst: jest.fn().mockResolvedValue({ title: 'Item' }) },
+      },
+    };
+    db.select = jest.fn().mockReturnValue(db);
+    db.from = jest.fn().mockReturnValue(db);
+    db.where = jest
+      .fn()
+      .mockResolvedValue([{ ...fromAddress, userId: 'seller-1', isDefault: true }]);
+    db.update = jest.fn().mockReturnValue({
+      set: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
+    });
+    return db;
+  };
+
+  beforeEach(() => {
+    process.env.MELHOR_ENVIO_API_URL = 'https://sandbox.melhorenvio.com.br/api/v2/me';
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+  });
+
+  it('avisa quando termina de emitir', async () => {
+    const emitter = { emit: jest.fn() };
+    const httpPost = jest.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/cart')) return of({ data: { id: 'cart-9' } });
+      if (url.endsWith('/shipment/print'))
+        return of({ data: { url: 'https://me/etiqueta.pdf' } });
+      return of({ data: {} });
+    });
+    const service = new ShippingService(
+      { post: httpPost, get: jest.fn(() => { throw new Error('sem consulta'); }) } as any,
+      fazerDb() as any,
+      emitter as any,
+    );
+
+    await service.emitirEtiquetaDoPedido('ord-1');
+
+    expect(emitter.emit).toHaveBeenCalledWith('shipping.label.ready', {
+      orderId: 'ord-1',
+      labelUrl: 'https://me/etiqueta.pdf',
+    });
+  });
+
+  it('avisa também quando a etiqueta JÁ estava pronta (e-mail que não saiu)', async () => {
+    const emitter = { emit: jest.fn() };
+    const db = fazerDb({
+      shippingLabelStatus: 'ready',
+      shippingLabelUrl: 'https://me/etiqueta.pdf',
+      shippingCartId: 'cart-9',
+    });
+    const service = new ShippingService(
+      { post: jest.fn(), get: jest.fn() } as any,
+      db as any,
+      emitter as any,
+    );
+
+    const r = await service.emitirEtiquetaDoPedido('ord-1');
+
+    expect(r.jaEstavaPronta).toBe(true);
+    // Reenvio não acontece: o MailService é idempotente por template+refId+to.
+    expect(emitter.emit).toHaveBeenCalledWith('shipping.label.ready', {
+      orderId: 'ord-1',
+      labelUrl: 'https://me/etiqueta.pdf',
+    });
+  });
+});

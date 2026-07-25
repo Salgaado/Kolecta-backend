@@ -9,6 +9,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { firstValueFrom } from 'rxjs';
 import { eq } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
@@ -28,6 +29,7 @@ export class ShippingService {
     private readonly httpService: HttpService,
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
+    private readonly eventEmitter?: EventEmitter2,
   ) {}
 
   async quoteShipping(data: QuoteShippingDto) {
@@ -313,6 +315,11 @@ export class ShippingService {
 
     // Já pronta: não refaz nada nem reenvia e-mail.
     if (order.shippingLabelStatus === 'ready' && order.shippingLabelUrl) {
+      // Avisa mesmo já estando pronta: se o e-mail não chegou a sair (era o
+      // caso do retry, que não passava por evento nenhum), esta é a chance de
+      // enviar. Reenvio não acontece — o MailService é idempotente por
+      // (template + refId + destinatário).
+      this.avisarEtiquetaPronta(orderId, order.shippingLabelUrl);
       return {
         status: 'ready',
         cartId: order.shippingCartId ?? null,
@@ -361,6 +368,7 @@ export class ShippingService {
         `Etiqueta emitida (pedido ${orderId}): cart ${cartId}` +
           (trackingCode ? `, rastreio ${trackingCode}` : ''),
       );
+      this.avisarEtiquetaPronta(orderId, labelUrl);
 
       return {
         status: 'ready',
@@ -513,6 +521,18 @@ export class ShippingService {
       .from(schema.addresses)
       .where(eq(schema.addresses.userId, sellerId));
     return enderecos.find((e) => e.isDefault) ?? enderecos[0] ?? null;
+  }
+
+  /**
+   * Anuncia que a etiqueta está pronta.
+   *
+   * O envio do PDF ficava preso no listener de `order.paid`/`auction.won`, que
+   * só dispara na compra. O retry chama este serviço direto — a etiqueta saía e
+   * o vendedor nunca recebia o e-mail. Agora quem emite avisa, e o e-mail
+   * acontece qualquer que tenha sido o gatilho.
+   */
+  private avisarEtiquetaPronta(orderId: string, labelUrl: string | null): void {
+    this.eventEmitter?.emit('shipping.label.ready', { orderId, labelUrl });
   }
 
   /**
