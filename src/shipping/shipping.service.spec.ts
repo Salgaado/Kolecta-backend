@@ -694,3 +694,36 @@ describe('etiqueta — a URL do print não é um arquivo', () => {
     expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
   });
 });
+
+/**
+ * A JeT recusa o carrinho sem telefone ("O campo from.phone é obrigatório
+ * quando service for 33"), enquanto Correios e Loggi aceitam — por isso uma
+ * etiqueta saiu e a seguinte não. Verificado contra a produção: com telefone,
+ * o mesmo payload que dava 422 passou a devolver 201.
+ */
+describe('ShippingService — telefone das pontas', () => {
+  const chamar = (phone: any, env?: string) => {
+    if (env === undefined) delete process.env.SHIPPING_FALLBACK_PHONE;
+    else process.env.SHIPPING_FALLBACK_PHONE = env;
+    const service = new ShippingService({} as any, {} as any);
+    return (service as any).buildPartyPhone(phone);
+  };
+
+  afterEach(() => delete process.env.SHIPPING_FALLBACK_PHONE);
+
+  it('usa o telefone da pessoa, só dígitos', () => {
+    expect(chamar('(21) 97955-5251')).toBe('21979555251');
+  });
+
+  it('cai no telefone da plataforma quando a pessoa não tem', () => {
+    // 10 dos 11 vendedores aptos estavam sem telefone quando isto foi escrito:
+    // derrubar a venda por causa disso seria pior que usar o contato da
+    // Kolecta, que é quem compra a etiqueta.
+    expect(chamar(null, '11961716464')).toBe('11961716464');
+    expect(chamar('123', '11961716464')).toBe('11961716464');
+  });
+
+  it('devolve vazio quando não há nem um nem outro', () => {
+    expect(chamar(null)).toBe('');
+  });
+});

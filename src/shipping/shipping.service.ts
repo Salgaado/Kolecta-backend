@@ -214,11 +214,13 @@ export class ShippingService {
         email: seller?.email,
         name: fromAddress.recipientName || seller?.name,
         document: fromDoc,
+        phone: seller?.phone,
       }),
       to: this.buildParty(toAddress, {
         email: buyer?.email,
         name: toAddress.recipientName || buyer?.name,
         document: toDoc,
+        phone: buyer?.phone,
       }),
       products: [
         {
@@ -652,7 +654,11 @@ export class ShippingService {
    * exatamente o que já custou tempo antes.
    */
   private motivoDaFalha(err: any): string {
-    const data = err?.response?.data ?? err?.response ?? null;
+    // `createCart` embrulha o erro da API em `{ message, details }`. Ler só a
+    // mensagem de fora devolvia "Falha ao gerar etiqueta no Melhor Envio." e
+    // jogava fora o motivo real — foi o que escondeu a exigência de telefone.
+    const data =
+      err?.response?.details ?? err?.response?.data ?? err?.response ?? null;
     if (typeof data?.message === 'string' && data.message) return data.message;
     if (typeof data?.error === 'string' && data.error) return data.error;
     const primeiro = data?.errors && Object.values(data.errors)[0];
@@ -729,13 +735,39 @@ export class ShippingService {
     return digits.length >= 11 ? digits : undefined;
   }
 
+  /**
+   * Telefone da ponta, só dígitos.
+   *
+   * Transportadoras como a JeT RECUSAM o carrinho sem ele ("O campo from.phone
+   * é obrigatório quando service for 33"), enquanto Correios e Loggi aceitam —
+   * foi por isso que uma etiqueta saiu e a seguinte não. Como a coluna
+   * `users.phone` é recente e quase ninguém preencheu, cai no telefone de
+   * contato da plataforma em vez de derrubar a venda: quem compra a etiqueta é
+   * a Kolecta, então ser o contato dela no envio é defensável.
+   */
+  private buildPartyPhone(raw?: string | null): string {
+    const digits = String(raw ?? '').replace(/\D/g, '');
+    if (digits.length >= 10) return digits;
+    const fallback = String(process.env.SHIPPING_FALLBACK_PHONE ?? '').replace(
+      /\D/g,
+      '',
+    );
+    return fallback.length >= 10 ? fallback : '';
+  }
+
   private buildParty(
     addr: typeof schema.addresses.$inferSelect,
-    extra: { email?: string | null; name?: string | null; document?: string },
+    extra: {
+      email?: string | null;
+      name?: string | null;
+      document?: string;
+      phone?: string | null;
+    },
   ) {
     return {
       name: extra.name || addr.recipientName,
       email: extra.email || undefined,
+      phone: this.buildPartyPhone(extra.phone),
       document: extra.document || undefined,
       address: addr.street,
       complement: addr.complement || undefined,
