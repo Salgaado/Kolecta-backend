@@ -262,6 +262,323 @@ export class ShippingService {
     }
   }
 
+  // ── Emissão automática da etiqueta ─────────────────────────────────────────
+
+  /**
+   * Emite a etiqueta do pedido de ponta a ponta.
+   *
+   * Compra direta e arremate de leilão caem aqui pelo mesmo caminho: o que muda
+   * é só de onde vem o serviço (o comprador escolhe no checkout; no leilão não
+   * há checkout, então cotamos e pegamos o mais barato).
+   *
+   * Sequência no Melhor Envio: `cart` → `checkout` (debita a carteira da
+   * Kolecta) → `generate` → `print`. O PDF vai por e-mail ao REMETENTE (o
+   * vendedor), que só posta.
+   *
+   * Idempotente por `orders.shippingCartId`: o checkout gasta dinheiro de
+   * verdade, então reemitir tem que ser impossível por acidente. Chamar de novo
+   * retoma de onde parou em vez de criar outro carrinho.
+   *
+   * Falha NUNCA é silenciosa: o motivo fica em `shippingLabelError` e o status
+   * em `failed`, para o vendedor e o admin verem e poderem tentar de novo.
+   * Saldo insuficiente na carteira do Melhor Envio cai exatamente aqui.
+   */
+  async emitirEtiquetaDoPedido(orderId: string): Promise<{
+    status: string;
+    cartId: string | null;
+    labelUrl: string | null;
+    trackingCode: string | null;
+    jaEstavaPronta: boolean;
+  }> {
+    const order = await this.db.query.orders.findFirst({
+      where: eq(schema.orders.id, orderId),
+    });
+    if (!order) throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
+
+    // Já pronta: não refaz nada nem reenvia e-mail.
+    if (order.shippingLabelStatus === 'ready' && order.shippingLabelUrl) {
+      return {
+        status: 'ready',
+        cartId: order.shippingCartId ?? null,
+        labelUrl: order.shippingLabelUrl,
+        trackingCode: order.trackingCode ?? null,
+        jaEstavaPronta: true,
+      };
+    }
+
+    try {
+      const cartId = order.shippingCartId ?? (await this.montarCarrinho(order));
+      await this.registrarEtiqueta(orderId, { status: 'cart', cartId });
+
+      await this.pagarEnvio(cartId);
+      await this.registrarEtiqueta(orderId, { status: 'paid', cartId });
+
+      await this.gerarEnvio(cartId);
+      await this.registrarEtiqueta(orderId, { status: 'generated', cartId });
+
+      const labelUrl = await this.imprimirEnvio(cartId);
+      const trackingCode = await this.buscarRastreio(cartId);
+
+      await this.registrarEtiqueta(orderId, {
+        status: 'ready',
+        cartId,
+        labelUrl,
+        trackingCode,
+        erro: null,
+      });
+
+      this.logger.log(
+        `Etiqueta emitida (pedido ${orderId}): cart ${cartId}` +
+          (trackingCode ? `, rastreio ${trackingCode}` : ''),
+      );
+
+      return {
+        status: 'ready',
+        cartId,
+        labelUrl,
+        trackingCode,
+        jaEstavaPronta: false,
+      };
+    } catch (err: any) {
+      const motivo = this.motivoDaFalha(err);
+      await this.registrarEtiqueta(orderId, { status: 'failed', erro: motivo });
+      this.logger.error(
+        `Falha ao emitir etiqueta (pedido ${orderId}): ${motivo}`,
+      );
+      throw new HttpException(
+        { message: `Falha ao emitir a etiqueta: ${motivo}`, orderId },
+        err?.status && err.status < 500 ? err.status : HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  /**
+   * Valida as duas pontas e cria o envio no carrinho.
+   *
+   * A validação é o ponto em que a Kolecta confere que o envio é mesmo daquela
+   * compra: o endereço de destino tem que ser do COMPRADOR do pedido e o de
+   * origem do VENDEDOR. Sem isso, um address_id trocado emitiria etiqueta para
+   * a casa de outra pessoa.
+   */
+  private async montarCarrinho(
+    order: typeof schema.orders.$inferSelect,
+  ): Promise<string> {
+    if ((order.deliveryMethod ?? 'shipping') !== 'shipping') {
+      throw new BadRequestException(
+        'Pedido é de retirada em mãos — não há etiqueta a emitir.',
+      );
+    }
+    if (order.status !== 'paid') {
+      throw new BadRequestException(
+        `Pedido ainda não está pago (status "${order.status}") — etiqueta só depois do pagamento.`,
+      );
+    }
+    if (!order.addressId) {
+      throw new BadRequestException(
+        'Pedido sem endereço de entrega — impossível montar a etiqueta.',
+      );
+    }
+
+    const destino = await this.db.query.addresses.findFirst({
+      where: eq(schema.addresses.id, order.addressId),
+    });
+    if (!destino) {
+      throw new BadRequestException(
+        'Endereço de entrega do pedido não encontrado.',
+      );
+    }
+    if (destino.userId !== order.buyerId) {
+      throw new BadRequestException(
+        'Endereço de entrega não pertence ao comprador do pedido.',
+      );
+    }
+
+    const origem = await this.enderecoDoVendedor(order.sellerId);
+    if (!origem) {
+      throw new BadRequestException(
+        'O vendedor não tem endereço de origem cadastrado — sem ele o Melhor ' +
+          'Envio não emite a etiqueta.',
+      );
+    }
+
+    const listing = order.listingId
+      ? await this.db.query.listings.findFirst({
+          where: eq(schema.listings.id, order.listingId),
+        })
+      : null;
+
+    const pacote = this.resolvePackage({} as QuoteShippingDto, listing ?? null);
+    const serviceId = await this.resolverServico(order, origem, destino, pacote);
+
+    const resultado = await this.createCart(
+      {
+        order_id: order.id,
+        service_id: serviceId,
+        origin_address_id: origem.id,
+        volumes: {
+          weight_kg: pacote.weight,
+          width_cm: pacote.width,
+          height_cm: pacote.height,
+          length_cm: pacote.length,
+        },
+      } as GenerateLabelDto,
+      // Emissão automática: quem dispara é o sistema, não o vendedor logado.
+      undefined,
+    );
+
+    if (!resultado?.cartId) {
+      throw new HttpException(
+        'Melhor Envio não devolveu o id do envio.',
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+    return String(resultado.cartId);
+  }
+
+  /**
+   * Serviço (PAC/SEDEX/Jadlog...) a usar na etiqueta.
+   *
+   * Na compra direta usamos o que o COMPRADOR escolheu e pagou. No leilão não
+   * há checkout, então cotamos na hora e pegamos o mais barato — quem paga a
+   * etiqueta é a Kolecta.
+   */
+  private async resolverServico(
+    order: typeof schema.orders.$inferSelect,
+    origem: typeof schema.addresses.$inferSelect,
+    destino: typeof schema.addresses.$inferSelect,
+    pacote: { weight: number; width: number; height: number; length: number },
+  ): Promise<number> {
+    if (order.shippingServiceId) return order.shippingServiceId;
+
+    const cotacao = await this.quoteShipping({
+      from_cep: String(origem.zip),
+      to_cep: String(destino.zip),
+      listing_id: order.listingId ?? undefined,
+      weight_kg: pacote.weight,
+      width_cm: pacote.width,
+      height_cm: pacote.height,
+      length_cm: pacote.length,
+    } as QuoteShippingDto);
+
+    const validas = (cotacao?.options ?? []).filter(
+      (o: any) => o?.raw?.id && Number.isFinite(o.price),
+    );
+    if (validas.length === 0) {
+      throw new BadRequestException(
+        'Nenhum serviço de entrega disponível para este trajeto no Melhor Envio.',
+      );
+    }
+    const maisBarata = validas.sort((a: any, b: any) => a.price - b.price)[0];
+    this.logger.log(
+      `Pedido ${order.id} sem serviço escolhido (leilão): usando ` +
+        `${maisBarata.carrier} ${maisBarata.service} (R$ ${maisBarata.price}).`,
+    );
+    return Number(maisBarata.raw.id);
+  }
+
+  /** Endereço de origem do vendedor (padrão, ou o primeiro). */
+  private async enderecoDoVendedor(sellerId: string) {
+    const enderecos = await this.db
+      .select()
+      .from(schema.addresses)
+      .where(eq(schema.addresses.userId, sellerId));
+    return enderecos.find((e) => e.isDefault) ?? enderecos[0] ?? null;
+  }
+
+  /** `POST /me/shipment/checkout` — debita a carteira da Kolecta. */
+  private async pagarEnvio(cartId: string) {
+    return this.postEnvio('/shipment/checkout', { orders: [cartId] });
+  }
+
+  /** `POST /me/shipment/generate` — fecha o envio e libera a impressão. */
+  private async gerarEnvio(cartId: string) {
+    return this.postEnvio('/shipment/generate', { orders: [cartId] });
+  }
+
+  /** `POST /me/shipment/print` — devolve a URL do PDF da etiqueta. */
+  private async imprimirEnvio(cartId: string): Promise<string> {
+    const data = await this.postEnvio('/shipment/print', {
+      mode: 'private',
+      orders: [cartId],
+    });
+    const url = data?.url ?? data?.[cartId]?.url ?? null;
+    if (!url) {
+      throw new HttpException(
+        'Melhor Envio não devolveu a URL da etiqueta.',
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+    return String(url);
+  }
+
+  /**
+   * Código de rastreio do envio. Best-effort: a etiqueta já está emitida, então
+   * não ter o rastreio ainda não invalida nada — o e-mail sai do mesmo jeito.
+   */
+  private async buscarRastreio(cartId: string): Promise<string | null> {
+    try {
+      const data = await this.postEnvio('/shipment/tracking', {
+        orders: [cartId],
+      });
+      const item = data?.[cartId] ?? Object.values(data ?? {})[0];
+      return (item as any)?.tracking ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async postEnvio(path: string, body: unknown): Promise<any> {
+    const response = await firstValueFrom(
+      this.httpService.post(`${this.baseUrl}${path}`, body, {
+        headers: this.authHeaders(),
+        timeout: 20000,
+      }),
+    );
+    return response.data;
+  }
+
+  /** Persiste o andamento da emissão (cada etapa avança o status). */
+  private async registrarEtiqueta(
+    orderId: string,
+    dados: {
+      status: string;
+      cartId?: string | null;
+      labelUrl?: string | null;
+      trackingCode?: string | null;
+      erro?: string | null;
+    },
+  ) {
+    const patch: Record<string, unknown> = {
+      shippingLabelStatus: dados.status,
+      shippingLabelAt: new Date(),
+      updatedAt: new Date(),
+    };
+    if (dados.cartId !== undefined) patch.shippingCartId = dados.cartId;
+    if (dados.labelUrl !== undefined) patch.shippingLabelUrl = dados.labelUrl;
+    if (dados.trackingCode) patch.trackingCode = dados.trackingCode;
+    if (dados.erro !== undefined) patch.shippingLabelError = dados.erro;
+
+    await this.db
+      .update(schema.orders)
+      .set(patch)
+      .where(eq(schema.orders.id, orderId));
+  }
+
+  /**
+   * Mensagem legível da falha. O Melhor Envio responde erro em formatos
+   * diferentes conforme a etapa, e "Falha ao gerar etiqueta" sem motivo foi
+   * exatamente o que já custou tempo antes.
+   */
+  private motivoDaFalha(err: any): string {
+    const data = err?.response?.data ?? err?.response ?? null;
+    if (typeof data?.message === 'string' && data.message) return data.message;
+    if (typeof data?.error === 'string' && data.error) return data.error;
+    const primeiro = data?.errors && Object.values(data.errors)[0];
+    if (Array.isArray(primeiro) && primeiro[0]) return String(primeiro[0]);
+    if (typeof err?.message === 'string' && err.message) return err.message;
+    return 'erro desconhecido no Melhor Envio';
+  }
+
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   /**

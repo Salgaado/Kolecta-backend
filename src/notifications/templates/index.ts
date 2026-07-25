@@ -9,6 +9,7 @@ import * as welcome from './welcome';
 import * as listingApproved from './listing-approved';
 import * as listingRejected from './listing-rejected';
 import * as orderShipped from './order-shipped';
+import * as shippingLabelReady from './shipping-label-ready';
 import * as bidReceived from './bid-received';
 import * as bidOutbid from './bid-outbid';
 import * as auctionWon from './auction-won';
@@ -35,6 +36,7 @@ export const TEMPLATES = {
   'listing-approved': listingApproved,
   'listing-rejected': listingRejected,
   'order-shipped': orderShipped,
+  'shipping-label-ready': shippingLabelReady,
   'bid-received': bidReceived,
   'bid-outbid': bidOutbid,
   'auction-won': auctionWon,

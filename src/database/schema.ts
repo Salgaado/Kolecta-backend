@@ -424,6 +424,27 @@ export const orders = sqliteTable('orders', {
   // Código de rastreamento do envio
   trackingCode: text('tracking_code'),
 
+  // ── Etiqueta Melhor Envio (emissão automática) ──────────────────────────────
+  // Serviço escolhido pelo comprador no checkout (PAC, SEDEX, Jadlog...). Sem
+  // ele só sabemos QUANTO foi cobrado, não POR QUAL transportadora — e a
+  // etiqueta sairia de um serviço diferente do que o comprador pagou.
+  // null em leilão: não há checkout, então a emissão cota e pega a mais barata.
+  shippingServiceId: integer('shipping_service_id'),
+  shippingServiceName: text('shipping_service_name'),
+  // ID do envio no carrinho do Melhor Envio. É a chave de idempotência da
+  // emissão: com ele preenchido, NÃO se cria outro carrinho — cada checkout
+  // debita dinheiro real da carteira da Kolecta.
+  shippingCartId: text('shipping_cart_id'),
+  // URL do PDF da etiqueta (retorno do /me/shipment/print).
+  shippingLabelUrl: text('shipping_label_url'),
+  // pending | cart | paid | generated | ready | failed
+  // ready = PDF emitido E e-mail enviado ao remetente.
+  shippingLabelStatus: text('shipping_label_status'),
+  // Motivo da última falha, mostrado ao vendedor e ao admin. Saldo insuficiente
+  // na carteira do Melhor Envio cai aqui — precisa ser visível, não silencioso.
+  shippingLabelError: text('shipping_label_error'),
+  shippingLabelAt: integer('shipping_label_at', { mode: 'timestamp' }),
+
   // ── Controle Financeiro ──
   // Valor líquido que o vendedor recebe (após taxas)
   sellerNetInCents: integer('seller_net_in_cents'),

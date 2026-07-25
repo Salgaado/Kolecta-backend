@@ -381,6 +381,13 @@ export class OrdersService {
           addressId: dto.addressId ?? null,
           totalInCents,
           shippingInCents,
+          // Só faz sentido com envio: em retirada não há etiqueta.
+          shippingServiceId:
+            deliveryMethod === 'pickup' ? null : (dto.shippingServiceId ?? null),
+          shippingServiceName:
+            deliveryMethod === 'pickup'
+              ? null
+              : (dto.shippingServiceName ?? null),
           deliveryMethod,
           status: 'pending',
           walletAmountInCents: walletDeducted,

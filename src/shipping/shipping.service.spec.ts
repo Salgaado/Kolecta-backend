@@ -312,3 +312,214 @@ describe('ShippingService — cotação (POST /shipment/calculate)', () => {
     expect(result.options.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Emissão automática (cart → checkout → generate → print).
+ *
+ * O que está sendo protegido aqui não é o "caminho feliz" — é o contrário:
+ * cada `checkout` debita dinheiro real da carteira da Kolecta, e cada etiqueta
+ * errada manda a peça de alguém para o endereço de outra pessoa.
+ */
+describe('ShippingService — emissão automática da etiqueta', () => {
+  const BASE_URL = 'https://sandbox.melhorenvio.com.br/api/v2/me';
+
+  const pedidoPago = {
+    id: 'ord-1',
+    addressId: 'addr-to',
+    buyerId: 'buyer-1',
+    sellerId: 'seller-1',
+    listingId: 'lst-1',
+    totalInCents: 15000,
+    status: 'paid',
+    deliveryMethod: 'shipping',
+    shippingServiceId: 2,
+    shippingCartId: null,
+    shippingLabelStatus: null,
+    shippingLabelUrl: null,
+  };
+
+  const fazerDb = (over: Record<string, any> = {}) => {
+    const db: any = {
+      query: {
+        orders: { findFirst: jest.fn().mockResolvedValue(pedidoPago) },
+        addresses: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ ...toAddress, userId: 'buyer-1' }),
+        },
+        users: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValueOnce({
+              email: 'b@x.com',
+              name: 'Comprador',
+              cpf: '52998224725',
+            })
+            .mockResolvedValueOnce({
+              email: 's@x.com',
+              name: 'Vendedor',
+              cpf: '11144477735',
+            }),
+        },
+        listings: {
+          findFirst: jest.fn().mockResolvedValue({ title: 'Hot Wheels RLC' }),
+        },
+      },
+      ...over,
+    };
+    // enderecoDoVendedor: select().from().where()
+    db.select = jest.fn().mockReturnValue(db);
+    db.from = jest.fn().mockReturnValue(db);
+    db.where = jest
+      .fn()
+      .mockResolvedValue([{ ...fromAddress, userId: 'seller-1', isDefault: true }]);
+    // registrarEtiqueta: update().set().where()
+    db.updateWhere = jest.fn().mockResolvedValue(undefined);
+    db.update = jest.fn().mockReturnValue({
+      set: jest.fn().mockImplementation((patch: any) => {
+        db.patches.push(patch);
+        return { where: db.updateWhere };
+      }),
+    });
+    db.patches = [] as any[];
+    return db;
+  };
+
+  beforeEach(() => {
+    process.env.MELHOR_ENVIO_API_URL = BASE_URL;
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+  });
+
+  it('não gasta de novo quando a etiqueta já está pronta', async () => {
+    const db = fazerDb();
+    db.query.orders.findFirst.mockResolvedValue({
+      ...pedidoPago,
+      shippingLabelStatus: 'ready',
+      shippingLabelUrl: 'https://me/etiqueta.pdf',
+      shippingCartId: 'cart-1',
+    });
+    const httpPost = jest.fn();
+    const service = new ShippingService(
+      { post: httpPost } as any,
+      db as any,
+    );
+
+    const r = await service.emitirEtiquetaDoPedido('ord-1');
+
+    expect(r.jaEstavaPronta).toBe(true);
+    // Nenhuma chamada: repetir o checkout debitaria a carteira outra vez.
+    expect(httpPost).not.toHaveBeenCalled();
+  });
+
+  it('recusa quando o endereço de entrega não é do comprador do pedido', async () => {
+    const db = fazerDb();
+    db.query.addresses.findFirst.mockResolvedValue({
+      ...toAddress,
+      userId: 'outra-pessoa',
+    });
+    const httpPost = jest.fn();
+    const service = new ShippingService({ post: httpPost } as any, db as any);
+
+    await expect(service.emitirEtiquetaDoPedido('ord-1')).rejects.toThrow(
+      /não pertence ao comprador/i,
+    );
+    expect(httpPost).not.toHaveBeenCalled();
+  });
+
+  it('recusa pedido de retirada em mãos', async () => {
+    const db = fazerDb();
+    db.query.orders.findFirst.mockResolvedValue({
+      ...pedidoPago,
+      deliveryMethod: 'pickup',
+    });
+    const httpPost = jest.fn();
+    const service = new ShippingService({ post: httpPost } as any, db as any);
+
+    await expect(service.emitirEtiquetaDoPedido('ord-1')).rejects.toThrow(
+      /retirada em mãos/i,
+    );
+    expect(httpPost).not.toHaveBeenCalled();
+  });
+
+  it('recusa pedido que ainda não foi pago', async () => {
+    const db = fazerDb();
+    db.query.orders.findFirst.mockResolvedValue({
+      ...pedidoPago,
+      status: 'pending_payment',
+    });
+    const service = new ShippingService({ post: jest.fn() } as any, db as any);
+
+    await expect(service.emitirEtiquetaDoPedido('ord-1')).rejects.toThrow(
+      /ainda não está pago/i,
+    );
+  });
+
+  it('recusa quando o vendedor não tem endereço de origem', async () => {
+    const db = fazerDb();
+    db.where.mockResolvedValue([]);
+    const service = new ShippingService({ post: jest.fn() } as any, db as any);
+
+    await expect(service.emitirEtiquetaDoPedido('ord-1')).rejects.toThrow(
+      /endereço de origem/i,
+    );
+  });
+
+  it('percorre cart → checkout → generate → print e grava o resultado', async () => {
+    const db = fazerDb();
+    const httpPost = jest.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/cart')) return of({ data: { id: 'cart-9' } });
+      if (url.endsWith('/shipment/print'))
+        return of({ data: { url: 'https://me/etiqueta.pdf' } });
+      if (url.endsWith('/shipment/tracking'))
+        return of({ data: { 'cart-9': { tracking: 'BR123' } } });
+      return of({ data: {} });
+    });
+    const service = new ShippingService({ post: httpPost } as any, db as any);
+
+    const r = await service.emitirEtiquetaDoPedido('ord-1');
+
+    const chamadas = httpPost.mock.calls.map((c: any[]) => c[0]);
+    expect(chamadas).toEqual([
+      `${BASE_URL}/cart`,
+      `${BASE_URL}/shipment/checkout`,
+      `${BASE_URL}/shipment/generate`,
+      `${BASE_URL}/shipment/print`,
+      `${BASE_URL}/shipment/tracking`,
+    ]);
+    expect(r.status).toBe('ready');
+    expect(r.labelUrl).toBe('https://me/etiqueta.pdf');
+    expect(r.trackingCode).toBe('BR123');
+
+    const final = db.patches[db.patches.length - 1];
+    expect(final.shippingLabelStatus).toBe('ready');
+    expect(final.trackingCode).toBe('BR123');
+  });
+
+  /**
+   * Saldo zerado na carteira do Melhor Envio cai exatamente aqui. O motivo tem
+   * que sobrar escrito: "Falha ao gerar etiqueta" sem razão já custou tempo.
+   */
+  it('grava o motivo quando o Melhor Envio recusa o checkout', async () => {
+    const db = fazerDb();
+    const httpPost = jest.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/cart')) return of({ data: { id: 'cart-9' } });
+      if (url.endsWith('/shipment/checkout')) {
+        const erro: any = new Error('Request failed');
+        erro.response = { data: { message: 'Saldo insuficiente' }, status: 400 };
+        throw erro;
+      }
+      return of({ data: {} });
+    });
+    const service = new ShippingService({ post: httpPost } as any, db as any);
+
+    await expect(service.emitirEtiquetaDoPedido('ord-1')).rejects.toThrow(
+      /Saldo insuficiente/,
+    );
+
+    const final = db.patches[db.patches.length - 1];
+    expect(final.shippingLabelStatus).toBe('failed');
+    expect(final.shippingLabelError).toBe('Saldo insuficiente');
+    // O carrinho já criado fica gravado: retomar não pode criar outro.
+    expect(db.patches.some((p: any) => p.shippingCartId === 'cart-9')).toBe(true);
+  });
+});

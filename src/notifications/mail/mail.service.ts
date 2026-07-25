@@ -20,6 +20,11 @@ interface SendOptions {
    * (template + refId + to) não é reenviado. Recomendado sempre informar.
    */
   refId?: string;
+  /**
+   * Arquivos anexos. Usado pela etiqueta do Melhor Envio: o vendedor recebe o
+   * PDF direto no e-mail em vez de depender de um link que expira.
+   */
+  attachments?: Array<{ filename: string; content: Buffer }>;
 }
 
 /**
@@ -73,7 +78,13 @@ export class MailService {
     }
   }
 
-  async send({ to, template, data, refId }: SendOptions): Promise<void> {
+  async send({
+    to,
+    template,
+    data,
+    refId,
+    attachments,
+  }: SendOptions): Promise<void> {
     if (!to) {
       this.logger.warn(`E-mail "${template}" sem destinatário — ignorado.`);
       return;
@@ -118,6 +129,14 @@ export class MailService {
         html: htmlBody,
         // Multipart (HTML + texto): melhora entregabilidade e acessibilidade.
         text: textBody,
+        ...(attachments?.length
+          ? {
+              attachments: attachments.map((a) => ({
+                filename: a.filename,
+                content: a.content,
+              })),
+            }
+          : {}),
       });
 
       if (error) {

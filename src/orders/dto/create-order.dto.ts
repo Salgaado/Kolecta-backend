@@ -39,6 +39,19 @@ export class CreateOrderDto {
   @Type(() => Number)
   shippingInCents?: number;
 
+  // Serviço do Melhor Envio escolhido pelo comprador (`raw.id` da cotação) e o
+  // nome legível ("PAC", "SEDEX", "Jadlog .Package"). Sem isso só sabemos
+  // QUANTO foi cobrado, não POR QUAL transportadora — e a etiqueta automática
+  // sairia de um serviço diferente do que o comprador pagou.
+  @IsInt()
+  @IsOptional()
+  @Type(() => Number)
+  shippingServiceId?: number;
+
+  @IsString()
+  @IsOptional()
+  shippingServiceName?: string;
+
   // 'shipping' (envio) | 'pickup' (retirada pessoal). Em pickup não há frete e o
   // saldo libera na hora quando o comprador confirma o recebimento.
   @IsIn(['shipping', 'pickup'])
