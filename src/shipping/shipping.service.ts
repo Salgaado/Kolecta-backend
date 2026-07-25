@@ -538,6 +538,76 @@ export class ShippingService {
   }
 
   /**
+   * Baixa o PDF da etiqueta do pedido.
+   *
+   * A URL do `/shipment/print` NÃO serve: é página do painel, protegida por
+   * sessão do Melhor Envio — o vendedor caía no login de uma conta que não é
+   * dele. O arquivo de verdade está em `files` do `/me/orders/{id}`, numa URL
+   * assinada da S3 que baixa sem autenticação nenhuma.
+   *
+   * Não guardamos o arquivo nem a URL: a assinatura expira em 30 minutos, então
+   * link salvo vira link morto. Buscamos na hora, a cada download — sem cache
+   * para sincronizar e sem storage para pagar.
+   */
+  async obterPdfDaEtiqueta(
+    orderId: string,
+  ): Promise<{ arquivo: Buffer; nome: string }> {
+    const order = await this.db.query.orders.findFirst({
+      where: eq(schema.orders.id, orderId),
+    });
+    if (!order) throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
+    if (!order.shippingCartId) {
+      throw new BadRequestException(
+        'A etiqueta deste pedido ainda não foi emitida.',
+      );
+    }
+
+    const url = await this.urlDoPdfNoMelhorEnvio(order.shippingCartId);
+    if (!url) {
+      throw new BadRequestException(
+        'O Melhor Envio ainda não disponibilizou o arquivo da etiqueta. ' +
+          'Tente de novo em alguns instantes.',
+      );
+    }
+
+    const resposta = await firstValueFrom(
+      this.httpService.get(url, { responseType: 'arraybuffer', timeout: 30000 }),
+    );
+    const arquivo = Buffer.from(resposta.data as ArrayBuffer);
+    if (arquivo.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      throw new HttpException(
+        'O arquivo devolvido pelo Melhor Envio não é um PDF.',
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+    return { arquivo, nome: `etiqueta-${orderId.slice(0, 8)}.pdf` };
+  }
+
+  /**
+   * URL assinada do PDF da etiqueta dentro de `files`.
+   *
+   * `files` vem como `{ "1": { pdf, jpeg, zpl }, "dace": {...} }` — a chave "1"
+   * é a etiqueta e "dace" é a declaração de conteúdo. Pegamos a etiqueta e, na
+   * falta dela, qualquer entrada que tenha PDF.
+   */
+  private async urlDoPdfNoMelhorEnvio(cartId: string): Promise<string | null> {
+    const resposta = await firstValueFrom(
+      this.httpService.get(`${this.baseUrl}/orders/${cartId}`, {
+        headers: this.authHeaders(),
+        timeout: 20000,
+      }),
+    );
+    const files = (resposta.data as any)?.files ?? {};
+    const etiqueta = files['1']?.pdf;
+    if (etiqueta) return String(etiqueta);
+    for (const grupo of Object.values(files)) {
+      const pdf = (grupo as any)?.pdf;
+      if (pdf) return String(pdf);
+    }
+    return null;
+  }
+
+  /**
    * Estado do envio no Melhor Envio: já foi pago? já foi gerado?
    *
    * Sem isto a emissão só sabia o que ELA mesma tinha feito, e qualquer ação

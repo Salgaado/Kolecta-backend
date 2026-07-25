@@ -137,7 +137,16 @@ export class ShippingLabelListener {
         })
       : null;
 
-    const pdf = labelUrl ? await this.baixarPdf(labelUrl) : null;
+    // O PDF vem do arquivo da S3 (via ShippingService), não da URL do print —
+    // aquela é página de painel e chegava como HTML.
+    let pdf: Buffer | null = null;
+    try {
+      pdf = (await this.shipping.obterPdfDaEtiqueta(orderId)).arquivo;
+    } catch (err: any) {
+      this.logger.warn(
+        `Etiqueta do pedido ${orderId} sem PDF para anexar: ${err?.message ?? err}`,
+      );
+    }
 
     await this.mail.send({
       to: vendedor.email,

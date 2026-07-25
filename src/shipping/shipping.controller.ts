@@ -1,14 +1,17 @@
 import {
   Controller,
   Post,
+  Get,
   Body,
   UseGuards,
   Req,
+  Res,
   Param,
   ForbiddenException,
   NotFoundException,
   Inject,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { eq } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -52,8 +55,38 @@ export class ShippingController {
   @Post('label/:orderId/retry')
   @UseGuards(AuthGuard)
   async retryLabel(@Req() req: any, @Param('orderId') orderId: string) {
-    const userId = req.auth.userId;
+    await this.exigirDonoOuAdmin(req.auth.userId, orderId);
+    return this.shippingService.emitirEtiquetaDoPedido(orderId);
+  }
 
+  /**
+   * Entrega o PDF da etiqueta pela NOSSA autenticação.
+   *
+   * Antes o botão apontava para a URL do `print` do Melhor Envio — que é página
+   * de painel: o vendedor caía na tela de login de uma conta que não é dele, e
+   * mesmo com conta própria não acharia o envio, porque ele pertence à conta da
+   * Kolecta. Agora o arquivo passa por aqui e ele nunca precisa saber que
+   * existe um Melhor Envio no meio.
+   */
+  @Get('label/:orderId/pdf')
+  @UseGuards(AuthGuard)
+  async baixarEtiqueta(
+    @Req() req: any,
+    @Param('orderId') orderId: string,
+    @Res() res: Response,
+  ) {
+    await this.exigirDonoOuAdmin(req.auth.userId, orderId);
+    const { arquivo, nome } =
+      await this.shippingService.obterPdfDaEtiqueta(orderId);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${nome}"`);
+    res.setHeader('Content-Length', String(arquivo.length));
+    res.end(arquivo);
+  }
+
+  /** Só o vendedor dono do pedido (ou um admin) mexe na etiqueta dele. */
+  private async exigirDonoOuAdmin(userId: string, orderId: string) {
     const order = await this.db.query.orders.findFirst({
       where: eq(schema.orders.id, orderId),
     });
@@ -66,10 +99,9 @@ export class ShippingController {
 
     if (order.sellerId !== userId && user?.role !== 'admin') {
       throw new ForbiddenException(
-        'Você não tem permissão para emitir a etiqueta deste pedido.',
+        'Você não tem permissão para acessar a etiqueta deste pedido.',
       );
     }
-
-    return this.shippingService.emitirEtiquetaDoPedido(orderId);
+    return order;
   }
 }
