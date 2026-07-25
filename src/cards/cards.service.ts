@@ -67,7 +67,15 @@ export class CardsService {
    * Garante um `customer` na Pagar.me, cria o cartão vinculado e persiste só o
    * `card_id` + metadados mascarados. Substitui o cartão anterior (1 por usuário).
    */
-  async saveCard(userId: string, cardToken: string): Promise<MaskedCard> {
+  async saveCard(
+    userId: string,
+    cardToken: string,
+    cpf?: string,
+  ): Promise<MaskedCard> {
+    // Persiste o CPF ANTES de garantir o customer: sem documento, o customer
+    // nasce incompleto e a pre-autorizacao do lance falha depois, com um erro
+    // que fala de cartao e nao de documento.
+    await this.persistCpf(userId, cpf);
     const customerId = await this.ensureCustomer(userId);
 
     let created: PagarmeCard;
@@ -173,28 +181,81 @@ export class CardsService {
    * Garante que o usuário tem um `customer` na Pagar.me, criando-o na primeira
    * vez e persistindo o id em `users.pagarmeCustomerId`.
    */
+  /** Guarda o documento do usuario (CPF ou CNPJ, so digitos). */
+  private async persistCpf(userId: string, cpf?: string) {
+    const digits = String(cpf ?? '').replace(/[^0-9]/g, '');
+    if (digits.length !== 11 && digits.length !== 14) return;
+    await this.db
+      .update(schema.users)
+      .set({ cpf: digits, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
+  }
+
+  /**
+   * Documento do usuario para a Pagar.me, com o tipo certo.
+   *
+   * Aceita CPF (11) e CNPJ (14): a Kolecta tem lojas cadastradas como empresa,
+   * e o codigo antigo forcava `individual` e so mandava documento de 11
+   * digitos — o customer nascia SEM documento e a cobranca no cartao falhava
+   * depois, com um erro que falava de cartao e nao de documento.
+   *
+   * Fonte: `users.cpf` primeiro; senao o documento do onboarding de recebedor
+   * (`seller_profiles.document_number`), que muita loja ja preencheu.
+   */
+  private async resolveDocument(
+    userId: string,
+  ): Promise<{ document: string; type: 'individual' | 'company' } | null> {
+    const [user] = await this.db
+      .select({ cpf: schema.users.cpf })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+
+    const candidatos: (string | null | undefined)[] = [user?.cpf];
+
+    const [profile] = await this.db
+      .select({ doc: schema.sellerProfiles.documentNumber })
+      .from(schema.sellerProfiles)
+      .where(eq(schema.sellerProfiles.userId, userId));
+    candidatos.push(profile?.doc);
+
+    for (const bruto of candidatos) {
+      const d = String(bruto ?? '').replace(/[^0-9]/g, '');
+      if (d.length === 11) return { document: d, type: 'individual' };
+      if (d.length === 14) return { document: d, type: 'company' };
+    }
+    return null;
+  }
+
   private async ensureCustomer(userId: string): Promise<string> {
     const [user] = await this.db
       .select()
       .from(schema.users)
       .where(eq(schema.users.id, userId));
 
-    if (!user) throw new NotFoundException('Usuário não encontrado');
+    if (!user) throw new NotFoundException('Usuario nao encontrado');
     if (user.pagarmeCustomerId) return user.pagarmeCustomerId;
 
-    const cpfDigits = user.cpf?.replace(/\D/g, '');
+    // Sem documento a Pagar.me cria o customer, mas recusa a cobranca depois.
+    // Falhar aqui, dizendo o que fazer, evita o cartao "salvo" que nao paga.
+    const doc = await this.resolveDocument(userId);
+    if (!doc) {
+      throw new BadRequestException(
+        'Informe seu CPF ou CNPJ para cadastrar um cartao — a operadora exige ' +
+          'o documento do titular para autorizar cobrancas.',
+      );
+    }
+
     const customer = await this.pagarme.post<PagarmeCustomer>('/customers', {
-      name: user.name || 'Usuário Kolecta',
+      name: user.name || 'Usuario Kolecta',
       email: user.email,
-      type: 'individual',
-      ...(cpfDigits && cpfDigits.length === 11
-        ? { document: cpfDigits, document_type: 'CPF' }
-        : {}),
+      type: doc.type,
+      document: doc.document,
+      document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
     });
 
     if (!customer?.id) {
       throw new BadRequestException(
-        'Não foi possível registrar seus dados de pagamento. Tente novamente.',
+        'Nao foi possivel registrar seus dados de pagamento. Tente novamente.',
       );
     }
 
@@ -205,6 +266,7 @@ export class CardsService {
 
     return customer.id;
   }
+
 
   /** Best-effort: remove o cartão na Pagar.me (não derruba o fluxo local). */
   private async deleteRemoteCard(

@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class SaveCardDto {
   // Token de uso único gerado NO FRONT via chave pública da Pagar.me (endpoint
@@ -7,4 +7,14 @@ export class SaveCardDto {
   @IsString()
   @IsNotEmpty()
   cardToken: string;
+
+  /**
+   * CPF do titular. Opcional aqui, mas o `customer` da Pagar.me precisa de
+   * documento para a cobrança no cartão funcionar — sem ele o lance falha na
+   * pré-autorização. Quando o usuário ainda não tem CPF salvo (quem nunca
+   * comprou), este campo é a chance de capturá-lo.
+   */
+  @IsOptional()
+  @IsString()
+  cpf?: string;
 }

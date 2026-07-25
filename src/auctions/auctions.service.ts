@@ -280,6 +280,15 @@ export class AuctionsService {
       ? await this._getActiveBidAuth(auctionId, prevWinnerId)
       : null;
 
+    // Endereço de cobrança de quem dá o lance: a Pagar.me exige no cartão.
+    const billingAddress = await this._getBillingAddress(bidderId);
+    if (!billingAddress) {
+      throw new BadRequestException(
+        'Cadastre um endereço em Minha Conta para dar lances — a operadora ' +
+          'exige endereço de cobrança para reter o valor no cartão.',
+      );
+    }
+
     // ── Pré-autorização (retenção) no cartão do bidder ──
     // Cria a auth ANTES de assumir a liderança; se perdermos a corrida de
     // concorrência abaixo, cancelamos a auth (rollback). Lança BadRequest com o
@@ -292,6 +301,7 @@ export class AuctionsService {
       bidderId,
       sellerId: listing.sellerId,
       sellerRecipientId,
+      billingAddress,
     });
 
     let bid: typeof schema.bids.$inferSelect;
@@ -396,6 +406,30 @@ export class AuctionsService {
 
   // ── Helpers de pré-autorização no cartão ──────────────────────────────────
 
+  /**
+   * Endereço de cobrança de quem dá o lance, no formato da Pagar.me.
+   * Usa o endereço padrão dele (ou o primeiro cadastrado). Sem isso a
+   * pré-autorização é recusada com `validation_error | billing`.
+   */
+  private async _getBillingAddress(userId: string) {
+    // Traz todos e escolhe o padrão em JS: uma consulta só, sem depender de
+    // ordenação no SQL, e o usuário raramente tem mais que uns poucos.
+    const enderecos = await this.db
+      .select()
+      .from(schema.addresses)
+      .where(eq(schema.addresses.userId, userId));
+    const end = enderecos.find((e) => e.isDefault) ?? enderecos[0];
+    if (!end) return null;
+    return {
+      line_1: [end.number, end.street, end.neighborhood].filter(Boolean).join(', '),
+      ...(end.complement ? { line_2: end.complement } : {}),
+      zip_code: String(end.zip).replace(/\D/g, ''),
+      city: end.city,
+      state: end.state,
+      country: (end.country || 'BR').toUpperCase(),
+    };
+  }
+
   /** Recebedor apto do vendedor (p/ split), ou null (→ auth sem split). */
   private async _getSellerRecipientId(
     sellerId: string,
@@ -446,6 +480,14 @@ export class AuctionsService {
     bidderId: string;
     sellerId: string;
     sellerRecipientId: string | null;
+    billingAddress: {
+      line_1: string;
+      line_2?: string;
+      zip_code: string;
+      city: string;
+      state: string;
+      country: string;
+    } | null;
   }): Promise<{ orderId: string; chargeId: string; expiresAt: Date }> {
     // Split nativo no arremate (executado na captura). Sem recebedor apto ou
     // sem recebedor da plataforma → auth sem split (fluxo legado).
@@ -486,6 +528,13 @@ export class AuctionsService {
                 capture: false, // pré-autorização (retenção sem captura)
                 statement_descriptor: 'KOLECTA',
                 card_id: params.cardId,
+                // Endereço de cobrança: a Pagar.me EXIGE no cartão e recusa a
+                // cobrança inteira sem ele. Mesmo motivo do checkout (ver
+                // `validation_error | billing`) — aqui vem do endereço padrão
+                // de quem dá o lance.
+                ...(params.billingAddress
+                  ? { card: { billing_address: params.billingAddress } }
+                  : {}),
                 ...(split ? { split } : {}),
               },
             },
@@ -499,9 +548,24 @@ export class AuctionsService {
         // Idempotência por lance (valor + bidder + janela do segundo).
         `bid-preauth-${params.auctionId}-${params.bidderId}-${params.amountInCents}-${Math.floor(Date.now() / 1000)}`,
       );
-    } catch {
+    } catch (err: any) {
+      // NÃO engolir o motivo: antes o catch trocava qualquer falha por "tente
+      // outro cartão", e um erro de DOCUMENTO ou de endereço virava um problema
+      // de cartão aos olhos de quem dava o lance — impossível de diagnosticar
+      // sem abrir o log do servidor.
+      const detalhe =
+        err?.response?.pagarme?.errors?.[0]?.message ||
+        err?.response?.errors?.[0]?.message ||
+        err?.response?.message ||
+        err?.message;
+      this.logger.error(
+        `Pré-autorização do lance falhou (leilão ${params.auctionId}, ` +
+          `bidder ${params.bidderId}): ${JSON.stringify(err?.response ?? detalhe)}`,
+      );
       throw new BadRequestException(
-        'Não foi possível autorizar o valor no seu cartão. Tente outro cartão.',
+        detalhe
+          ? `Não foi possível autorizar o valor no seu cartão: ${detalhe}`
+          : 'Não foi possível autorizar o valor no seu cartão. Tente outro cartão.',
       );
     }
 
@@ -644,6 +708,7 @@ export class AuctionsService {
       bidderId: row.bidderId,
       sellerId: row.sellerId,
       sellerRecipientId,
+      billingAddress: await this._getBillingAddress(row.bidderId),
     });
 
     // Troca atômica: só aponta o lance para a auth nova se ele AINDA é o líder

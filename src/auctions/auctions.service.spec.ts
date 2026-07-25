@@ -122,6 +122,12 @@ const makeDrizzleMock = () => {
   return chain;
 };
 
+const mockEndereco = {
+  id: 'addr_1', userId: 'user_bidder', street: 'Rua Teste', number: '100',
+  complement: null, neighborhood: 'Centro', city: 'Sao Paulo', state: 'SP',
+  zip: '01310-100', country: 'BR', isDefault: true,
+};
+
 describe('AuctionsService', () => {
   let service: AuctionsService;
   let mockDb: any;
@@ -265,7 +271,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
         .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
-        .mockResolvedValueOnce([]); // sellerProfiles → sem recebedor (sem split)
+        .mockResolvedValueOnce([]) // sellerProfiles → sem recebedor (sem split)
+        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
       mockPagarmeService.post.mockReset().mockResolvedValue({
         id: 'or_x',
         status: 'failed',
@@ -283,7 +290,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
         .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
-        .mockResolvedValueOnce([]); // sellerProfiles → sem recebedor
+        .mockResolvedValueOnce([]) // sellerProfiles → sem recebedor
+        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
       service = await buildModule();
 
       const result = await service.placeBid(mockAuctionId, bidderId, {
@@ -314,7 +322,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
         .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
-        .mockResolvedValueOnce([]); // sellerProfiles
+        .mockResolvedValueOnce([]) // sellerProfiles
+        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
 
       // Transaction em que o UPDATE condicional não afeta linhas (returning vazio),
       // simulando que um lance igual/maior chegou primeiro.
@@ -584,7 +593,8 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([reauthRow]) // lances líderes a expirar
-        .mockResolvedValueOnce([]); // sellerProfiles → sem recebedor (sem split)
+        .mockResolvedValueOnce([]) // sellerProfiles → sem recebedor (sem split)
+        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
       service = await buildModule();
 
       const result = await service.reauthorizeExpiringBids();
@@ -626,7 +636,8 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([reauthRow])
-        .mockResolvedValueOnce([]); // sellerProfiles
+        .mockResolvedValueOnce([]) // sellerProfiles
+        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança
       // Troca atômica não afeta linhas (lance superado/fechado no meio).
       mockDb.returning.mockResolvedValueOnce([]);
       service = await buildModule();
@@ -645,7 +656,8 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([reauthRow])
-        .mockResolvedValueOnce([]); // sellerProfiles
+        .mockResolvedValueOnce([]) // sellerProfiles
+        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança
       // Cartão recusado na renovação.
       mockPagarmeService.post.mockReset().mockResolvedValue({
         id: 'or_x',

@@ -31,7 +31,11 @@ export class CardsController {
   @Post()
   async saveCard(@Req() req: Request, @Body() dto: SaveCardDto) {
     const userId = (req as any).auth.userId;
-    const card = await this.cardsService.saveCard(userId, dto.cardToken);
+    const card = await this.cardsService.saveCard(
+      userId,
+      dto.cardToken,
+      dto.cpf,
+    );
     return { data: card };
   }
 
