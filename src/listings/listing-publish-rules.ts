@@ -7,6 +7,12 @@
 export const MIN_DESCRIPTION_LENGTH = 30;
 export const MIN_TITLE_LENGTH = 10;
 export const MIN_IMAGES = 3;
+/**
+ * Teto de fotos. O front já bloqueia no upload (wizard, edição e importação),
+ * mas a trava no navegador não vale para quem chama a API direto — e um anúncio
+ * com dezenas de fotos pesa na vitrine e no custo de armazenamento.
+ */
+export const MAX_IMAGES = 8;
 
 /**
  * Campos obrigatórios por categoria (slug). Espelha `required: true` do front
@@ -131,8 +137,11 @@ export function listingPublishBlockers(
     );
   }
 
-  if (countImages(listing.images) < MIN_IMAGES) {
+  const imageCount = countImages(listing.images);
+  if (imageCount < MIN_IMAGES) {
     missing.push(`Pelo menos ${MIN_IMAGES} fotos`);
+  } else if (imageCount > MAX_IMAGES) {
+    missing.push(`No máximo ${MAX_IMAGES} fotos (o anúncio tem ${imageCount})`);
   }
 
   if (!listing.categoryId) missing.push('Categoria');

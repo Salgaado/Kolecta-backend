@@ -34,6 +34,25 @@ describe('listingPublishBlockers', () => {
     expect(missing).toContain('Título com pelo menos 10 caracteres');
   });
 
+  // ── Teto de fotos ──
+  // O front trava no upload, mas isso não vale para quem chama a API direto.
+
+  it('bloqueia anúncio com mais de 8 fotos', () => {
+    const nove = Array.from({ length: 9 }, (_, i) => `${i}.jpg`);
+    const missing = listingPublishBlockers({
+      ...validDirect,
+      images: JSON.stringify(nove),
+    });
+    expect(missing).toContain('No máximo 8 fotos (o anúncio tem 9)');
+  });
+
+  it('aceita exatamente 8 fotos', () => {
+    const oito = Array.from({ length: 8 }, (_, i) => `${i}.jpg`);
+    expect(
+      listingPublishBlockers({ ...validDirect, images: JSON.stringify(oito) }),
+    ).toEqual([]);
+  });
+
   // ── Reserva ≥ lance inicial (1.3, leilão) ──
   it('bloqueia reserva menor que o lance inicial', () => {
     const missing = listingPublishBlockers(

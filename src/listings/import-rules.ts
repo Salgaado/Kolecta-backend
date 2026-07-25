@@ -13,9 +13,10 @@ import {
   MIN_TITLE_LENGTH,
   MIN_DESCRIPTION_LENGTH,
   MIN_IMAGES,
+  MAX_IMAGES,
 } from './listing-publish-rules';
 
-export const MAX_IMAGES = 8;
+export { MAX_IMAGES };
 
 /** Slugs de categoria aceitos (mesma lista do front). */
 export const CATEGORY_SLUGS = Object.keys(CATEGORY_REQUIRED_FIELDS);
