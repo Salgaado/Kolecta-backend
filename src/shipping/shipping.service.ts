@@ -326,10 +326,24 @@ export class ShippingService {
       const cartId = order.shippingCartId ?? (await this.montarCarrinho(order));
       await this.registrarEtiqueta(orderId, { status: 'cart', cartId });
 
-      await this.pagarEnvio(cartId);
+      // Retoma pelo estado REMOTO, não pelo nosso. O envio pode ter sido pago
+      // ou gerado direto no painel do Melhor Envio — foi o que aconteceu na
+      // primeira etiqueta de verdade: a carteira estava zerada, o dono pagou na
+      // mão e o retry tentaria pagar de novo.
+      const remoto = await this.consultarEnvio(cartId);
+
+      if (!remoto?.pago) {
+        await this.pagarEnvio(cartId);
+      } else {
+        this.logger.log(`Envio ${cartId} já estava pago no Melhor Envio.`);
+      }
       await this.registrarEtiqueta(orderId, { status: 'paid', cartId });
 
-      await this.gerarEnvio(cartId);
+      if (!remoto?.gerado) {
+        await this.gerarEnvio(cartId);
+      } else {
+        this.logger.log(`Envio ${cartId} já estava gerado no Melhor Envio.`);
+      }
       await this.registrarEtiqueta(orderId, { status: 'generated', cartId });
 
       const labelUrl = await this.imprimirEnvio(cartId);
@@ -499,6 +513,38 @@ export class ShippingService {
       .from(schema.addresses)
       .where(eq(schema.addresses.userId, sellerId));
     return enderecos.find((e) => e.isDefault) ?? enderecos[0] ?? null;
+  }
+
+  /**
+   * Estado do envio no Melhor Envio: já foi pago? já foi gerado?
+   *
+   * Sem isto a emissão só sabia o que ELA mesma tinha feito, e qualquer ação
+   * pelo painel (pagar uma etiqueta na mão, por exemplo) levava o retry a
+   * repetir a etapa — no caso do checkout, gastando de novo.
+   *
+   * Devolve null quando a consulta falha: aí seguimos o caminho normal e quem
+   * decide é a própria API, que recusa duplicidade.
+   */
+  private async consultarEnvio(
+    cartId: string,
+  ): Promise<{ pago: boolean; gerado: boolean } | null> {
+    try {
+      const resposta = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/orders/${cartId}`, {
+          headers: this.authHeaders(),
+          timeout: 15000,
+        }),
+      );
+      const d: any = resposta.data ?? {};
+      // `released` = pago e aguardando geração. Os demais já passaram por lá.
+      const pagos = ['released', 'generated', 'posted', 'delivered'];
+      return {
+        pago: !!d.paid_at || pagos.includes(d.status),
+        gerado: !!d.generated_at,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /** `POST /me/shipment/checkout` — debita a carteira da Kolecta. */

@@ -482,6 +482,42 @@ describe('ShippingService — emissão automática da etiqueta', () => {
     );
   });
 
+  /**
+   * Aconteceu na primeira etiqueta real: a carteira do Melhor Envio estava
+   * zerada, o envio ficou `failed`, o dono pagou a etiqueta pelo PAINEL e
+   * mandou tentar de novo. Sem consultar o estado remoto, o retry chamaria o
+   * checkout outra vez — pagando o mesmo envio duas vezes.
+   */
+  it('não paga de novo um envio já quitado no painel', async () => {
+    const db = fazerDb();
+    db.query.orders.findFirst.mockResolvedValue({
+      ...pedidoPago,
+      shippingCartId: 'cart-9',
+      shippingLabelStatus: 'failed',
+    });
+    const httpGet = jest.fn().mockReturnValue(
+      of({ data: { status: 'released', paid_at: '2026-07-25 18:51:01', generated_at: null } }),
+    );
+    const httpPost = jest.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/shipment/print'))
+        return of({ data: { url: 'https://me/etiqueta.pdf' } });
+      return of({ data: {} });
+    });
+    const service = new ShippingService(
+      { post: httpPost, get: httpGet } as any,
+      db as any,
+    );
+
+    const r = await service.emitirEtiquetaDoPedido('ord-1');
+
+    const chamadas = httpPost.mock.calls.map((c: any[]) => c[0]);
+    // Pulou o checkout (já pago) e seguiu de generate em diante.
+    expect(chamadas.some((u: string) => u.endsWith('/shipment/checkout'))).toBe(false);
+    expect(chamadas.some((u: string) => u.endsWith('/shipment/generate'))).toBe(true);
+    expect(r.status).toBe('ready');
+    expect(r.labelUrl).toBe('https://me/etiqueta.pdf');
+  });
+
   it('percorre cart → checkout → generate → print e grava o resultado', async () => {
     const db = fazerDb();
     const httpPost = jest.fn().mockImplementation((url: string) => {
