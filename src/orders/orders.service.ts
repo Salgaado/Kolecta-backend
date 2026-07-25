@@ -489,6 +489,46 @@ export class OrdersService {
       );
     }
 
+    // ── Endereço de cobrança (obrigatório no cartão) ──
+    // Só busca no cartão: o PIX não pede, e é uma consulta a menos por compra.
+    let billingAddress: {
+      line_1: string;
+      line_2?: string;
+      zip_code: string;
+      city: string;
+      state: string;
+      country: string;
+    } | null = null;
+
+    if (instrument === 'credit_card' && dto.addressId) {
+      const [end] = await this.db
+        .select()
+        .from(schema.addresses)
+        .where(eq(schema.addresses.id, dto.addressId));
+
+      if (end) {
+        billingAddress = {
+          // A Pagar.me espera "número, rua, bairro" numa linha só.
+          line_1: [end.number, end.street, end.neighborhood]
+            .filter(Boolean)
+            .join(', '),
+          ...(end.complement ? { line_2: end.complement } : {}),
+          zip_code: String(end.zip).replace(/\D/g, ''),
+          city: end.city,
+          state: end.state,
+          country: (end.country || 'BR').toUpperCase(),
+        };
+      }
+    }
+
+    if (instrument === 'credit_card' && !billingAddress) {
+      // Sem endereço a Pagar.me recusa a cobrança inteira. Falhar aqui, com
+      // mensagem clara, é melhor que levar um `validation_error` do gateway.
+      throw new BadRequestException(
+        'Escolha um endereço de entrega para pagar com cartão.',
+      );
+    }
+
     // Bloco de pagamento conforme o instrumento.
     const paymentBlock =
       instrument === 'credit_card'
@@ -498,6 +538,14 @@ export class OrdersService {
               installments,
               statement_descriptor: 'KOLECTA',
               card_token: dto.cardToken,
+              // Endereço de cobrança: a Pagar.me EXIGE no cartão e recusa a
+              // cobrança inteira sem ele — `validation_error | billing |
+              // "value" is required`. O token gerado no navegador não carrega
+              // endereço (a tokenização manda só número/nome/validade/CVV),
+              // então ele precisa vir daqui. Usamos o endereço de entrega
+              // escolhido no checkout, que é o que o comprador acabou de
+              // confirmar.
+              ...(billingAddress ? { card: { billing_address: billingAddress } } : {}),
             },
             ...(split ? { split } : {}),
           }

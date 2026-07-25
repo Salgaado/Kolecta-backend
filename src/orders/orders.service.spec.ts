@@ -109,6 +109,31 @@ describe('OrdersService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // `clearAllMocks` zera as CHAMADAS, mas NÃO esvazia a fila de
+    // `mockResolvedValueOnce`. Um teste que enfileira mais respostas do que
+    // consome (ex.: fluxo que lança no meio) deixa o resto para o teste
+    // seguinte, que recebe o dado errado e falha por um motivo que não é dele.
+    // Foi o que aconteceu ao acrescentar o select do endereço de cobrança.
+    selectChain.where.mockReset();
+    mockPagarmeService.post.mockReset().mockResolvedValue({
+      id: 'or_test',
+      status: 'pending',
+      charges: [
+        {
+          id: 'ch_test',
+          last_transaction: {
+            qr_code: '00020126...pix',
+            qr_code_url: 'https://pagar.me/qr.png',
+            expires_at: '2026-07-20T13:00:00Z',
+          },
+        },
+      ],
+    });
+    mockPagarmeService.get.mockReset().mockResolvedValue({
+      id: 'or_test',
+      status: 'failed',
+      charges: [],
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -192,6 +217,15 @@ describe('OrdersService', () => {
       items: [{ listingId: 'listing_001' }],
       buyerCpf: '529.982.247-25',
       buyerPhone: '11987654321',
+      // Cartao exige endereco: a Pagar.me recusa a cobranca sem
+      // `billing_address` (validation_error | billing).
+      addressId: 'addr_1',
+    };
+
+    const fakeAddress = {
+      id: 'addr_1', userId: 'user_buyer', street: 'Rua Teste', number: '100',
+      complement: null, neighborhood: 'Centro', city: 'Sao Paulo',
+      state: 'SP', zip: '01310-100', country: 'BR',
     };
 
     it('default (sem paymentMethod) cai no PIX e retorna QR Code', async () => {
@@ -214,6 +248,7 @@ describe('OrdersService', () => {
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
         .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
+        .mockResolvedValueOnce([fakeAddress]) // endereço de cobrança (cartão)
         // confirmOrderPayment (inline): order → buyer → listing
         .mockResolvedValueOnce([
           {
@@ -261,7 +296,8 @@ describe('OrdersService', () => {
       selectChain.where
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
-        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]); // buyer
+        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
+        .mockResolvedValueOnce([fakeAddress]); // endereco de cobranca
 
       mockPagarmeService.post.mockResolvedValueOnce({
         id: 'or_card',
