@@ -31,12 +31,31 @@ export class WebhookService {
     }
   }
 
+  /**
+   * Nome de exibição a partir do payload do Clerk.
+   *
+   * Nem todo cadastro traz nome: quem entra só com e-mail e senha chega sem
+   * `first_name`/`last_name`, e o código antigo gravava string VAZIA. Isso é
+   * pior que nulo — passa batido por todo `?? 'Vendedor Kolecta'` (que só pega
+   * null/undefined) e o anúncio aparecia na vitrine sem vendedor nenhum.
+   *
+   * Ordem: nome completo → username → parte local do e-mail. Nunca vazio.
+   */
+  private resolveDisplayName(data: any): string {
+    const { first_name, last_name, username, email_addresses } = data;
+    const completo = `${first_name ?? ''} ${last_name ?? ''}`.trim();
+    if (completo) return completo;
+    if (username?.trim()) return username.trim();
+    const email: string | undefined = email_addresses?.[0]?.email_address;
+    return email?.split('@')[0]?.trim() || 'Colecionador';
+  }
+
   // ─── user.created ────────────────────────────────────────────────────────────
 
   private async handleUserCreated(data: any): Promise<void> {
-    const { id, email_addresses, first_name, last_name } = data;
+    const { id, email_addresses } = data;
     const email = email_addresses?.[0]?.email_address;
-    const name = `${first_name ?? ''} ${last_name ?? ''}`.trim();
+    const name = this.resolveDisplayName(data);
 
     this.logger.log(`[user.created] ID: ${id} | Email: ${email}`);
 
@@ -56,9 +75,9 @@ export class WebhookService {
   // ─── user.updated ────────────────────────────────────────────────────────────
 
   private async handleUserUpdated(data: any): Promise<void> {
-    const { id, email_addresses, first_name, last_name } = data;
+    const { id, email_addresses } = data;
     const email = email_addresses?.[0]?.email_address;
-    const name = `${first_name ?? ''} ${last_name ?? ''}`.trim();
+    const name = this.resolveDisplayName(data);
 
     this.logger.log(`[user.updated] ID: ${id} | Novo email: ${email}`);
 
