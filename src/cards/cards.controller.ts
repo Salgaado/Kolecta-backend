@@ -35,6 +35,7 @@ export class CardsController {
       userId,
       dto.cardToken,
       dto.cpf,
+      dto.phone,
     );
     return { data: card };
   }

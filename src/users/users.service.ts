@@ -21,6 +21,30 @@ export class UsersService {
 
   // ─── Buscar usuário pelo ID do Clerk ─────────────────────────────────────
 
+  /**
+   * Guarda CPF e telefone usados nas transações Pagar.me (só dígitos).
+   *
+   * A API exige documento E telefone no `customer` para autorizar cartão. Como
+   * o lance cobra pelo `customer_id`, esses dados precisam estar gravados —
+   * não basta mandá-los inline no checkout. Dado sensível (LGPD): não logar.
+   */
+  async persistPagarmeContact(userId: string, cpf?: string, phone?: string) {
+    const patch: Record<string, unknown> = {};
+    const cpfDigits = String(cpf ?? '').replace(/[^0-9]/g, '');
+    if (cpfDigits.length === 11 || cpfDigits.length === 14) {
+      patch.cpf = cpfDigits;
+    }
+    const phoneDigits = String(phone ?? '').replace(/[^0-9]/g, '');
+    if (phoneDigits.length >= 10 && phoneDigits.length <= 11) {
+      patch.phone = phoneDigits;
+    }
+    if (Object.keys(patch).length === 0) return;
+    await this.db
+      .update(schema.users)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
+  }
+
   async findById(id: string): Promise<UserRecord> {
     const result = await this.db
       .select()

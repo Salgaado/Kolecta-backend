@@ -17,4 +17,13 @@ export class SaveCardDto {
   @IsOptional()
   @IsString()
   cpf?: string;
+
+  /**
+   * Telefone com DDD do titular. A Pagar.me EXIGE ao menos um telefone no
+   * `customer` para autorizar cartao — sem ele a pre-autorizacao do lance é
+   * recusada com "At least one customer phone is required".
+   */
+  @IsOptional()
+  @IsString()
+  phone?: string;
 }

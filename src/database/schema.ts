@@ -32,6 +32,10 @@ export const users = sqliteTable('users', {
   // ID do customer na Pagar.me (cus_...), criado ao salvar o 1º cartão. Reusado
   // para vincular cartões salvos (lance por cartão). NUNCA guarda o nº do cartão.
   pagarmeCustomerId: text('pagarme_customer_id'),
+  // Telefone com DDD (só dígitos). A Pagar.me EXIGE ao menos um telefone no
+  // customer para autorizar cartão — sem ele o lance é recusado. O checkout já
+  // pedia o número, mas descartava depois de usar.
+  phone: text('phone'),
 
   // ─── Consentimento legal (Termos + LGPD) ────────────────────────────────────
   // Aceite registrado no cadastro (modal T10). LGPD exige consentimento

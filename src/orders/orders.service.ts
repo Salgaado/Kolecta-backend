@@ -153,15 +153,29 @@ export class OrdersService {
   // ── Create orders (legacy — sem PaymentIntent) ─────────────────────────────
 
   /**
-   * Persiste o CPF do comprador (só dígitos) em `users.cpf` para reuso nas
-   * transações Pagar.me. Dado sensível (LGPD): não é logado. No-op se ausente.
+   * Persiste CPF e telefone do comprador (só dígitos) para reuso nas transações
+   * Pagar.me. Dado sensível (LGPD): não é logado. No-op quando ausente.
+   *
+   * O telefone importa além do checkout: a Pagar.me exige telefone no
+   * `customer` para autorizar cartão, e o lance cobra pelo `customer_id` — sem
+   * guardar aqui, quem só comprou continuaria sem conseguir dar lance.
    */
-  private async persistBuyerCpf(buyerId: string, cpf?: string) {
-    if (!cpf) return;
-    const digits = cpf.replace(/\D/g, '');
+  private async persistBuyerContact(
+    buyerId: string,
+    cpf?: string,
+    phone?: string,
+  ) {
+    const patch: Record<string, unknown> = {};
+    const cpfDigits = String(cpf ?? '').replace(/\D/g, '');
+    if (cpfDigits) patch.cpf = cpfDigits;
+    const phoneDigits = String(phone ?? '').replace(/\D/g, '');
+    if (phoneDigits.length >= 10 && phoneDigits.length <= 11) {
+      patch.phone = phoneDigits;
+    }
+    if (Object.keys(patch).length === 0) return;
     await this.db
       .update(schema.users)
-      .set({ cpf: digits, updatedAt: new Date() })
+      .set({ ...patch, updatedAt: new Date() })
       .where(eq(schema.users.id, buyerId));
   }
 
@@ -170,7 +184,7 @@ export class OrdersService {
       throw new BadRequestException('O carrinho está vazio');
     }
 
-    await this.persistBuyerCpf(buyerId, dto.buyerCpf);
+    await this.persistBuyerContact(buyerId, dto.buyerCpf, dto.buyerPhone);
 
     const listingIds = dto.items.map((i) => i.listingId);
 
@@ -245,7 +259,7 @@ export class OrdersService {
       throw new BadRequestException('O carrinho está vazio');
     }
 
-    await this.persistBuyerCpf(buyerId, dto.buyerCpf);
+    await this.persistBuyerContact(buyerId, dto.buyerCpf, dto.buyerPhone);
 
     // MVP: 1 item por chamada (uma cobrança por vendedor)
     const listingId = dto.items[0].listingId;
@@ -446,6 +460,9 @@ export class OrdersService {
     }
     const areaCode = phoneDigits.slice(0, 2);
     const phoneNumber = phoneDigits.slice(2);
+
+    // Guarda para o customer da Pagar.me (usado no lance por cartão).
+    await this.persistBuyerContact(buyerId, cpfDigits, phoneDigits);
 
     // ── Juros do parcelamento (só cartão parcelado; "juros no comprador") ──
     // O comprador paga `chargeAmount + juros`. O vendedor recebe o líquido sobre

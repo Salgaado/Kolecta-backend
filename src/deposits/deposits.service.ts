@@ -36,6 +36,11 @@ export class DepositsService {
     const areaCode = phone.slice(0, 2);
     const number = phone.slice(2);
 
+    // Guarda CPF/telefone: o `customer` da Pagar.me exige ambos para autorizar
+    // cartão, e o lance cobra pelo `customer_id`. Sem isso, quem depositou
+    // continuaria travado na hora do lance.
+    await this.usersService.persistPagarmeContact(userId, cpf, phone);
+
     const payload = {
       items: [
         {

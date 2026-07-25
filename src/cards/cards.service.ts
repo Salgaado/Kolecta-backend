@@ -22,6 +22,11 @@ export interface MaskedCard {
 }
 
 /** Resposta parcial do objeto `card` da Pagar.me (POST /customers/:id/cards). */
+/** Formato de telefone exigido pela Pagar.me no customer. */
+interface PagarmePhones {
+  mobile_phone: { country_code: string; area_code: string; number: string };
+}
+
 interface PagarmeCard {
   id: string;
   brand?: string;
@@ -71,11 +76,13 @@ export class CardsService {
     userId: string,
     cardToken: string,
     cpf?: string,
+    phone?: string,
   ): Promise<MaskedCard> {
-    // Persiste o CPF ANTES de garantir o customer: sem documento, o customer
-    // nasce incompleto e a pre-autorizacao do lance falha depois, com um erro
-    // que fala de cartao e nao de documento.
+    // Persiste documento e telefone ANTES de garantir o customer: sem eles o
+    // customer nasce incompleto e a pre-autorizacao do lance falha depois, com
+    // um erro que fala de cartao e nao do dado que esta faltando.
     await this.persistCpf(userId, cpf);
+    await this.persistPhone(userId, phone);
     const customerId = await this.ensureCustomer(userId);
 
     let created: PagarmeCard;
@@ -147,18 +154,19 @@ export class CardsService {
       .select({
         customerId: schema.users.pagarmeCustomerId,
         cpf: schema.users.cpf,
+        phone: schema.users.phone,
       })
       .from(schema.users)
       .where(eq(schema.users.id, userId));
     if (!user?.customerId) return null;
 
-    // Auto-conserto: `users.cpf` vazio e o sinal de que o customer nasceu SEM
-    // documento (antes desta correcao) e a cobranca falharia. Como o lance le o
+    // Auto-conserto: `users.cpf`/`users.phone` vazios sao o sinal de que o
+    // customer nasceu incompleto (antes desta correcao) e a cobranca falharia. Como o lance le o
     // cartao por aqui e nao passa pelo `saveCard`, completamos neste ponto —
     // senao quem ja tinha cartao salvo ficaria travado para sempre. Depois do
     // PUT o CPF fica gravado e esta checagem nao repete.
-    if (!user.cpf) {
-      await this.completarDocumentoDoCustomer(user.customerId, userId);
+    if (!user.cpf || !user.phone) {
+      await this.completarCadastroDoCustomer(user.customerId, userId);
     }
 
     return { customerId: user.customerId, cardId: card.cardId };
@@ -201,6 +209,41 @@ export class CardsService {
       .update(schema.users)
       .set({ cpf: digits, updatedAt: new Date() })
       .where(eq(schema.users.id, userId));
+  }
+
+  /** Guarda o telefone do usuario (so digitos, DDD + numero). */
+  private async persistPhone(userId: string, phone?: string) {
+    const digits = String(phone ?? '').replace(/[^0-9]/g, '');
+    if (digits.length < 10 || digits.length > 11) return;
+    await this.db
+      .update(schema.users)
+      .set({ phone: digits, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
+  }
+
+  /**
+   * Telefone do usuario no formato da Pagar.me.
+   *
+   * A API EXIGE ao menos um telefone no customer para autorizar cartao ("At
+   * least one customer phone is required"). O checkout ja pedia o numero, mas
+   * usava inline e descartava; o lance cobra pelo `customer_id`, entao o dado
+   * precisa estar gravado NO customer.
+   */
+  private async resolvePhone(userId: string): Promise<PagarmePhones | null> {
+    const [user] = await this.db
+      .select({ phone: schema.users.phone })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+
+    const d = String(user?.phone ?? '').replace(/[^0-9]/g, '');
+    if (d.length < 10 || d.length > 11) return null;
+    return {
+      mobile_phone: {
+        country_code: '55',
+        area_code: d.slice(0, 2),
+        number: d.slice(2),
+      },
+    };
   }
 
   /**
@@ -249,7 +292,7 @@ export class CardsService {
    * ou a Pagar.me responder outra coisa, seguimos — quem valida de verdade e a
    * cobranca, e o erro dela agora chega legivel a quem deu o lance.
    */
-  private async completarDocumentoDoCustomer(
+  private async completarCadastroDoCustomer(
     customerId: string,
     userId: string,
   ): Promise<void> {
@@ -257,19 +300,30 @@ export class CardsService {
       document?: string | null;
       name?: string | null;
       email?: string | null;
+      phones?: Record<string, unknown> | null;
     } | null = null;
     try {
       remoto = await this.pagarme.get(`/customers/${customerId}`);
     } catch {
       return; // sem leitura, deixa a cobranca decidir
     }
-    if (remoto?.document) return; // ja tem documento
+
+    const temTelefone = Object.keys(remoto?.phones ?? {}).length > 0;
+    if (remoto?.document && temTelefone) return; // ja esta completo
 
     const doc = await this.resolveDocument(userId);
     if (!doc) {
       throw new BadRequestException(
         'Informe seu CPF ou CNPJ para usar o cartao — a operadora exige o ' +
           'documento do titular para autorizar cobrancas.',
+      );
+    }
+
+    const phones = await this.resolvePhone(userId);
+    if (!temTelefone && !phones) {
+      throw new BadRequestException(
+        'Informe um telefone com DDD em Financeiro > Cartao para lances — a ' +
+          'operadora exige telefone do titular para autorizar cobrancas.',
       );
     }
 
@@ -287,10 +341,11 @@ export class CardsService {
       type: doc.type,
       document: doc.document,
       document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
+      ...(phones ? { phones } : {}),
     });
     await this.persistCpf(userId, doc.document);
     this.logger.log(
-      `Documento completado no customer ${customerId} (user ${userId}).`,
+      `Cadastro completado no customer ${customerId} (user ${userId}).`,
     );
   }
 
@@ -302,11 +357,11 @@ export class CardsService {
 
     if (!user) throw new NotFoundException('Usuario nao encontrado');
 
-    // Customer que JA existe pode ter nascido sem documento (era o caso antes
+    // Customer que JA existe pode ter nascido sem documento/telefone (o caso antes
     // desta correcao). Devolver ele direto deixaria o usuario preso: o cartao
     // salva e a cobranca falha para sempre. Completa o documento no lugar.
     if (user.pagarmeCustomerId) {
-      await this.completarDocumentoDoCustomer(user.pagarmeCustomerId, userId);
+      await this.completarCadastroDoCustomer(user.pagarmeCustomerId, userId);
       return user.pagarmeCustomerId;
     }
 
@@ -320,12 +375,21 @@ export class CardsService {
       );
     }
 
+    const phones = await this.resolvePhone(userId);
+    if (!phones) {
+      throw new BadRequestException(
+        'Informe um telefone com DDD para cadastrar um cartao — a operadora ' +
+          'exige telefone do titular para autorizar cobrancas.',
+      );
+    }
+
     const customer = await this.pagarme.post<PagarmeCustomer>('/customers', {
       name: user.name || 'Usuario Kolecta',
       email: user.email,
       type: doc.type,
       document: doc.document,
       document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
+      phones,
     });
 
     if (!customer?.id) {
