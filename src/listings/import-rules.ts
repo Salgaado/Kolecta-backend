@@ -16,7 +16,7 @@ import {
   MAX_IMAGES,
 } from './listing-publish-rules';
 
-export { MAX_IMAGES };
+export { MIN_IMAGES, MAX_IMAGES };
 
 /** Slugs de categoria aceitos (mesma lista do front). */
 export const CATEGORY_SLUGS = Object.keys(CATEGORY_REQUIRED_FIELDS);

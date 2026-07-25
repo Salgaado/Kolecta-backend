@@ -6,7 +6,10 @@
 
 export const MIN_DESCRIPTION_LENGTH = 30;
 export const MIN_TITLE_LENGTH = 10;
-export const MIN_IMAGES = 3;
+// 2, igual ao frontend (`src/lib/photos.ts`). Ficaram dessincronizados: o front
+// baixou para 2, o backend seguiu exigindo 3, e como a APROVAÇÃO do admin usa
+// esta regra, o anúncio publicado com 2 fotos era recusado sem explicação.
+export const MIN_IMAGES = 2;
 /**
  * Teto de fotos. O front já bloqueia no upload (wizard, edição e importação),
  * mas a trava no navegador não vale para quem chama a API direto — e um anúncio

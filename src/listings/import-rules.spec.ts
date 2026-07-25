@@ -1,4 +1,5 @@
 import {
+  MIN_IMAGES,
   isInstructionRow,
   validateImportRow,
   mapImportRow,
@@ -98,10 +99,23 @@ describe('import-rules', () => {
       );
     });
 
-    it('exige o mínimo de 3 fotos', () => {
-      expect(campos(linhaOk({ images: 'https://a.com/1.jpg' }))).toContain(
-        'images',
-      );
+    // O mínimo mora em MIN_IMAGES e já mudou de 3 para 2 — o teste segue a
+    // constante em vez de repetir o número, senão o nome vira mentira na
+    // próxima vez que o limite mudar.
+    it(`exige o mínimo de ${MIN_IMAGES} fotos`, () => {
+      const menosQueOMinimo = Array.from(
+        { length: MIN_IMAGES - 1 },
+        (_, i) => `https://a.com/${i}.jpg`,
+      ).join(', ');
+      expect(campos(linhaOk({ images: menosQueOMinimo }))).toContain('images');
+    });
+
+    it(`aceita exatamente ${MIN_IMAGES} fotos`, () => {
+      const noMinimo = Array.from(
+        { length: MIN_IMAGES },
+        (_, i) => `https://a.com/${i}.jpg`,
+      ).join(', ');
+      expect(campos(linhaOk({ images: noMinimo }))).not.toContain('images');
     });
 
     it('exige os campos da categoria escolhida', () => {

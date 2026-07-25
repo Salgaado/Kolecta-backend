@@ -1,3 +1,11 @@
+/**
+ * O cartão está FECHADO por padrão (`payment-flags.ts`) enquanto o antifraude
+ * da Pagar.me reprova toda cobrança. Estes testes cobrem o cartão funcionando,
+ * então ligam o interruptor antes do import — a flag é lida no carregamento do
+ * módulo.
+ */
+process.env.PAGAMENTO_CARTAO_HABILITADO = 'true';
+
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException } from '@nestjs/common';
 import { CardsService } from './cards.service';

@@ -1,4 +1,12 @@
 /**
+ * O cartão está FECHADO por padrão (`payment-flags.ts`) enquanto o antifraude
+ * da Pagar.me reprova toda cobrança. Estes testes cobrem o cartão funcionando,
+ * então ligam o interruptor antes do import — a flag é lida no carregamento do
+ * módulo.
+ */
+process.env.PAGAMENTO_CARTAO_HABILITADO = 'true';
+
+/**
  * O frete vai para a KOLECTA no split, não para o vendedor.
  *
  * Quem compra a etiqueta no Melhor Envio é a Kolecta (o token é da plataforma,

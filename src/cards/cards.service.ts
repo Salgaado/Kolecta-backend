@@ -9,6 +9,10 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
+import {
+  CARTAO_HABILITADO,
+  CARTAO_INDISPONIVEL,
+} from '../common/payment-flags';
 import { PagarmeService } from '../pagarme/pagarme.service';
 
 /** Cartão salvo, já mascarado, pronto para o frontend (sem dado sensível PCI). */
@@ -78,6 +82,13 @@ export class CardsService {
     cpf?: string,
     phone?: string,
   ): Promise<MaskedCard> {
+    // Sem cartão habilitado não faz sentido guardar cartão: ele só serve para
+    // lance e checkout, os dois fechados. Salvar agora daria a impressão de que
+    // está tudo pronto e o lance falharia depois.
+    if (!CARTAO_HABILITADO) {
+      throw new BadRequestException(CARTAO_INDISPONIVEL);
+    }
+
     // Persiste documento e telefone ANTES de garantir o customer: sem eles o
     // customer nasce incompleto e a pre-autorizacao do lance falha depois, com
     // um erro que fala de cartao e nao do dado que esta faltando.

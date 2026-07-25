@@ -12,6 +12,10 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
+import {
+  CARTAO_HABILITADO,
+  LANCE_INDISPONIVEL,
+} from '../common/payment-flags';
 import { WalletService } from '../wallet/wallet.service';
 import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
@@ -281,6 +285,13 @@ export class AuctionsService {
       : null;
 
     // Endereço de cobrança de quem dá o lance: a Pagar.me exige no cartão.
+    // Lance é garantido por pré-autorização no cartão — sem cartão, não há
+    // lance. Fecha antes de qualquer escrita para não deixar leilão com estado
+    // parcial.
+    if (!CARTAO_HABILITADO) {
+      throw new BadRequestException(LANCE_INDISPONIVEL);
+    }
+
     const billingAddress = await this._getBillingAddress(bidderId);
     if (!billingAddress) {
       throw new BadRequestException(

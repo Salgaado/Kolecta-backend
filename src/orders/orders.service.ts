@@ -16,6 +16,10 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq, inArray, and, lt } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
+import {
+  CARTAO_HABILITADO,
+  CARTAO_INDISPONIVEL,
+} from '../common/payment-flags';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
 import { FounderService } from '../founder/founder.service';
@@ -441,6 +445,12 @@ export class OrdersService {
     if (chargeAmount > 0) {
       instrument = dto.paymentMethod === 'credit_card' ? 'credit_card' : 'pix';
       if (instrument === 'credit_card') {
+        // Fechado enquanto o antifraude da Pagar.me reprova toda cobrança no
+        // cartão. Recusar aqui, antes de criar o pedido, evita anúncio travado
+        // em `pending_payment` por uma cobrança que já se sabe que vai falhar.
+        if (!CARTAO_HABILITADO) {
+          throw new BadRequestException(CARTAO_INDISPONIVEL);
+        }
         if (!dto.cardToken) {
           throw new BadRequestException(
             'Token do cartão ausente. Recarregue a página e tente novamente.',
