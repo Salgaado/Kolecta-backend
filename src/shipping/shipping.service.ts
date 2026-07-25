@@ -352,7 +352,11 @@ export class ShippingService {
   /** URL do painel Melhor Envio (carrinho) derivada do host da API. */
   private panelUrl() {
     const site = this.baseUrl.replace('/api/v2/me', '').replace('www.', '');
-    return `${site}/painel/carrinho`;
+    // `/carrinho`, não `/painel/carrinho`: essa segunda rota não existe e o
+    // Melhor Envio devolve a página de "não encontrado" com HTTP 200 — o
+    // vendedor clicava em "Abrir painel" e caía num 404. A rota certa responde
+    // 302 para o login e leva ao carrinho depois de autenticar.
+    return `${site}/carrinho`;
   }
 
   private getMockShippingQuote() {

@@ -134,7 +134,10 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
       cartId: 123,
       protocol: 'ORD-XYZ',
     });
-    expect(result.panelUrl).toContain('/painel/carrinho');
+    // `/carrinho` e NÃO `/painel/carrinho`: a segunda rota não existe no Melhor
+    // Envio e devolve "não encontrado" com HTTP 200 — o vendedor caía num 404.
+    expect(result.panelUrl).toContain('/carrinho');
+    expect(result.panelUrl).not.toContain('/painel/');
   });
 
   it('respeita declared_value do request quando informado', async () => {
