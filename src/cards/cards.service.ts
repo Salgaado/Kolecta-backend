@@ -253,7 +253,11 @@ export class CardsService {
     customerId: string,
     userId: string,
   ): Promise<void> {
-    let remoto: { document?: string | null } | null = null;
+    let remoto: {
+      document?: string | null;
+      name?: string | null;
+      email?: string | null;
+    } | null = null;
     try {
       remoto = await this.pagarme.get(`/customers/${customerId}`);
     } catch {
@@ -269,7 +273,17 @@ export class CardsService {
       );
     }
 
+    // O PUT da Pagar.me NAO e um patch: sem `name` ele responde 422 ("The name
+    // field is required"). Reenviamos os campos que ja existem no customer,
+    // caindo no nosso cadastro quando o remoto vier vazio.
+    const [user] = await this.db
+      .select({ name: schema.users.name, email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+
     await this.pagarme.put(`/customers/${customerId}`, {
+      name: remoto?.name || user?.name || 'Usuario Kolecta',
+      email: remoto?.email || user?.email,
       type: doc.type,
       document: doc.document,
       document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
