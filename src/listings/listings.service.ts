@@ -49,6 +49,24 @@ export class ListingsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  /**
+   * Config do leilão para as consultas PÚBLICAS. O lance inicial mora na tabela
+   * `auctions`, e as listagens devolviam só as colunas de `listings` — por isso
+   * o card mostrava "R$ 0,00" num leilão de R$ 3.100: o dado nunca chegava.
+   * `bidsCount` sai por subconsulta para não multiplicar linhas no join.
+   */
+  private readonly auctionPublicFields = {
+    startingBidInCents: schema.auctions.startingBidInCents,
+    minIncrementInCents: schema.auctions.minIncrementInCents,
+    currentBidInCents: schema.auctions.currentBidInCents,
+    reservePriceInCents: schema.auctions.reservePriceInCents,
+    endsAt: schema.auctions.endsAt,
+    auctionStatus: schema.auctions.status,
+    bidsCount: sql<number>`(
+      SELECT COUNT(*) FROM ${schema.bids} WHERE ${schema.bids.auctionId} = ${schema.auctions.id}
+    )`.as('bids_count'),
+  };
+
   // ── Buscar por ID ────────────────────────────────────────────────────────
 
   async findById(id: string): Promise<ListingRecord> {
@@ -56,9 +74,14 @@ export class ListingsService {
       .select({
         ...getTableColumns(schema.listings),
         sellerName: schema.users.name,
+        ...this.auctionPublicFields,
       })
       .from(schema.listings)
       .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .leftJoin(
+        schema.auctions,
+        eq(schema.auctions.listingId, schema.listings.id),
+      )
       .where(eq(schema.listings.id, id))
       .limit(1);
 
@@ -76,9 +99,14 @@ export class ListingsService {
       .select({
         ...getTableColumns(schema.listings),
         sellerName: schema.users.name,
+        ...this.auctionPublicFields,
       })
       .from(schema.listings)
       .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .leftJoin(
+        schema.auctions,
+        eq(schema.auctions.listingId, schema.listings.id),
+      )
       .where(eq(schema.listings.status, 'active'))
       .$dynamic();
 
