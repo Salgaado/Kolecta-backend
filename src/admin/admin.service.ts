@@ -29,28 +29,58 @@ export class AdminService {
   // ── GET /api/admin/stats ─────────────────────────────────────────────────
 
   async getStats() {
-    const [[usersRow], [listingsRow], [ordersRow], [revenueRow], [disputesRow], [auctionsRow]] =
-      await Promise.all([
-        this.db.select({ total: count() }).from(schema.users),
-        this.db.select({ total: count() }).from(schema.listings),
-        this.db.select({ total: count() }).from(schema.orders),
-        this.db
-          .select({ total: sum(schema.orders.platformFeeInCents) })
-          .from(schema.orders)
-          .where(eq(schema.orders.status, 'completed')),
-        this.db
-          .select({ total: count() })
-          .from(schema.disputes)
-          .where(eq(schema.disputes.status, 'open')),
-        this.db
-          .select({ total: count() })
-          .from(schema.auctions)
-          .where(eq(schema.auctions.status, 'active')),
-      ]);
+    // Ordem importa para o spec: as três primeiras terminam em .from(), as
+    // demais em .where(). Ver o comentário em admin.service.spec.ts.
+    const [
+      [usersRow],
+      [listingsRow],
+      [ordersRow],
+      [activeListingsRow],
+      [revenueRow],
+      [disputesRow],
+      [auctionsRow],
+    ] = await Promise.all([
+      this.db.select({ total: count() }).from(schema.users),
+      this.db.select({ total: count() }).from(schema.listings),
+      this.db.select({ total: count() }).from(schema.orders),
+      // Anúncios NO AR. O total da tabela inclui 716 rascunhos que nunca foram
+      // enviados, então o painel exibia "878 anúncios" com 136 na vitrine.
+      this.db
+        .select({ total: count() })
+        .from(schema.listings)
+        .where(eq(schema.listings.status, 'active')),
+      this.db
+        .select({ total: sum(schema.orders.platformFeeInCents) })
+        .from(schema.orders)
+        .where(eq(schema.orders.status, 'completed')),
+      this.db
+        .select({ total: count() })
+        .from(schema.disputes)
+        .where(eq(schema.disputes.status, 'open')),
+      // Leilão no ar exige as DUAS pontas: a linha em `auctions` nasce 'active'
+      // junto com o anúncio, mesmo que ele nunca saia do rascunho. Sem o join
+      // o painel contava 72 leilões "ativos" com 3 realmente na vitrine — 64
+      // deles presos em rascunho.
+      this.db
+        .select({ total: count() })
+        .from(schema.auctions)
+        .innerJoin(
+          schema.listings,
+          eq(schema.listings.id, schema.auctions.listingId),
+        )
+        .where(
+          and(
+            eq(schema.auctions.status, 'active'),
+            eq(schema.listings.status, 'active'),
+          ),
+        ),
+    ]);
 
     return {
       totalUsers: usersRow?.total ?? 0,
+      // Mantido para quem quiser o volume bruto do banco; o painel usa o de baixo.
       totalListings: listingsRow?.total ?? 0,
+      activeListings: activeListingsRow?.total ?? 0,
       totalOrders: ordersRow?.total ?? 0,
       totalRevenueInCents: Number(revenueRow?.total ?? 0),
       openDisputes: disputesRow?.total ?? 0,

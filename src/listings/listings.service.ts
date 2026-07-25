@@ -55,6 +55,20 @@ export class ListingsService {
    * o card mostrava "R$ 0,00" num leilão de R$ 3.100: o dado nunca chegava.
    * `bidsCount` sai por subconsulta para não multiplicar linhas no join.
    */
+  /**
+   * Nome do vendedor na vitrine: o da LOJA quando existir, senão o pessoal.
+   *
+   * Quem vende como loja ("Culture TCG", "Safari TCG") cadastra o nome em
+   * `seller_profiles.store_name`, mas a vitrine mostrava sempre `users.name` —
+   * que para quem entrou só com e-mail e senha é a parte local do endereço.
+   * O NULLIF trata string vazia como ausente: nome em branco é o mesmo que não
+   * ter nome, e sem ele o COALESCE devolveria '' e o card ficaria sem vendedor.
+   */
+  private readonly sellerDisplayName = sql<string | null>`COALESCE(
+    NULLIF(TRIM(${schema.sellerProfiles.storeName}), ''),
+    NULLIF(TRIM(${schema.users.name}), '')
+  )`.as('seller_name');
+
   private readonly auctionPublicFields = {
     startingBidInCents: schema.auctions.startingBidInCents,
     minIncrementInCents: schema.auctions.minIncrementInCents,
@@ -73,11 +87,15 @@ export class ListingsService {
     const result = await this.db
       .select({
         ...getTableColumns(schema.listings),
-        sellerName: schema.users.name,
+        sellerName: this.sellerDisplayName,
         ...this.auctionPublicFields,
       })
       .from(schema.listings)
       .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .leftJoin(
+        schema.sellerProfiles,
+        eq(schema.sellerProfiles.userId, schema.listings.sellerId),
+      )
       .leftJoin(
         schema.auctions,
         eq(schema.auctions.listingId, schema.listings.id),
@@ -98,11 +116,15 @@ export class ListingsService {
     let query = this.db
       .select({
         ...getTableColumns(schema.listings),
-        sellerName: schema.users.name,
+        sellerName: this.sellerDisplayName,
         ...this.auctionPublicFields,
       })
       .from(schema.listings)
       .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .leftJoin(
+        schema.sellerProfiles,
+        eq(schema.sellerProfiles.userId, schema.listings.sellerId),
+      )
       .leftJoin(
         schema.auctions,
         eq(schema.auctions.listingId, schema.listings.id),

@@ -69,6 +69,7 @@ const makeDrizzleMock = () => {
   chain.select = jest.fn().mockReturnValue(chain);
   chain.from = jest.fn().mockReturnValue(chain);
   chain.leftJoin = jest.fn().mockReturnValue(chain);
+  chain.innerJoin = jest.fn().mockReturnValue(chain);
   // where retorna chain por padrão (para suportar update chain)
   // Testes de SELECT que terminam em where devem usar mockResolvedValueOnce
   chain.where = jest.fn().mockReturnValue(chain);
@@ -114,13 +115,14 @@ describe('AdminService', () => {
 
   // ── getStats ──────────────────────────────────────────────────────────────
   //
-  // getStats faz Promise.all de 6 queries:
+  // getStats faz Promise.all de 7 queries:
   //   [0] select(count).from(users)                      — terminal: from()
   //   [1] select(count).from(listings)                   — terminal: from()
   //   [2] select(count).from(orders)                     — terminal: from()
-  //   [3] select(sum).from(orders).where(status=completed) — terminal: where()
-  //   [4] select(count).from(disputes).where(status=open)  — terminal: where()
-  //   [5] select(count).from(auctions).where(status=active) — terminal: where()
+  //   [3] select(count).from(listings).where(active)     — terminal: where()
+  //   [4] select(sum).from(orders).where(status=completed) — terminal: where()
+  //   [5] select(count).from(disputes).where(status=open)  — terminal: where()
+  //   [6] select(count).from(auctions).innerJoin(listings).where(...) — where()
   //
   // Como os terminais são diferentes, usamos mockResolvedValueOnce para `from`
   // nas 3 primeiras chamadas (que não têm .where) e para `where` nas 3 últimas.
@@ -136,9 +138,10 @@ describe('AdminService', () => {
         .mockReturnValue(mockDb);                 // fallback: retorna chain para queries com .where()
       // queries [3],[4] terminam em where()
       mockDb.where
+        .mockResolvedValueOnce([{ total: 5 }])      // anuncios NO AR
         .mockResolvedValueOnce([{ total: 50000 }]) // revenue (orders where completed)
         .mockResolvedValueOnce([{ total: 2 }])      // open disputes
-        .mockResolvedValueOnce([{ total: 4 }]);     // active auctions
+        .mockResolvedValueOnce([{ total: 4 }]);     // leiloes no ar (auction + listing ativos)
 
       service = await buildModule();
       const stats = await service.getStats();
@@ -150,6 +153,10 @@ describe('AdminService', () => {
       expect(stats).toHaveProperty('openDisputes');
       expect(stats.totalUsers).toBe(42);
       expect(stats.totalListings).toBe(7);
+      // "no ar" e um numero DIFERENTE do total: e a correcao do painel, que
+      // mostrava 878 anuncios com 136 na vitrine.
+      expect(stats.activeListings).toBe(5);
+      expect(stats.activeAuctions).toBe(4);
     });
 
     it('deve retornar zeros quando todas as tabelas estão vazias', async () => {
@@ -160,9 +167,10 @@ describe('AdminService', () => {
         .mockResolvedValueOnce([{ total: 0 }])
         .mockReturnValue(mockDb);
       mockDb.where
+        .mockResolvedValueOnce([{ total: 0 }])    // anuncios no ar
         .mockResolvedValueOnce([{ total: null }]) // revenue null → deve ser 0
         .mockResolvedValueOnce([{ total: 0 }])    // disputes
-        .mockResolvedValueOnce([{ total: 0 }]);   // active auctions
+        .mockResolvedValueOnce([{ total: 0 }]);   // leiloes no ar
 
       service = await buildModule();
       const stats = await service.getStats();
@@ -179,9 +187,10 @@ describe('AdminService', () => {
         .mockResolvedValueOnce([{ total: 2 }])
         .mockReturnValue(mockDb);
       mockDb.where
+        .mockResolvedValueOnce([{ total: 4 }])       // anuncios no ar
         .mockResolvedValueOnce([{ total: '99999' }]) // sum retorna string no SQLite
         .mockResolvedValueOnce([{ total: 1 }])       // disputes
-        .mockResolvedValueOnce([{ total: 3 }]);      // active auctions
+        .mockResolvedValueOnce([{ total: 3 }]);      // leiloes no ar
 
       service = await buildModule();
       const stats = await service.getStats();
