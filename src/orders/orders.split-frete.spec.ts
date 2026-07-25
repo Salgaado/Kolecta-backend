@@ -362,3 +362,135 @@ describe('OrdersService.motivoDaRecusa', () => {
     expect(r.mensagem).toMatch(/recusado pelo emissor/i);
   });
 });
+
+/**
+ * O que a Pagar.me recebe alimenta o ANTIFRAUDE. Uma compra real foi reprovada
+ * como suspeita mandando: nenhum endereço do comprador, nenhum destino de
+ * entrega e um item só, "Compra Kolecta #abc123". Isso tem a cara de teste de
+ * cartão.
+ */
+describe('OrdersService — dados que o antifraude lê', () => {
+  let service: any;
+  let selectChain: any;
+  let pagarme: any;
+
+  beforeEach(async () => {
+    selectChain = {
+      from: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      where: jest.fn(),
+    };
+    const updateChain: any = {
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      returning: jest.fn().mockResolvedValue([{ id: 'order_123' }]),
+      then: (r: any) => r(undefined),
+    };
+    const insertChain: any = {
+      values: jest.fn().mockReturnThis(),
+      returning: jest.fn().mockResolvedValue([{ id: 'order_123', status: 'pending' }]),
+    };
+    const db = {
+      select: () => selectChain,
+      update: () => updateChain,
+      insert: () => insertChain,
+      transaction: jest.fn(async (cb: any) =>
+        cb({ update: () => updateChain, insert: () => insertChain }),
+      ),
+    };
+    pagarme = {
+      post: jest.fn().mockResolvedValue({
+        id: 'or_x',
+        status: 'pending',
+        charges: [{ id: 'ch', last_transaction: { qr_code: 'p', qr_code_url: 'u' } }],
+      }),
+      get: jest.fn(),
+    };
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        OrdersService,
+        { provide: DATABASE_CONNECTION, useValue: db },
+        {
+          provide: WalletService,
+          useValue: {
+            hold: jest.fn(),
+            getOrCreateWallet: jest.fn().mockResolvedValue({ id: 'w', balanceInCents: 0 }),
+          },
+        },
+        { provide: PagarmeService, useValue: pagarme },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        {
+          provide: FounderService,
+          useValue: { resolveCommissionPercent: jest.fn().mockResolvedValue(COMISSAO_PCT) },
+        },
+      ],
+    }).compile();
+    service = mod.get(OrdersService);
+
+    selectChain.where
+      .mockResolvedValueOnce([listing])
+      .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+      .mockResolvedValueOnce([{ ...endereco, recipientName: 'Artminis Toys' }])
+      .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]);
+  });
+
+  const comprar = () =>
+    service.createCheckout('user_buyer', {
+      items: [{ listingId: 'listing_001' }],
+      buyerCpf: '529.982.247-25',
+      buyerPhone: '11987654321',
+      addressId: 'addr_1',
+      shippingInCents: FRETE,
+      deliveryMethod: 'shipping',
+    });
+
+  it('discrimina produto e frete, somando exatamente o valor cobrado', async () => {
+    await comprar();
+    const corpo = pagarme.post.mock.calls[0][1];
+
+    expect(corpo.items).toHaveLength(2);
+    expect(corpo.items[0].description).toBe('Hot Wheels'); // título real
+    expect(corpo.items[0].amount).toBe(ITEM);
+    expect(corpo.items[1].description).toBe('Frete');
+    expect(corpo.items[1].amount).toBe(FRETE);
+    // A Pagar.me recusa a order se a soma divergir do cobrado.
+    expect(corpo.items.reduce((t: number, i: any) => t + i.amount, 0)).toBe(
+      ITEM + FRETE,
+    );
+  });
+
+  it('manda o endereço do comprador', async () => {
+    await comprar();
+    const c = pagarme.post.mock.calls[0][1].customer;
+    expect(c.address).toBeDefined();
+    expect(c.address.zip_code).toBe('01310100'); // só dígitos
+    expect(c.address.state).toBe('SP');
+  });
+
+  /**
+   * Testado contra a API: `shipping.amount` SOMA ao total (2553 → 4106). Com
+   * ele, o comprador pagaria o frete duas vezes.
+   */
+  it('manda o destino da entrega SEM amount', async () => {
+    await comprar();
+    const corpo = pagarme.post.mock.calls[0][1];
+    expect(corpo.shipping).toBeDefined();
+    expect(corpo.shipping.address.city).toBe('Sao Paulo');
+    expect(corpo.shipping.recipient_name).toBe('Artminis Toys');
+    expect(corpo.shipping.amount).toBeUndefined();
+  });
+
+  it('usa CNPJ quando o comprador é empresa', async () => {
+    await service.createCheckout('user_buyer', {
+      items: [{ listingId: 'listing_001' }],
+      buyerCpf: '11.222.333/0001-81',
+      buyerPhone: '11987654321',
+      addressId: 'addr_1',
+      shippingInCents: FRETE,
+      deliveryMethod: 'shipping',
+    });
+    const c = pagarme.post.mock.calls[0][1].customer;
+    expect(c.type).toBe('company');
+    expect(c.document_type).toBe('CNPJ');
+  });
+});

@@ -714,24 +714,88 @@ export class OrdersService {
             ...(split ? { split } : {}),
           };
 
+    // ── Itens e endereço para a Pagar.me (leitura do antifraude) ──
+    // Uma linha só, "Compra Kolecta #abc123", não diz nada a quem avalia risco.
+    // Discriminar produto e frete com o título real do anúncio dá contexto —
+    // e a soma continua idêntica ao valor cobrado.
+    const enderecoPagarme = enderecoEntrega
+      ? {
+          line_1: [
+            enderecoEntrega.number,
+            enderecoEntrega.street,
+            enderecoEntrega.neighborhood,
+          ]
+            .filter(Boolean)
+            .join(', '),
+          ...(enderecoEntrega.complement
+            ? { line_2: enderecoEntrega.complement }
+            : {}),
+          zip_code: String(enderecoEntrega.zip).replace(/\D/g, ''),
+          city: enderecoEntrega.city,
+          state: enderecoEntrega.state,
+          country: (enderecoEntrega.country || 'BR').toUpperCase(),
+        }
+      : null;
+
+    const itensDetalhados = [
+      {
+        amount: itemInCents - walletDeducted,
+        description: (listing.title || 'Item Kolecta').slice(0, 250),
+        quantity: 1,
+        code: listing.id.slice(0, 52),
+      },
+      ...(shippingInCents > 0
+        ? [
+            {
+              amount: shippingInCents,
+              description: 'Frete',
+              quantity: 1,
+              code: 'frete',
+            },
+          ]
+        : []),
+      ...(interestInCents > 0
+        ? [
+            {
+              amount: interestInCents,
+              description: `Juros do parcelamento (${installments}x)`,
+              quantity: 1,
+              code: 'juros',
+            },
+          ]
+        : []),
+    ];
+
+    // A soma dos itens TEM que bater com o valor cobrado — a Pagar.me recusa a
+    // order inteira se divergir. Quando a wallet cobre parte, o rateio deixa de
+    // ser óbvio; nesse caso volta para a linha única, que é sempre correta.
+    const somaItens = itensDetalhados.reduce((t, i) => t + i.amount, 0);
+    const itensDaCobranca =
+      somaItens === amountCharged && itensDetalhados[0].amount > 0
+        ? itensDetalhados
+        : [
+            {
+              amount: amountCharged,
+              description: `Compra Kolecta #${order.id.slice(0, 8)}`,
+              quantity: 1,
+              code: 'kolecta-order',
+            },
+          ];
+
     // Cria a cobrança na Pagar.me para o valor restante (+ juros no cartão).
     const pagarmeOrder = await this.pagarme.post<PagarmeOrderResponse>(
       '/orders',
       {
-        items: [
-          {
-            amount: amountCharged,
-            description: `Compra Kolecta #${order.id.slice(0, 8)}`,
-            quantity: 1,
-            code: 'kolecta-order',
-          },
-        ],
+        items: itensDaCobranca,
         customer: {
           name: buyer?.name || 'Comprador Kolecta',
           email: buyer?.email,
-          type: 'individual',
+          // Loja cadastrada como empresa compra com CNPJ. Fixar 'individual'
+          // mandava o documento com o tipo errado — a mesma pegadinha que já
+          // travou o cartão salvo do lance.
+          type: cpfDigits.length === 14 ? 'company' : 'individual',
           document: cpfDigits,
-          document_type: 'CPF',
+          document_type: cpfDigits.length === 14 ? 'CNPJ' : 'CPF',
           phones: {
             mobile_phone: {
               country_code: '55',
@@ -739,7 +803,24 @@ export class OrdersService {
               number: phoneNumber,
             },
           },
+          // Endereço do comprador: o antifraude pontua com ele, e sem nada a
+          // transação parece teste de cartão.
+          ...(enderecoPagarme ? { address: enderecoPagarme } : {}),
         },
+        // Destino da entrega. SEM `amount` de propósito: com ele a Pagar.me
+        // SOMA o valor ao total (verificado na API — 2553 virou 4106), e o
+        // comprador pagaria o frete duas vezes. Sem ele o bloco é aceito, o
+        // total não muda e o antifraude passa a enxergar para onde vai a peça.
+        ...(enderecoPagarme && deliveryMethod === 'shipping'
+          ? {
+              shipping: {
+                description: 'Entrega Kolecta',
+                recipient_name:
+                  enderecoEntrega?.recipientName || buyer?.name || 'Comprador',
+                address: enderecoPagarme,
+              },
+            }
+          : {}),
         payments: [paymentBlock],
         metadata: {
           type: 'purchase',
