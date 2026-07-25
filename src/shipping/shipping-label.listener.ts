@@ -161,18 +161,30 @@ export class ShippingLabelListener {
   }
 
   /**
-   * Baixa o PDF da etiqueta para anexar.
+   * Baixa o PDF da etiqueta para anexar — se for mesmo um PDF.
    *
-   * Best-effort de propósito: se o download falhar, o e-mail sai com o link em
-   * vez do anexo. Segurar a etiqueta inteira por causa de um download seria
-   * pior para o vendedor do que um link.
+   * A URL do `print` do Melhor Envio NÃO é um arquivo: é uma página do painel,
+   * protegida por sessão. Baixá-la traz o HTML do login. Sem a checagem abaixo,
+   * o vendedor recebia um `etiqueta.pdf` de 20 KB que nenhum leitor abre — pior
+   * que não receber anexo nenhum, porque parece problema do computador dele.
+   *
+   * Best-effort de propósito: sem PDF válido, o e-mail sai assim mesmo, com o
+   * texto adequado.
    */
   private async baixarPdf(url: string): Promise<Buffer | null> {
     try {
       const resposta = await firstValueFrom(
         this.http.get(url, { responseType: 'arraybuffer', timeout: 20000 }),
       );
-      return Buffer.from(resposta.data as ArrayBuffer);
+      const arquivo = Buffer.from(resposta.data as ArrayBuffer);
+      // Assinatura de PDF. HTML começa com "<!DOC" e não serve.
+      if (arquivo.subarray(0, 5).toString('latin1') !== '%PDF-') {
+        this.logger.warn(
+          `A URL da etiqueta não devolveu um PDF (${url}) — enviando sem anexo.`,
+        );
+        return null;
+      }
+      return arquivo;
     } catch (err: any) {
       this.logger.warn(
         `Não foi possível baixar o PDF da etiqueta (${url}): ${err?.message}`,

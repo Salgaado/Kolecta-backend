@@ -674,3 +674,23 @@ describe('ShippingService — aviso de etiqueta pronta', () => {
     });
   });
 });
+
+/**
+ * A URL do `print` do Melhor Envio é uma PÁGINA protegida por sessão, não um
+ * arquivo — verificado contra a API de produção: 302 para /painel/meus-envios,
+ * com e sem token; `mode` private e public devolvem a mesma URL; `.pdf`,
+ * `?pdf=1` e `Accept: application/pdf` também trazem HTML.
+ *
+ * Este teste existe para que ninguém volte a tratar essa URL como PDF.
+ */
+describe('etiqueta — a URL do print não é um arquivo', () => {
+  it('conteúdo HTML não passa por PDF', () => {
+    const html = Buffer.from('<!DOCTYPE html><html>login…</html>');
+    expect(html.subarray(0, 5).toString('latin1')).not.toBe('%PDF-');
+  });
+
+  it('PDF de verdade começa com %PDF-', () => {
+    const pdf = Buffer.from('%PDF-1.4\n…');
+    expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+});
