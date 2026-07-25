@@ -70,6 +70,10 @@ export class ListingsService {
   )`.as('seller_name');
 
   private readonly auctionPublicFields = {
+    // O lance acontece em /modo-lance/:auctionId, e a vitrine só tinha o id do
+    // ANÚNCIO — por isso o "Dar Lance" do card caía em /produto/:id, que não
+    // tem lance nenhum. Sem este campo não há como ligar um ao outro no front.
+    auctionId: schema.auctions.id,
     startingBidInCents: schema.auctions.startingBidInCents,
     minIncrementInCents: schema.auctions.minIncrementInCents,
     currentBidInCents: schema.auctions.currentBidInCents,
