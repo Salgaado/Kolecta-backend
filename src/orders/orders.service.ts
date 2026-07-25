@@ -262,11 +262,20 @@ export class OrdersService {
     const codigo = String(tx?.acquirer_return_code ?? '').trim();
     const adquirente = tx?.acquirer_message;
 
+    // Loga a transação INTEIRA, menos os dados do cartão (PCI/LGPD).
+    //
+    // Motivo: já apareceu recusa com `acquirer_return_code: 0000` e "Transação
+    // aprovada com sucesso" — ou seja, o emissor autorizou e quem reprovou foi
+    // a Pagar.me depois (antifraude ou split). Nenhum campo escolhido a dedo
+    // explica isso; é preciso ver o objeto todo.
+    const { card, ...transacaoSemCartao } = (tx ?? {}) as Record<string, any>;
     const log = JSON.stringify({
       status: tx?.status ?? null,
       acquirer_return_code: tx?.acquirer_return_code ?? null,
       acquirer_message: adquirente ?? null,
+      antifraud_response: tx?.antifraud_response ?? null,
       gateway_response: tx?.gateway_response ?? null,
+      transacao: transacaoSemCartao,
     });
 
     // Códigos ISO-8583 mais comuns no varejo brasileiro. Só os que mudam o que
