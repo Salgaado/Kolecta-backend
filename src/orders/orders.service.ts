@@ -13,7 +13,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { eq, inArray, and, lt } from 'drizzle-orm';
+import { eq, inArray, and, lt, gt, isNotNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
 import {
@@ -1472,6 +1472,66 @@ export class OrdersService {
     );
   }
 
+  // ── Estoque ───────────────────────────────────────────────────────────────
+
+  /**
+   * Baixa uma unidade do anúncio, no momento em que o PAGAMENTO é confirmado.
+   *
+   * Não é na reserva do carrinho de propósito: carrinho abandonado consumiria
+   * estoque que ninguém comprou. E a baixa é feita pelo próprio banco
+   * (`stock = stock - 1 WHERE stock > 0`), não lida-e-escrita pelo Node — duas
+   * pessoas pagando a última unidade ao mesmo tempo levariam o estoque a
+   * negativo e as duas venderiam.
+   *
+   * Quem não informou estoque (`stock` nulo) segue a regra antiga do MVP: uma
+   * unidade por anúncio, e a venda marca como `sold`.
+   *
+   * Estoque zerado sai do ar como `paused`, não `sold`: pausado o vendedor
+   * repõe e reativa direto (`POST /listings/:id/publish` aceita `paused` e
+   * dispensa nova moderação), enquanto `sold` é um beco sem saída que obriga a
+   * recriar o anúncio.
+   */
+  private async baixarEstoque(tx: any, listingId: string): Promise<void> {
+    const baixados = await tx
+      .update(schema.listings)
+      .set({
+        stock: sql`${schema.listings.stock} - 1`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.listings.id, listingId),
+          isNotNull(schema.listings.stock),
+          gt(schema.listings.stock, 0),
+        ),
+      )
+      .returning({ stock: schema.listings.stock });
+
+    // Nada baixado = anúncio sem controle de estoque (ou já zerado): unidade
+    // única, comportamento de sempre.
+    const restante = baixados[0]?.stock;
+    if (restante == null) {
+      await tx
+        .update(schema.listings)
+        .set({ status: 'sold', updatedAt: new Date() })
+        .where(eq(schema.listings.id, listingId));
+      return;
+    }
+
+    if (restante <= 0) {
+      await tx
+        .update(schema.listings)
+        .set({ status: 'paused', updatedAt: new Date() })
+        .where(eq(schema.listings.id, listingId));
+      this.logger.log(
+        `📦 Anúncio ${listingId} zerou o estoque — pausado até o vendedor repor.`,
+      );
+      return;
+    }
+
+    this.logger.log(`📦 Anúncio ${listingId}: estoque restante ${restante}.`);
+  }
+
   // ── Shared order confirmation logic ───────────────────────────────────────
 
   private async confirmOrderPayment(
@@ -1543,10 +1603,7 @@ export class OrdersService {
         })
         .where(eq(schema.orders.id, orderId));
 
-      await tx
-        .update(schema.listings)
-        .set({ status: 'sold' })
-        .where(eq(schema.listings.id, order.listingId));
+      await this.baixarEstoque(tx, order.listingId);
     });
 
     // Creditar valor líquido como saldo retido (held_balance) para o vendedor
