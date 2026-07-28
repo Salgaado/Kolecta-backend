@@ -52,15 +52,29 @@ export class WebhookService {
 
   // ─── user.created ────────────────────────────────────────────────────────────
 
+  /**
+   * Foto do Clerk. A imagem já está hospedada lá, então guardamos a URL em vez
+   * de copiar o arquivo. O Clerk sempre manda uma `image_url` — quando o usuário
+   * não subiu foto, é o avatar gerado com as iniciais dele, que não serve de
+   * nada aqui: o front já desenha as iniciais sozinho quando não há foto.
+   * `has_image` separa uma coisa da outra.
+   */
+  private resolveAvatarUrl(data: any): string | null {
+    if (data?.has_image === false) return null;
+    const url: unknown = data?.image_url ?? data?.profile_image_url;
+    return typeof url === 'string' && url.trim() ? url.trim() : null;
+  }
+
   private async handleUserCreated(data: any): Promise<void> {
     const { id, email_addresses } = data;
     const email = email_addresses?.[0]?.email_address;
     const name = this.resolveDisplayName(data);
+    const avatarUrl = this.resolveAvatarUrl(data);
 
     this.logger.log(`[user.created] ID: ${id} | Email: ${email}`);
 
     try {
-      await this.db.insert(schema.users).values({ id, email, name });
+      await this.db.insert(schema.users).values({ id, email, name, avatarUrl });
       this.logger.log(`[user.created] Usuário inserido no Turso com sucesso.`);
 
       // E-mail de boas-vindas. Emitido só depois do insert dar certo — não faz
@@ -78,13 +92,14 @@ export class WebhookService {
     const { id, email_addresses } = data;
     const email = email_addresses?.[0]?.email_address;
     const name = this.resolveDisplayName(data);
+    const avatarUrl = this.resolveAvatarUrl(data);
 
     this.logger.log(`[user.updated] ID: ${id} | Novo email: ${email}`);
 
     try {
       await this.db
         .update(schema.users)
-        .set({ email, name, updatedAt: new Date() })
+        .set({ email, name, avatarUrl, updatedAt: new Date() })
         .where(eq(schema.users.id, id));
 
       this.logger.log(

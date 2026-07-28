@@ -92,7 +92,45 @@ describe('WebhookService', () => {
         id: 'user_abc123',
         email: 'test@kolecta.com',
         name: 'João Silva',
+        // Cadastro sem foto: `has_image: false` → nada a guardar. O front já
+        // desenha as iniciais quando não há avatar, então gravar o avatar
+        // gerado pelo Clerk só mascararia a ausência de foto.
+        avatarUrl: null,
       });
+    });
+
+    it('guarda a foto do Clerk quando o usuário tem uma', async () => {
+      await service.handleEvent({
+        type: 'user.created',
+        data: {
+          ...userCreatedEvt.data,
+          has_image: true,
+          image_url: 'https://img.clerk.com/abc.png',
+        },
+      });
+
+      const valuesCall = mockInsert.mock.results[0].value.values;
+      expect(valuesCall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          avatarUrl: 'https://img.clerk.com/abc.png',
+        }),
+      );
+    });
+
+    it('ignora o avatar gerado pelo Clerk (has_image false)', async () => {
+      await service.handleEvent({
+        type: 'user.created',
+        data: {
+          ...userCreatedEvt.data,
+          has_image: false,
+          image_url: 'https://img.clerk.com/iniciais-geradas.png',
+        },
+      });
+
+      const valuesCall = mockInsert.mock.results[0].value.values;
+      expect(valuesCall).toHaveBeenCalledWith(
+        expect.objectContaining({ avatarUrl: null }),
+      );
     });
   });
 

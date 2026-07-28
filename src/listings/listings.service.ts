@@ -7,7 +7,15 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { eq, desc, and, getTableColumns, like, sql } from 'drizzle-orm';
+import {
+  eq,
+  desc,
+  and,
+  inArray,
+  getTableColumns,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
@@ -16,6 +24,7 @@ import * as XLSX from 'xlsx';
 import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
 import { FounderService } from '../founder/founder.service';
 import { SUBMITTED_LISTING_STATUSES } from '../founder/founder.constants';
+import { alvoDeBusca, condicaoDeBusca } from '../common/busca-sql';
 import { listingPublishBlockers } from './listing-publish-rules';
 import {
   isInstructionRow,
@@ -35,6 +44,22 @@ export { CreateListingDto, UpdateListingDto };
 export type ListingRecord = typeof schema.listings.$inferSelect & {
   sellerName?: string | null;
 };
+
+/** Filtros da vitrine pública. Tudo opcional; ausente = não restringe. */
+export interface ListingFilters {
+  limit?: number;
+  offset?: number;
+  /** Termo de busca livre (ignora acento e caixa). */
+  q?: string;
+  /** Id OU slug da categoria. Inclui as subcategorias dela. */
+  categoria?: string;
+  /** lacrado | novo | mint | usado — aceita mais de uma. */
+  condicoes?: string[];
+  /** direct | auction */
+  tipo?: string;
+  precoMin?: number;
+  precoMax?: number;
+}
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -64,10 +89,33 @@ export class ListingsService {
    * O NULLIF trata string vazia como ausente: nome em branco é o mesmo que não
    * ter nome, e sem ele o COALESCE devolveria '' e o card ficaria sem vendedor.
    */
-  private readonly sellerDisplayName = sql<string | null>`COALESCE(
+  private readonly sellerDisplayNameExpr = sql<string | null>`COALESCE(
     NULLIF(TRIM(${schema.sellerProfiles.storeName}), ''),
     NULLIF(TRIM(${schema.users.name}), '')
-  )`.as('seller_name');
+  )`;
+
+  /**
+   * A versão com apelido serve só ao SELECT. No WHERE ela vira a referência
+   * `"seller_name"` — que o SQLite aceita no SELECT da vitrine e recusa na
+   * consulta de contagem, onde a coluna não é projetada. Por isso a expressão
+   * crua acima existe separada: o filtro usa ela, a projeção usa esta.
+   */
+  private readonly sellerDisplayName = this.sellerDisplayNameExpr.as(
+    'seller_name',
+  );
+
+  /**
+   * Foto do vendedor na vitrine: a da LOJA quando o vendedor subiu uma, senão a
+   * que veio do Clerk no cadastro.
+   *
+   * A API devolvia só `sellerName`, então o selo do vendedor aparecia com as
+   * iniciais no card, no perfil da loja e no anúncio — inclusive para quem tinha
+   * subido foto, que só a via no próprio painel.
+   */
+  private readonly sellerAvatar = sql<string | null>`COALESCE(
+    NULLIF(TRIM(${schema.sellerProfiles.avatarUrl}), ''),
+    NULLIF(TRIM(${schema.users.avatarUrl}), '')
+  )`.as('seller_avatar_url');
 
   private readonly auctionPublicFields = {
     // O lance acontece em /modo-lance/:auctionId, e a vitrine só tinha o id do
@@ -101,6 +149,7 @@ export class ListingsService {
         // mostra o selo: numa lista de 20 itens, 20 requisições de ~3s.
         sellerFounderNumber: schema.sellerProfiles.founderNumber,
         sellerFounderStatus: schema.sellerProfiles.founderStatus,
+        sellerAvatarUrl: this.sellerAvatar,
         ...this.auctionPublicFields,
       })
       .from(schema.listings)
@@ -125,49 +174,147 @@ export class ListingsService {
 
   // ── Listar anúncios públicos ativos ──────────────────────────────────────
 
-  async findAll(limit = 20, offset = 0, q?: string): Promise<ListingRecord[]> {
-    let query = this.db
-      .select({
-        ...getTableColumns(schema.listings),
-        sellerName: this.sellerDisplayName,
-        // Número do Fundador junto do anúncio, como o nome do vendedor. Sem
-        // isto o front buscava o perfil de cada vendedor só para saber se
-        // mostra o selo: numa lista de 20 itens, 20 requisições de ~3s.
-        sellerFounderNumber: schema.sellerProfiles.founderNumber,
-        sellerFounderStatus: schema.sellerProfiles.founderStatus,
-        ...this.auctionPublicFields,
-      })
-      .from(schema.listings)
-      .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
-      .leftJoin(
-        schema.sellerProfiles,
-        eq(schema.sellerProfiles.userId, schema.listings.sellerId),
-      )
-      .leftJoin(
-        schema.auctions,
-        eq(schema.auctions.listingId, schema.listings.id),
-      )
-      .where(eq(schema.listings.status, 'active'))
-      .$dynamic();
+  /**
+   * Preço de comparação do anúncio. Leilão não usa `priceInCents` (fica nulo): o
+   * valor que o comprador vê no card é o lance atual, ou o inicial enquanto
+   * ninguém lançou. Sem este COALESCE, filtrar por faixa de preço sumiria com
+   * todos os leilões.
+   */
+  private readonly precoComparavel = sql<number>`COALESCE(
+    ${schema.listings.priceInCents},
+    ${schema.auctions.currentBidInCents},
+    ${schema.auctions.startingBidInCents}
+  )`;
 
-    if (q) {
-      query = query.where(
-        and(
-          eq(schema.listings.status, 'active'),
-          like(schema.listings.title, `%${q}%`),
-        ),
-      );
+  /**
+   * Anúncio como um texto só, para a busca. Mesmos campos do `alvoDe` do front
+   * (`src/lib/busca.ts`), incluindo o nome do vendedor — quem procura "Culture
+   * TCG" espera achar a loja.
+   */
+  private readonly alvoDaBusca = alvoDeBusca([
+    schema.listings.title,
+    schema.listings.brand,
+    schema.listings.line,
+    schema.listings.description,
+    schema.listings.sku,
+    schema.listings.edition,
+    this.sellerDisplayNameExpr,
+  ]);
+
+  /**
+   * Monta o WHERE da vitrine. Fica separado do SELECT porque a contagem total
+   * (paginação) precisa exatamente das mesmas condições — duas listas de filtro
+   * que se desencontram devolvem um `total` que não bate com as páginas.
+   */
+  private filtrosPublicos(f: ListingFilters): SQL {
+    const cond: SQL[] = [eq(schema.listings.status, 'active')];
+
+    if (f.categoria) {
+      // Aceita id ou slug, e traz junto as subcategorias: a página de uma
+      // categoria raiz mostra o que está pendurado nela.
+      const alvo = sql`(
+        SELECT ${schema.categories.id} FROM ${schema.categories}
+        WHERE ${schema.categories.id} = ${f.categoria}
+           OR ${schema.categories.slug} = ${f.categoria}
+      )`;
+      cond.push(sql`(
+        ${schema.listings.categoryId} IN ${alvo}
+        OR ${schema.listings.categoryId} IN (
+          SELECT ${schema.categories.id} FROM ${schema.categories}
+          WHERE ${schema.categories.parentId} IN ${alvo}
+        )
+      )`);
     }
+
+    if (f.condicoes?.length) {
+      cond.push(inArray(schema.listings.condition, f.condicoes));
+    }
+
+    if (f.tipo) cond.push(eq(schema.listings.type, f.tipo));
+
+    if (f.precoMin != null) {
+      cond.push(sql`${this.precoComparavel} >= ${f.precoMin}`);
+    }
+    if (f.precoMax != null) {
+      cond.push(sql`${this.precoComparavel} <= ${f.precoMax}`);
+    }
+
+    if (f.q) {
+      const busca = condicaoDeBusca(this.alvoDaBusca, f.q);
+      if (busca) cond.push(busca);
+    }
+
+    return and(...cond)!;
+  }
+
+  /**
+   * Vitrine pública, filtrada e contada NO BANCO.
+   *
+   * Antes daqui só saíam `limit`/`offset`/`q` (LIKE cru no título), então o front
+   * baixava o catálogo inteiro e filtrava categoria, preço, condição e busca no
+   * navegador — cada visitante pagando ~1 MB antes de ver a primeira tela.
+   * Devolve o total junto para o front paginar de verdade.
+   */
+  async findAll(
+    filtros: ListingFilters = {},
+  ): Promise<{ items: ListingRecord[]; total: number }> {
+    const limit = filtros.limit ?? 20;
+    const offset = filtros.offset ?? 0;
+    const where = this.filtrosPublicos(filtros);
 
     // Destaques ativos primeiro (featuredUntil no futuro), depois mais recentes.
     const nowSeconds = Math.floor(Date.now() / 1000);
-    return query
-      .orderBy(
-        sql`CASE WHEN ${schema.listings.featuredUntil} > ${nowSeconds} THEN 0 ELSE 1 END`,
-        desc(schema.listings.createdAt),
-      )
-      .limit(limit)
-      .offset(offset);
+
+    // As duas consultas vão juntas: o custo aqui é a ida ao Turso, e esperar uma
+    // para depois pedir a outra dobraria o tempo da tela.
+    const [items, [contagem]] = await Promise.all([
+      this.db
+        .select({
+          ...getTableColumns(schema.listings),
+          sellerName: this.sellerDisplayName,
+          // Número do Fundador junto do anúncio, como o nome do vendedor. Sem
+          // isto o front buscava o perfil de cada vendedor só para saber se
+          // mostra o selo: numa lista de 20 itens, 20 requisições de ~3s.
+          sellerFounderNumber: schema.sellerProfiles.founderNumber,
+          sellerFounderStatus: schema.sellerProfiles.founderStatus,
+          sellerAvatarUrl: this.sellerAvatar,
+          ...this.auctionPublicFields,
+        })
+        .from(schema.listings)
+        .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+        .leftJoin(
+          schema.sellerProfiles,
+          eq(schema.sellerProfiles.userId, schema.listings.sellerId),
+        )
+        .leftJoin(
+          schema.auctions,
+          eq(schema.auctions.listingId, schema.listings.id),
+        )
+        .where(where)
+        .orderBy(
+          sql`CASE WHEN ${schema.listings.featuredUntil} > ${nowSeconds} THEN 0 ELSE 1 END`,
+          desc(schema.listings.createdAt),
+        )
+        .limit(limit)
+        .offset(offset),
+      this.db
+        .select({ total: sql<number>`count(*)` })
+        .from(schema.listings)
+        // Os mesmos joins do SELECT: o filtro de preço e a busca por nome de
+        // vendedor dependem das tabelas de leilão e de perfil.
+        .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+        .leftJoin(
+          schema.sellerProfiles,
+          eq(schema.sellerProfiles.userId, schema.listings.sellerId),
+        )
+        .leftJoin(
+          schema.auctions,
+          eq(schema.auctions.listingId, schema.listings.id),
+        )
+        .where(where),
+    ]);
+
+    return { items, total: Number(contagem?.total ?? 0) };
   }
 
   // ── Listar anúncios para Administração (filtra por status) ───────────────

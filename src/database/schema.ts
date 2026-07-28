@@ -3,6 +3,7 @@ import {
   text,
   integer,
   real,
+  index,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
@@ -36,6 +37,11 @@ export const users = sqliteTable('users', {
   // customer para autorizar cartão — sem ele o lance é recusado. O checkout já
   // pedia o número, mas descartava depois de usar.
   phone: text('phone'),
+  // Foto do usuário, copiada do Clerk no cadastro/login (a imagem já está
+  // hospedada lá). É o fallback do avatar do vendedor quando ele não subiu foto
+  // própria da loja em `seller_profiles.avatar_url` — sem isto o card mostrava
+  // as iniciais mesmo para quem tinha foto.
+  avatarUrl: text('avatar_url'),
 
   // ─── Consentimento legal (Termos + LGPD) ────────────────────────────────────
   // Aceite registrado no cadastro (modal T10). LGPD exige consentimento
@@ -144,6 +150,8 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
   // NULLs são distintos no SQLite, então não-fundadores (founderNumber = null)
   // não colidem.
   uqFounderNumber: uniqueIndex('uq_seller_founder_number').on(t.founderNumber),
+  // Toda linha da vitrine junta o perfil do vendedor (nome da loja, foto, selo).
+  userIdx: index('seller_profiles_user_idx').on(t.userId),
 }));
 
 // ─── Founder Invite Codes ────────────────────────────────────────────────────
@@ -282,7 +290,22 @@ export const listings = sqliteTable('listings', {
   featuredSource: text('featured_source'),
 
   ...timestamps,
-});
+}, (t) => ({
+  // A vitrine, a categoria e a busca saem todas de `GET /api/listings`, que
+  // filtra por status e ordena por data. Sem índice, cada visita era uma
+  // varredura da tabela inteira com ordenação em memória.
+  statusCreatedIdx: index('listings_status_created_idx').on(
+    t.status,
+    t.createdAt,
+  ),
+  // Página de categoria: filtro por categoria dentro do que está no ar.
+  statusCategoryIdx: index('listings_status_category_idx').on(
+    t.status,
+    t.categoryId,
+  ),
+  // Perfil da loja, "meus anúncios" e a contagem de qualificação do fundador.
+  sellerIdx: index('listings_seller_idx').on(t.sellerId),
+}));
 
 // ─── Auctions ────────────────────────────────────────────────────────────────
 // Configuração do leilão vinculado a um listing do tipo 'auction'
@@ -332,7 +355,10 @@ export const auctions = sqliteTable('auctions', {
   status: text('status').notNull().default('active'),
 
   ...timestamps,
-});
+}, (t) => ({
+  // A vitrine junta leilão a cada anúncio para mostrar lance atual e relógio.
+  listingIdx: index('auctions_listing_idx').on(t.listingId),
+}));
 
 // ─── Bids ─────────────────────────────────────────────────────────────────────
 // Histórico de lances em um leilão
@@ -365,7 +391,11 @@ export const bids = sqliteTable('bids', {
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
-});
+}, (t) => ({
+  // Contagem de lances no card da vitrine (subconsulta por anúncio de leilão)
+  // e histórico da tela do leilão.
+  auctionIdx: index('bids_auction_idx').on(t.auctionId),
+}));
 
 // ─── Addresses ───────────────────────────────────────────────────────────────
 // Endereços de entrega do comprador

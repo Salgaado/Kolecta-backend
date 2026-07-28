@@ -24,6 +24,26 @@ import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 
+/** Query string é sempre texto: devolve inteiro ou undefined (nunca NaN). */
+function inteiro(valor?: string): number | undefined {
+  if (valor == null || valor.trim() === '') return undefined;
+  const n = Number(valor);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(Math.max(n, min), max);
+}
+
+/** "novo,lacrado" → ['novo','lacrado']. undefined quando não veio nada. */
+function lista(valor?: string): string[] | undefined {
+  const itens = (valor ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return itens.length ? itens : undefined;
+}
+
 @Controller('api/listings')
 export class ListingsController {
   private readonly logger = new Logger(ListingsController.name);
@@ -32,18 +52,58 @@ export class ListingsController {
 
   // ── GET /api/listings — Público: lista anúncios ativos ──────────────────
 
+  /**
+   * Vitrine, categoria e busca — tudo filtrado e paginado NO BANCO.
+   *
+   * `limit`/`offset` continuam funcionando como antes (o front atual manda os
+   * dois), e `page` é o atalho equivalente. `total`/`totalPages` vêm no `meta`,
+   * no mesmo formato que o endpoint do vendedor já usa, para o front parar de
+   * baixar o catálogo inteiro só para saber quantos anúncios existem.
+   */
   @Get()
   async findAll(
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('page') page?: string,
     @Query('q') q?: string,
+    @Query('categoryId') categoryId?: string,
+    @Query('category') category?: string,
+    @Query('condition') condition?: string,
+    @Query('type') type?: string,
+    @Query('minPrice') minPrice?: string,
+    @Query('maxPrice') maxPrice?: string,
   ) {
-    const listings = await this.listingsService.findAll(
-      limit ? Number(limit) : 20,
-      offset ? Number(offset) : 0,
-      q,
-    );
-    return { data: listings };
+    // Teto de 500: é o que o front pede hoje quando baixa o catálogo, e sem
+    // limite um `limit=100000` derruba a resposta inteira.
+    const take = clamp(inteiro(limit) ?? 20, 1, 500);
+    const skip =
+      inteiro(offset) ?? Math.max(0, ((inteiro(page) ?? 1) - 1) * take);
+
+    const { items, total } = await this.listingsService.findAll({
+      limit: take,
+      offset: skip,
+      q: q?.trim() || undefined,
+      // `category` e `categoryId` são o mesmo filtro: o serviço aceita id ou
+      // slug, e assim o front usa o que tiver em mãos na tela.
+      categoria: (categoryId || category)?.trim() || undefined,
+      // Aceita lista: "novo,lacrado" — a tela de busca marca mais de uma.
+      condicoes: lista(condition),
+      tipo: type?.trim() || undefined,
+      precoMin: inteiro(minPrice),
+      precoMax: inteiro(maxPrice),
+    });
+
+    return {
+      data: items,
+      meta: {
+        total,
+        limit: take,
+        offset: skip,
+        page: Math.floor(skip / take) + 1,
+        totalPages: Math.max(1, Math.ceil(total / take)),
+        hasMore: skip + items.length < total,
+      },
+    };
   }
 
   // ── GET /api/listings/admin — Admin: dashboard queue ─────────────────────
@@ -82,9 +142,13 @@ export class ListingsController {
   @Roles('user', 'admin')
   @UseInterceptors(FileInterceptor('file'))
   @HttpCode(HttpStatus.ACCEPTED)
-  async importListings(@Req() req: Request, @UploadedFile() file: Express.Multer.File) {
+  async importListings(
+    @Req() req: Request,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
     const sellerId = (req as any).auth.userId as string;
-    if (!file) throw new HttpException('Arquivo não fornecido', HttpStatus.BAD_REQUEST);
+    if (!file)
+      throw new HttpException('Arquivo não fornecido', HttpStatus.BAD_REQUEST);
     const job = await this.listingsService.startImportJob(sellerId, file);
     return { data: job };
   }
