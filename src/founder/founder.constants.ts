@@ -11,6 +11,19 @@ export const FOUNDER_TOTAL_SLOTS = 100;
 export const LANDING_RANGE = { min: 51, max: 100 } as const;
 
 /**
+ * Faixa que a EQUIPE pode conceder pelo painel. Vai de 1 porque a numeração real
+ * virou sequencial: as dez primeiras concessões (#001 a #010, sorteio de 25/07)
+ * saíram direto no banco, e o endpoint — que só aceitava {0} ∪ [51,100] — barrava
+ * o #011 com "Número deve ser 0 (a casa) ou estar entre 51 e 100". A equipe
+ * ficava dependendo de INSERT manual para conceder o selo.
+ *
+ * Engole a faixa de convite (1..50): quem manda no número agora é a equipe, e o
+ * índice único `uq_seller_founder_number` continua sendo o backstop contra dois
+ * fundadores com o mesmo número — inclusive contra um código de evento resgatado.
+ */
+export const GRANT_RANGE = { min: 1, max: 100 } as const;
+
+/**
  * O #0 é a CASA: a conta da marca-mãe, fundadora zero da Kolecta. Fica fora das
  * duas faixas (1–50 do evento, 51–100 da landing) e é concedido só pelo admin.
  * O front já oferece esse número; sem isto aqui, a concessão era recusada com

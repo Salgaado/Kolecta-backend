@@ -1,4 +1,4 @@
-import { LANDING_RANGE, NUMERO_DA_CASA } from './founder.constants';
+import { GRANT_RANGE, NUMERO_DA_CASA } from './founder.constants';
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { FounderService } from './founder.service';
@@ -98,10 +98,10 @@ describe('FounderService', () => {
   describe('grantFounder', () => {
     const candidate = { userId, founderNumber: null, founderStatus: 'qualified' };
 
-    it('rejeita número fora da faixa 51..100', async () => {
+    it('rejeita número fora da sequência 1..100', async () => {
       db = makeDb();
       service = await build();
-      await expect(service.grantFounder(userId, 10)).rejects.toThrow(
+      await expect(service.grantFounder(userId, 101)).rejects.toThrow(
         BadRequestException,
       );
     });
@@ -170,30 +170,30 @@ describe('FounderService', () => {
 });
 
 /**
- * O #0 é a casa — a conta da marca-mãe. O front já oferecia esse número e o
- * backend recusava com "Número deve estar entre 51 e 100": divergência que só
- * aparecia na hora de conceder o primeiro selo de verdade.
+ * Faixa aceita na concessão. O #0 é a casa — a conta da marca-mãe. O resto é a
+ * sequência de 1 a 100: a numeração real começou no #001 (sorteio de 25/07,
+ * inserido direto no banco) e o endpoint recusava tudo abaixo de 51, então o
+ * painel não conseguia conceder o #011 e a equipe ficava dependendo de INSERT
+ * manual.
  */
-describe('FounderService.grantFounder — número da casa', () => {
-  it('aceita o 0', () => {
+describe('FounderService.grantFounder — faixa aceita', () => {
+  const valido = (n: number) =>
+    Number.isInteger(n) &&
+    (n === NUMERO_DA_CASA || (n >= GRANT_RANGE.min && n <= GRANT_RANGE.max));
+
+  it('aceita o 0 e a sequência inteira de 1 a 100', () => {
     expect(NUMERO_DA_CASA).toBe(0);
-    const valido = (n: number) =>
-      Number.isInteger(n) &&
-      (n === NUMERO_DA_CASA ||
-        (n >= LANDING_RANGE.min && n <= LANDING_RANGE.max));
     expect(valido(0)).toBe(true);
+    expect(valido(1)).toBe(true);
+    // O número que o painel não conseguia conceder.
+    expect(valido(11)).toBe(true);
     expect(valido(51)).toBe(true);
     expect(valido(100)).toBe(true);
   });
 
-  it('continua recusando as faixas que não são da landing nem da casa', () => {
-    const valido = (n: number) =>
-      Number.isInteger(n) &&
-      (n === NUMERO_DA_CASA ||
-        (n >= LANDING_RANGE.min && n <= LANDING_RANGE.max));
-    // 1–50 é do evento presencial, concedido por código de convite.
-    expect(valido(25)).toBe(false);
+  it('recusa o que está fora da sequência', () => {
     expect(valido(101)).toBe(false);
     expect(valido(-1)).toBe(false);
+    expect(valido(1.5)).toBe(false);
   });
 });

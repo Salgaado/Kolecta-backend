@@ -13,7 +13,7 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import {
   FOUNDER_QUALIFY_LISTINGS,
-  LANDING_RANGE,
+  GRANT_RANGE,
   NUMERO_DA_CASA,
   INVITE_RANGE,
   FOUNDER_HIGHLIGHT_CREDITS,
@@ -135,23 +135,23 @@ export class FounderService {
 
   /**
    * Concede o selo de Fundador a um CANDIDATO, com número escolhido pela equipe
-   * (faixa da landing 51..100). Valida qualificação, faixa e unicidade do número;
-   * o índice único `uq_seller_founder_number` é o backstop contra corrida.
-   * Ativa o fundador, grava `founderSince` e concede os créditos de destaque.
+   * (sequência 1..100, mais o #0 da casa). Valida qualificação, faixa e unicidade
+   * do número; o índice único `uq_seller_founder_number` é o backstop contra
+   * corrida. Ativa o fundador, grava `founderSince` e concede os créditos.
    */
   async grantFounder(
     userId: string,
     founderNumber: number,
   ): Promise<SellerProfile> {
-    const naFaixaDaLanding =
-      founderNumber >= LANDING_RANGE.min && founderNumber <= LANDING_RANGE.max;
+    const naSequencia =
+      founderNumber >= GRANT_RANGE.min && founderNumber <= GRANT_RANGE.max;
     if (
       !Number.isInteger(founderNumber) ||
-      (founderNumber !== NUMERO_DA_CASA && !naFaixaDaLanding)
+      (founderNumber !== NUMERO_DA_CASA && !naSequencia)
     ) {
       throw new BadRequestException(
         `Número deve ser ${NUMERO_DA_CASA} (a casa) ou estar entre ` +
-          `${LANDING_RANGE.min} e ${LANDING_RANGE.max}.`,
+          `${GRANT_RANGE.min} e ${GRANT_RANGE.max}.`,
       );
     }
 
@@ -194,6 +194,7 @@ export class FounderService {
         .returning();
 
       await this.grantCredits(userId, now);
+      await this.queimarConviteDoMesmoNumero(userId, founderNumber, now);
       this.logger.log(
         `🏅 Fundador CONCEDIDO pela equipe: ${userId} → #${String(founderNumber).padStart(3, '0')}`,
       );
@@ -232,7 +233,7 @@ export class FounderService {
     const qualified = counts.filter(
       (c) => Number(c.n) >= FOUNDER_QUALIFY_LISTINGS,
     );
-    const nextNumber = await this.nextLandingNumber();
+    const nextNumber = await this.nextGrantNumber();
     if (qualified.length === 0) return { candidates: [], nextNumber };
 
     const ids = qualified.map((c) => c.sellerId);
@@ -271,19 +272,53 @@ export class FounderService {
     return { candidates, nextNumber };
   }
 
-  /** Próximo número livre em [51..100], ou null se a faixa acabou. */
-  private async nextLandingNumber(): Promise<number | null> {
+  /** Próximo número livre em [1..100], ou null se a sequência acabou. */
+  private async nextGrantNumber(): Promise<number | null> {
     const [row] = await this.db
       .select({ max: sql<number>`max(${schema.sellerProfiles.founderNumber})` })
       .from(schema.sellerProfiles)
       .where(
         and(
-          gte(schema.sellerProfiles.founderNumber, LANDING_RANGE.min),
-          lte(schema.sellerProfiles.founderNumber, LANDING_RANGE.max),
+          gte(schema.sellerProfiles.founderNumber, GRANT_RANGE.min),
+          lte(schema.sellerProfiles.founderNumber, GRANT_RANGE.max),
         ),
       );
-    const next = row?.max == null ? LANDING_RANGE.min : Number(row.max) + 1;
-    return next > LANDING_RANGE.max ? null : next;
+    const next = row?.max == null ? GRANT_RANGE.min : Number(row.max) + 1;
+    return next > GRANT_RANGE.max ? null : next;
+  }
+
+  /**
+   * Concessão manual e código de evento disputam a mesma faixa 1..50: o seed
+   * `KOLECTA-FND-001..050` (rodado em prod em 15/07) reservou um código para cada
+   * número, e o sorteio de 25/07 concedeu #001 a #010 direto no banco. Sem isto,
+   * quem chegasse com o código do número já concedido bateria no índice único e
+   * receberia um erro sem explicação.
+   *
+   * O número passa a ser do usuário premiado independentemente da porta por onde
+   * entrou, então o código equivalente é dado como usado por ele. Silencioso de
+   * propósito: número fora da faixa de convite simplesmente não casa com nada.
+   */
+  private async queimarConviteDoMesmoNumero(
+    userId: string,
+    founderNumber: number,
+    now: Date,
+  ): Promise<void> {
+    const queimado = await this.db
+      .update(schema.founderInviteCodes)
+      .set({ redeemedByUserId: userId, redeemedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(schema.founderInviteCodes.founderNumber, founderNumber),
+          sql`${schema.founderInviteCodes.redeemedByUserId} is null`,
+        ),
+      )
+      .returning({ code: schema.founderInviteCodes.code });
+
+    if (queimado.length > 0) {
+      this.logger.log(
+        `🎟️ Código ${queimado[0].code} baixado junto da concessão #${founderNumber} (mesmo número).`,
+      );
+    }
   }
 
   private isUniqueViolation(err: any): boolean {
