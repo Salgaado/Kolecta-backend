@@ -5,6 +5,12 @@
  * módulo.
  */
 process.env.PAGAMENTO_CARTAO_HABILITADO = 'true';
+/**
+ * Recebedor da plataforma. Sem ele, lance e pagamento de arremate são
+ * RECUSADOS em vez de seguirem sem split (ver `docs/PLAN-pagarme-conta-nova.md`,
+ * Fase 1). Lido no carregamento do módulo, por isso vem antes do import.
+ */
+process.env.PAGARME_PLATFORM_RECIPIENT_ID = 're_platform';
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuctionsService } from './auctions.service';
@@ -104,7 +110,7 @@ const makeDrizzleMock = () => {
   const chain: any = {};
   chain.select = jest.fn().mockReturnValue(chain);
   chain.from = jest.fn().mockReturnValue(chain);
-  chain.where = jest.fn().mockReturnValue(chain);  // retorna chain por padrão
+  chain.where = jest.fn().mockReturnValue(chain); // retorna chain por padrão
   chain.innerJoin = jest.fn().mockReturnValue(chain);
   chain.orderBy = jest.fn().mockResolvedValue([mockBid]);
   chain.groupBy = jest.fn().mockResolvedValue([]); // contagem de lances por leilão
@@ -135,9 +141,17 @@ const makeDrizzleMock = () => {
 };
 
 const mockEndereco = {
-  id: 'addr_1', userId: 'user_bidder', street: 'Rua Teste', number: '100',
-  complement: null, neighborhood: 'Centro', city: 'Sao Paulo', state: 'SP',
-  zip: '01310-100', country: 'BR', isDefault: true,
+  id: 'addr_1',
+  userId: 'user_bidder',
+  street: 'Rua Teste',
+  number: '100',
+  complement: null,
+  neighborhood: 'Centro',
+  city: 'Sao Paulo',
+  state: 'SP',
+  zip: '01310-100',
+  country: 'BR',
+  isDefault: true,
 };
 
 describe('AuctionsService', () => {
@@ -162,9 +176,13 @@ describe('AuctionsService', () => {
 
   beforeEach(() => {
     // Restaura defaults dos mocks compartilhados (evita vazamento de *Once).
-    mockWalletService.getOrCreateWallet.mockReset().mockResolvedValue(mockWallet);
+    mockWalletService.getOrCreateWallet
+      .mockReset()
+      .mockResolvedValue(mockWallet);
     mockWalletService.hold.mockReset().mockResolvedValue({ success: true });
-    mockFounderService.resolveCommissionPercent.mockReset().mockResolvedValue(11);
+    mockFounderService.resolveCommissionPercent
+      .mockReset()
+      .mockResolvedValue(11);
     mockCardsService.getCardRef
       .mockReset()
       .mockResolvedValue({ customerId: 'cus_1', cardId: 'card_1' });
@@ -267,7 +285,9 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
-        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }]);
+        .mockResolvedValueOnce([
+          { ...mockListing, sellerId: 'another_seller' },
+        ]);
       mockCardsService.getCardRef.mockReset().mockResolvedValue(null);
       service = await buildModule();
 
@@ -283,7 +303,7 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
         .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
-        .mockResolvedValueOnce([]) // sellerProfiles → sem recebedor (sem split)
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
       mockPagarmeService.post.mockReset().mockResolvedValue({
         id: 'or_x',
@@ -302,7 +322,7 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
         .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
-        .mockResolvedValueOnce([]) // sellerProfiles → sem recebedor
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
       service = await buildModule();
 
@@ -334,7 +354,7 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([mockAuction])
         .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
-        .mockResolvedValueOnce([]) // sellerProfiles
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
 
       // Transaction em que o UPDATE condicional não afeta linhas (returning vazio),
@@ -425,9 +445,9 @@ describe('AuctionsService', () => {
     });
 
     it('cai no primeiro quando nenhum é padrão', async () => {
-      await expect(
-        chamar([{ id: 'end_a', isDefault: false }]),
-      ).resolves.toBe('end_a');
+      await expect(chamar([{ id: 'end_a', isDefault: false }])).resolves.toBe(
+        'end_a',
+      );
     });
 
     it('devolve null quando o usuário não tem endereço', async () => {
@@ -438,8 +458,7 @@ describe('AuctionsService', () => {
   describe('endAuction', () => {
     it('deve lançar NotFoundException se leilão não existe', async () => {
       mockDb = makeDrizzleMock();
-      mockDb.where
-        .mockResolvedValueOnce([]); // auction não encontrado
+      mockDb.where.mockResolvedValueOnce([]); // auction não encontrado
       service = await buildModule();
 
       await expect(
@@ -450,20 +469,19 @@ describe('AuctionsService', () => {
     it('deve lançar BadRequestException se leilão não está ativo', async () => {
       const endedAuction = { ...mockAuction, status: 'ended' };
       mockDb = makeDrizzleMock();
-      mockDb.where
-        .mockResolvedValueOnce([endedAuction]);
+      mockDb.where.mockResolvedValueOnce([endedAuction]);
       service = await buildModule();
 
-      await expect(
-        service.endAuction(mockAuctionId, sellerId),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.endAuction(mockAuctionId, sellerId)).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('deve lançar ForbiddenException se requester não é seller nem admin', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
-        .mockResolvedValueOnce([mockAuction])                          // auction ativo
-        .mockResolvedValueOnce([mockListing])                          // listing com sellerId diferente
+        .mockResolvedValueOnce([mockAuction]) // auction ativo
+        .mockResolvedValueOnce([mockListing]) // listing com sellerId diferente
         .mockResolvedValueOnce([{ id: 'outro_user', role: 'user' }]); // requester não é admin
       service = await buildModule();
 
@@ -475,8 +493,8 @@ describe('AuctionsService', () => {
     it('deve encerrar o leilão quando o requester é o seller (sem vencedor)', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
-        .mockResolvedValueOnce([mockAuction])                   // auction ativo (sem vencedor)
-        .mockResolvedValueOnce([mockListing])                   // listing pertence ao seller
+        .mockResolvedValueOnce([mockAuction]) // auction ativo (sem vencedor)
+        .mockResolvedValueOnce([mockListing]) // listing pertence ao seller
         .mockResolvedValueOnce([{ id: sellerId, role: 'user' }]); // requester é o seller
       service = await buildModule();
 
@@ -491,8 +509,8 @@ describe('AuctionsService', () => {
     it('deve encerrar o leilão quando o requester é admin', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
-        .mockResolvedValueOnce([mockAuction])                          // auction ativo
-        .mockResolvedValueOnce([mockListing])                          // listing (seller diferente)
+        .mockResolvedValueOnce([mockAuction]) // auction ativo
+        .mockResolvedValueOnce([mockListing]) // listing (seller diferente)
         .mockResolvedValueOnce([{ id: 'admin_user', role: 'admin' }]); // requester é admin
       service = await buildModule();
 
@@ -511,8 +529,8 @@ describe('AuctionsService', () => {
       };
       mockDb = makeDrizzleMock();
       mockDb.where
-        .mockResolvedValueOnce([winnerAuction])                  // auction (com vencedor)
-        .mockResolvedValueOnce([mockListing])                    // listing
+        .mockResolvedValueOnce([winnerAuction]) // auction (com vencedor)
+        .mockResolvedValueOnce([mockListing]) // listing
         .mockResolvedValueOnce([{ id: sellerId, role: 'user' }]) // requester = seller
         .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }]) // _getActiveBidAuth
         .mockResolvedValueOnce([{ id: 'end_1', isDefault: true }]); // endereço do vencedor
@@ -553,7 +571,9 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }])
         .mockResolvedValueOnce([{ id: 'end_1', isDefault: true }]); // endereço do vencedor
       // Captura NÃO confirmada → _captureCharge lança → ramo pending_payment.
-      mockPagarmeService.post.mockReset().mockResolvedValue({ status: 'failed' });
+      mockPagarmeService.post
+        .mockReset()
+        .mockResolvedValue({ status: 'failed' });
       service = await buildModule();
 
       await service.endAuction(mockAuctionId, sellerId);
@@ -584,8 +604,8 @@ describe('AuctionsService', () => {
       };
       mockDb = makeDrizzleMock();
       mockDb.where
-        .mockResolvedValueOnce([expiredAuction])  // leilões expirados
-        .mockResolvedValueOnce([mockListing]);      // listing do leilão expirado
+        .mockResolvedValueOnce([expiredAuction]) // leilões expirados
+        .mockResolvedValueOnce([mockListing]); // listing do leilão expirado
       service = await buildModule();
 
       const result = await service.endExpiredAuctions();
@@ -595,13 +615,21 @@ describe('AuctionsService', () => {
     });
 
     it('deve continuar processando mesmo se um leilão falhar', async () => {
-      const expiredAuction1 = { ...mockAuction, id: 'auction_exp_1', endsAt: new Date(Date.now() - 1000) };
-      const expiredAuction2 = { ...mockAuction, id: 'auction_exp_2', endsAt: new Date(Date.now() - 2000) };
+      const expiredAuction1 = {
+        ...mockAuction,
+        id: 'auction_exp_1',
+        endsAt: new Date(Date.now() - 1000),
+      };
+      const expiredAuction2 = {
+        ...mockAuction,
+        id: 'auction_exp_2',
+        endsAt: new Date(Date.now() - 2000),
+      };
       mockDb = makeDrizzleMock();
       // Retorna 2 expirados
       mockDb.where
         .mockResolvedValueOnce([expiredAuction1, expiredAuction2])
-        .mockResolvedValueOnce([mockListing])  // listing para o primeiro
+        .mockResolvedValueOnce([mockListing]) // listing para o primeiro
         .mockResolvedValueOnce([mockListing]); // listing para o segundo
 
       service = await buildModule();
@@ -647,7 +675,7 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([reauthRow]) // lances líderes a expirar
-        .mockResolvedValueOnce([]) // sellerProfiles → sem recebedor (sem split)
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
       service = await buildModule();
 
@@ -690,7 +718,7 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([reauthRow])
-        .mockResolvedValueOnce([]) // sellerProfiles
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança
       // Troca atômica não afeta linhas (lance superado/fechado no meio).
       mockDb.returning.mockResolvedValueOnce([]);
@@ -710,7 +738,7 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([reauthRow])
-        .mockResolvedValueOnce([]) // sellerProfiles
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança
       // Cartão recusado na renovação.
       mockPagarmeService.post.mockReset().mockResolvedValue({
@@ -805,7 +833,9 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([pendingOrder])
-        .mockResolvedValueOnce([]); // sellerProfiles (sem split)
+        .mockResolvedValueOnce([
+          { recipientId: 're_seller', canReceive: true },
+        ]); // sellerProfiles → vendedor apto
       mockPagarmeService.post.mockReset().mockResolvedValue({
         id: 'or_x',
         status: 'failed',
@@ -822,7 +852,7 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([pendingOrder]) // order
-        .mockResolvedValueOnce([]) // sellerProfiles (sem split)
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([{ id: 'auction_1' }]); // auction por listingId (_settle)
       mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
       service = await buildModule();
@@ -905,9 +935,7 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([overdueOrder]) // vencidos
-        .mockResolvedValueOnce([
-          { id: 'auction_1', reservePriceInCents: 3000 },
-        ]) // auction
+        .mockResolvedValueOnce([{ id: 'auction_1', reservePriceInCents: 3000 }]) // auction
         // _findRunnerUp segue a cadeia até orderBy — precisa do chain, não de
         // um array; só depois dele vem a consulta do endereço.
         .mockReturnValueOnce(mockDb)
@@ -916,7 +944,12 @@ describe('AuctionsService', () => {
       // Vencedor faltoso (buyer_001) + 2º colocado (buyer_002) com lance válido.
       mockDb.orderBy.mockResolvedValue([
         { bidId: 'b1', bidderId, amountInCents: 6000, status: 'lost' },
-        { bidId: 'b2', bidderId: 'buyer_002', amountInCents: 5000, status: 'outbid' },
+        {
+          bidId: 'b2',
+          bidderId: 'buyer_002',
+          amountInCents: 5000,
+          status: 'outbid',
+        },
       ]);
       service = await buildModule();
 

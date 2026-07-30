@@ -5,6 +5,13 @@
  * módulo.
  */
 process.env.PAGAMENTO_CARTAO_HABILITADO = 'true';
+/**
+ * Recebedor da plataforma. Sem ele a compra é RECUSADA antes de virar pedido
+ * (fail-closed do split — ver `docs/PLAN-pagarme-conta-nova.md`, Fase 1). Estes
+ * testes cobrem o caminho feliz, então precisam da plataforma configurada.
+ * Também lido no carregamento do módulo, por isso vem antes do import.
+ */
+process.env.PAGARME_PLATFORM_RECIPIENT_ID = 're_platform';
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { OrdersService } from './orders.service';
@@ -107,7 +114,9 @@ const mockPagarmeService = {
     ],
   }),
   // get('/orders/:id') usado na reconciliação (cancelamento manual + cron)
-  get: jest.fn().mockResolvedValue({ id: 'or_test', status: 'failed', charges: [] }),
+  get: jest
+    .fn()
+    .mockResolvedValue({ id: 'or_test', status: 'failed', charges: [] }),
 };
 
 // ─── Suite ────────────────────────────────────────────────────────────────────
@@ -152,7 +161,9 @@ describe('OrdersService', () => {
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         {
           provide: FounderService,
-          useValue: { resolveCommissionPercent: jest.fn().mockResolvedValue(11) },
+          useValue: {
+            resolveCommissionPercent: jest.fn().mockResolvedValue(11),
+          },
         },
       ],
     }).compile();
@@ -231,9 +242,16 @@ describe('OrdersService', () => {
     };
 
     const fakeAddress = {
-      id: 'addr_1', userId: 'user_buyer', street: 'Rua Teste', number: '100',
-      complement: null, neighborhood: 'Centro', city: 'Sao Paulo',
-      state: 'SP', zip: '01310-100', country: 'BR',
+      id: 'addr_1',
+      userId: 'user_buyer',
+      street: 'Rua Teste',
+      number: '100',
+      complement: null,
+      neighborhood: 'Centro',
+      city: 'Sao Paulo',
+      state: 'SP',
+      zip: '01310-100',
+      country: 'BR',
     };
 
     it('default (sem paymentMethod) cai no PIX e retorna QR Code', async () => {
@@ -241,7 +259,9 @@ describe('OrdersService', () => {
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
         .mockResolvedValueOnce([fakeAddress]) // endereço de entrega (salvo)
-        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]); // buyer
+        .mockResolvedValueOnce([
+          { name: 'Comprador', email: 'b@x.com', cpf: null },
+        ]); // buyer
 
       const result = await service.createCheckout('user_buyer', baseDto);
 
@@ -257,7 +277,9 @@ describe('OrdersService', () => {
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
         .mockResolvedValueOnce([fakeAddress]) // endereço de entrega (salvo)
-        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
+        .mockResolvedValueOnce([
+          { name: 'Comprador', email: 'b@x.com', cpf: null },
+        ]) // buyer
         // confirmOrderPayment (inline): order → buyer → listing
         .mockResolvedValueOnce([
           {
@@ -279,7 +301,11 @@ describe('OrdersService', () => {
         id: 'or_card',
         status: 'paid',
         charges: [
-          { id: 'ch_card', status: 'paid', last_transaction: { status: 'captured' } },
+          {
+            id: 'ch_card',
+            status: 'paid',
+            last_transaction: { status: 'captured' },
+          },
         ],
       });
 
@@ -306,7 +332,9 @@ describe('OrdersService', () => {
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
         .mockResolvedValueOnce([fakeAddress]) // endereço de entrega (salvo)
-        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]); // buyer
+        .mockResolvedValueOnce([
+          { name: 'Comprador', email: 'b@x.com', cpf: null },
+        ]); // buyer
 
       mockPagarmeService.post.mockResolvedValueOnce({
         id: 'or_card',
@@ -346,7 +374,9 @@ describe('OrdersService', () => {
         .mockResolvedValueOnce([fakeListingActive]) // listing
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfile
         .mockResolvedValueOnce([fakeAddress]) // endereço de entrega (salvo)
-        .mockResolvedValueOnce([{ name: 'Comprador', email: 'b@x.com', cpf: null }]) // buyer
+        .mockResolvedValueOnce([
+          { name: 'Comprador', email: 'b@x.com', cpf: null },
+        ]) // buyer
         .mockResolvedValueOnce([
           {
             id: 'order_123',
@@ -367,7 +397,11 @@ describe('OrdersService', () => {
         id: 'or_card',
         status: 'paid',
         charges: [
-          { id: 'ch_card', status: 'paid', last_transaction: { status: 'captured' } },
+          {
+            id: 'ch_card',
+            status: 'paid',
+            last_transaction: { status: 'captured' },
+          },
         ],
       });
 
@@ -466,7 +500,10 @@ describe('OrdersService', () => {
     };
 
     it('cancela o próprio pedido pendente e reativa o anúncio (não pago na Pagar.me)', async () => {
-      mockPagarmeService.get.mockResolvedValueOnce({ id: 'or_test', status: 'failed' });
+      mockPagarmeService.get.mockResolvedValueOnce({
+        id: 'or_test',
+        status: 'failed',
+      });
       selectChain.where
         .mockResolvedValueOnce([pendingPixOrder]) // fetch inicial
         .mockResolvedValueOnce([{ ...pendingPixOrder, status: 'cancelled' }]); // re-read
@@ -493,7 +530,9 @@ describe('OrdersService', () => {
     });
 
     it('rejeita cancelar pedido que não está pendente', async () => {
-      selectChain.where.mockResolvedValueOnce([{ ...pendingPixOrder, status: 'paid' }]);
+      selectChain.where.mockResolvedValueOnce([
+        { ...pendingPixOrder, status: 'paid' },
+      ]);
       await expect(
         service.cancelOrder('user_buyer', 'order_123'),
       ).rejects.toThrow(BadRequestException);
@@ -522,7 +561,10 @@ describe('OrdersService', () => {
 
   describe('sweepExpiredPendingPix (cron)', () => {
     it('cancela pedido PIX pendente expirado (não pago na Pagar.me)', async () => {
-      mockPagarmeService.get.mockResolvedValueOnce({ id: 'or_test', status: 'failed' });
+      mockPagarmeService.get.mockResolvedValueOnce({
+        id: 'or_test',
+        status: 'failed',
+      });
       selectChain.where.mockResolvedValueOnce([
         {
           id: 'order_123',
@@ -554,7 +596,13 @@ describe('OrdersService', () => {
     it('deve enriquecer pedidos com listing (imagens parseadas) e nome do comprador', async () => {
       selectChain.where.mockResolvedValueOnce([
         {
-          order: { id: 'o1', buyerId: 'user_buyer', sellerId: 'user_seller', totalInCents: 50000, status: 'paid' },
+          order: {
+            id: 'o1',
+            buyerId: 'user_buyer',
+            sellerId: 'user_seller',
+            totalInCents: 50000,
+            status: 'paid',
+          },
           listingTitle: 'Hot Wheels RLC',
           listingImages: '["https://img/1.jpg","https://img/2.jpg"]',
           listingPrice: 50000,
@@ -570,13 +618,22 @@ describe('OrdersService', () => {
         images: ['https://img/1.jpg', 'https://img/2.jpg'],
         priceInCents: 50000,
       });
-      expect(result[0].buyer).toEqual({ id: 'user_buyer', name: 'Lucas Mendes' });
+      expect(result[0].buyer).toEqual({
+        id: 'user_buyer',
+        name: 'Lucas Mendes',
+      });
     });
 
     it('deve usar fallbacks quando listing/comprador ausentes', async () => {
       selectChain.where.mockResolvedValueOnce([
         {
-          order: { id: 'o2', buyerId: 'user_x', sellerId: 'user_seller', totalInCents: 1000, status: 'paid' },
+          order: {
+            id: 'o2',
+            buyerId: 'user_x',
+            sellerId: 'user_seller',
+            totalInCents: 1000,
+            status: 'paid',
+          },
           listingTitle: null,
           listingImages: null,
           listingPrice: null,
@@ -599,7 +656,13 @@ describe('OrdersService', () => {
     it('deve enriquecer com listing e nome do vendedor', async () => {
       selectChain.where.mockResolvedValueOnce([
         {
-          order: { id: 'o3', buyerId: 'user_buyer', sellerId: 'user_seller', totalInCents: 2000, status: 'paid' },
+          order: {
+            id: 'o3',
+            buyerId: 'user_buyer',
+            sellerId: 'user_seller',
+            totalInCents: 2000,
+            status: 'paid',
+          },
           listingTitle: 'Matchbox',
           listingImages: 'https://img/legacy.jpg',
           listingPrice: 2000,
@@ -611,7 +674,10 @@ describe('OrdersService', () => {
 
       // CSV legado também é parseado
       expect(result[0].listing.images).toEqual(['https://img/legacy.jpg']);
-      expect(result[0].seller).toEqual({ id: 'user_seller', name: 'CardHouse' });
+      expect(result[0].seller).toEqual({
+        id: 'user_seller',
+        name: 'CardHouse',
+      });
     });
   });
 });

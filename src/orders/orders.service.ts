@@ -5,6 +5,7 @@ import {
   BadGatewayException,
   NotFoundException,
   ForbiddenException,
+  ServiceUnavailableException,
   Logger,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
@@ -37,9 +38,12 @@ const GATEWAY_FEE_PERCENT = parseFloat(
 
 /**
  * Recebedor da plataforma (Kolecta) na Pagar.me — destino da comissão no split.
- * Sem ele configurado, o split é PULADO (fallback legado: a cobrança cai 100%
- * na conta principal e a divisão fica só no ledger da wallet). Ver
- * docs/PLAN-wallet-split.md (Fase 2).
+ *
+ * Obrigatório: sem ele, a compra é RECUSADA antes de o pedido ser criado. O
+ * comportamento antigo (pular o split e seguir no "fluxo legado") fazia a
+ * cobrança cair inteira na conta principal com a divisão existindo só no ledger
+ * — dinheiro no lugar errado, sem erro visível. Ver
+ * `docs/PLAN-pagarme-conta-nova.md` (Fase 1).
  */
 const PLATFORM_RECIPIENT_ID = process.env.PAGARME_PLATFORM_RECIPIENT_ID ?? '';
 
@@ -113,7 +117,11 @@ const MIN_INSTALLMENT_IN_CENTS = 500; // R$ 5,00
 function computeInstallment(
   principalInCents: number,
   installments: number,
-): { installmentInCents: number; totalInCents: number; interestInCents: number } {
+): {
+  installmentInCents: number;
+  totalInCents: number;
+  interestInCents: number;
+} {
   const n = Math.round(installments);
   const cetN = PAGARME_CET_BY_INSTALLMENT[n];
   const cet1 = PAGARME_CET_BY_INSTALLMENT[1];
@@ -211,9 +219,7 @@ export class OrdersService {
       }
       // Endereço de outra pessoa viraria etiqueta para a casa dela.
       if (existente.userId !== buyerId) {
-        throw new ForbiddenException(
-          'Este endereço não pertence à sua conta.',
-        );
+        throw new ForbiddenException('Este endereço não pertence à sua conta.');
       }
       return existente;
     }
@@ -419,7 +425,7 @@ export class OrdersService {
       dto.deliveryMethod === 'pickup' ? 'pickup' : 'shipping';
     const itemInCents: number = listing.priceInCents ?? 0;
     const shippingInCents: number =
-      deliveryMethod === 'pickup' ? 0 : dto.shippingInCents ?? 0;
+      deliveryMethod === 'pickup' ? 0 : (dto.shippingInCents ?? 0);
     const totalInCents: number = itemInCents + shippingInCents;
     let walletDeducted = 0;
     let chargeAmount = totalInCents;
@@ -498,6 +504,27 @@ export class OrdersService {
       sellerRecipientId = sellerProfile.recipientId;
     }
 
+    // Mesmo gate, do outro lado do split: sem o recebedor da PLATAFORMA não há
+    // para onde mandar a comissão. Antes isto só logava um warn e seguia — a
+    // cobrança caía inteira na conta principal e a divisão existia apenas no
+    // ledger da wallet. Ou seja: dinheiro no lugar errado, silenciosamente, e
+    // ninguém percebia até a conciliação. Trocar credenciais e esquecer esta
+    // variável era suficiente para reproduzir.
+    //
+    // Fail-closed, na mesma régua do `payment-flags.ts`: falta de configuração
+    // fecha a porta em vez de abrir um caminho torto. Aqui, antes de qualquer
+    // mutação — nenhum pedido órfão fica para trás.
+    if (chargeAmount > 0 && walletDeducted === 0 && !PLATFORM_RECIPIENT_ID) {
+      this.logger.error(
+        'PAGARME_PLATFORM_RECIPIENT_ID ausente — compra recusada para não ' +
+          'processar cobrança sem split. Configure o recebedor da plataforma.',
+      );
+      throw new ServiceUnavailableException(
+        'Não foi possível processar o pagamento agora. Já estamos ' +
+          'verificando — tente novamente em alguns minutos.',
+      );
+    }
+
     // Endereço de entrega: salvo OU digitado agora. Os dois caminhos precisam
     // terminar com uma linha em `addresses`, porque dela saem o destino da
     // etiqueta E o `billing_address` do cartão.
@@ -527,7 +554,9 @@ export class OrdersService {
           shippingInCents,
           // Só faz sentido com envio: em retirada não há etiqueta.
           shippingServiceId:
-            deliveryMethod === 'pickup' ? null : (dto.shippingServiceId ?? null),
+            deliveryMethod === 'pickup'
+              ? null
+              : (dto.shippingServiceId ?? null),
           shippingServiceName:
             deliveryMethod === 'pickup'
               ? null
@@ -655,11 +684,11 @@ export class OrdersService {
           `+ juros ${interestInCents / 100} BRL ` +
           `(comissão ${commissionPct}%, ${instrument}${instrument === 'credit_card' ? ` ${installments}x` : ''})`,
       );
-    } else if (walletDeducted === 0 && sellerRecipientId && !PLATFORM_RECIPIENT_ID) {
-      this.logger.warn(
-        `Split pulado (PAGARME_PLATFORM_RECIPIENT_ID ausente) — pedido ${order.id} no fluxo legado.`,
-      );
     }
+    // Não há mais ramo de "split pulado por falta de configuração": a ausência
+    // de PAGARME_PLATFORM_RECIPIENT_ID recusa a compra lá em cima, antes de o
+    // pedido existir. O único caso que legitimamente não splita é o híbrido
+    // (walletDeducted > 0), em que parte do valor não passa pelo gateway.
 
     // ── Endereço de cobrança (obrigatório no cartão) ──
     // Só busca no cartão: o PIX não pede, e é uma consulta a menos por compra.
@@ -714,7 +743,9 @@ export class OrdersService {
               // então ele precisa vir daqui. Usamos o endereço de entrega
               // escolhido no checkout, que é o que o comprador acabou de
               // confirmar.
-              ...(billingAddress ? { card: { billing_address: billingAddress } } : {}),
+              ...(billingAddress
+                ? { card: { billing_address: billingAddress } }
+                : {}),
             },
             ...(split ? { split } : {}),
           }
@@ -872,8 +903,7 @@ export class OrdersService {
 
     // ── Cartão: cobrança SÍNCRONA (aprova/recusa na resposta) ──
     if (instrument === 'credit_card') {
-      const paid =
-        pagarmeOrder.status === 'paid' || charge?.status === 'paid';
+      const paid = pagarmeOrder.status === 'paid' || charge?.status === 'paid';
       if (!paid) {
         // O motivo da recusa NÃO está no gateway_response — ele traz o status
         // da chamada ao gateway (code 200 = a chamada foi bem), não a decisão
@@ -936,7 +966,10 @@ export class OrdersService {
         | { message?: string; errors?: Array<{ message?: string }> }
         | undefined;
       const reason =
-        gw?.errors?.map((e) => e?.message).filter(Boolean).join(' · ') ||
+        gw?.errors
+          ?.map((e) => e?.message)
+          .filter(Boolean)
+          .join(' · ') ||
         gw?.message ||
         `status ${charge?.status ?? pagarmeOrder.status}`;
       this.logger.error(
@@ -1036,7 +1069,10 @@ export class OrdersService {
         counterpartName: schema.users.name,
       })
       .from(schema.orders)
-      .leftJoin(schema.listings, eq(schema.orders.listingId, schema.listings.id))
+      .leftJoin(
+        schema.listings,
+        eq(schema.orders.listingId, schema.listings.id),
+      )
       // Para o comprador, a contraparte é o vendedor
       .leftJoin(schema.users, eq(schema.orders.sellerId, schema.users.id))
       .where(eq(schema.orders.buyerId, buyerId));
@@ -1112,7 +1148,10 @@ export class OrdersService {
         counterpartName: schema.users.name,
       })
       .from(schema.orders)
-      .leftJoin(schema.listings, eq(schema.orders.listingId, schema.listings.id))
+      .leftJoin(
+        schema.listings,
+        eq(schema.orders.listingId, schema.listings.id),
+      )
       // Para o vendedor, a contraparte é o comprador
       .leftJoin(schema.users, eq(schema.orders.buyerId, schema.users.id))
       .where(eq(schema.orders.sellerId, sellerId));
@@ -1307,7 +1346,9 @@ export class OrdersService {
   ): Promise<'paid' | 'cancelled' | 'kept'> {
     // Sem cobrança externa criada (ex.: PIX nunca gerou) → cancela direto.
     if (!order.pagarmeOrderId) {
-      return (await this.cancelPendingOrder(order, reason)) ? 'cancelled' : 'kept';
+      return (await this.cancelPendingOrder(order, reason))
+        ? 'cancelled'
+        : 'kept';
     }
 
     let pg: PagarmeOrderResponse | undefined;
@@ -1332,7 +1373,9 @@ export class OrdersService {
       return 'paid';
     }
 
-    return (await this.cancelPendingOrder(order, reason)) ? 'cancelled' : 'kept';
+    return (await this.cancelPendingOrder(order, reason))
+      ? 'cancelled'
+      : 'kept';
   }
 
   /**
@@ -1356,7 +1399,10 @@ export class OrdersService {
       );
     }
 
-    const outcome = await this.reconcilePendingPix(order, 'cancelado pelo comprador');
+    const outcome = await this.reconcilePendingPix(
+      order,
+      'cancelado pelo comprador',
+    );
     if (outcome === 'paid') {
       throw new BadRequestException(
         'Seu pagamento já foi confirmado — o pedido não pode ser cancelado.',
@@ -1376,7 +1422,11 @@ export class OrdersService {
    * com a Pagar.me antes (recupera pagos com webhook perdido). Janela de graça
    * após o `expires_in` do PIX para não competir com o webhook normal.
    */
-  async sweepExpiredPendingPix(): Promise<{ checked: number; cancelled: number; recovered: number }> {
+  async sweepExpiredPendingPix(): Promise<{
+    checked: number;
+    cancelled: number;
+    recovered: number;
+  }> {
     const GRACE_SECONDS = 10 * 60; // 10 min além do expires_in do PIX
     const cutoff = new Date(
       Date.now() - (PIX_EXPIRES_IN_SECONDS + GRACE_SECONDS) * 1000,
@@ -1558,9 +1608,8 @@ export class OrdersService {
 
     // Calcular taxas conforme fluxo canônico.
     // Comissão efetiva resolve a taxa de fundador (9% por 6 meses) quando aplicável.
-    const platformFeePercent = await this.founderService.resolveCommissionPercent(
-      order.sellerId,
-    );
+    const platformFeePercent =
+      await this.founderService.resolveCommissionPercent(order.sellerId);
     // O frete fica com a Kolecta (ela compra a etiqueta), então entra na parte
     // da plataforma junto com a comissão — que continua incidindo só sobre o
     // item. Espelha o split; se divergir, o vendedor vê um valor retido
@@ -1579,7 +1628,8 @@ export class OrdersService {
         ? CARD_FEE_PERCENT
         : GATEWAY_FEE_PERCENT;
     const gatewayFeeInCents = Math.round((externalInCents * feePercent) / 100);
-    const sellerNetInCents = order.totalInCents - platformFeeInCents - gatewayFeeInCents;
+    const sellerNetInCents =
+      order.totalInCents - platformFeeInCents - gatewayFeeInCents;
 
     await this.db.transaction(async (tx: any) => {
       await tx
@@ -1607,7 +1657,9 @@ export class OrdersService {
     });
 
     // Creditar valor líquido como saldo retido (held_balance) para o vendedor
-    const sellerWallet = await this.walletService.getOrCreateWallet(order.sellerId);
+    const sellerWallet = await this.walletService.getOrCreateWallet(
+      order.sellerId,
+    );
     await this.walletService.hold(
       sellerWallet.id,
       sellerNetInCents,
@@ -1705,7 +1757,9 @@ export class OrdersService {
 
     if (!order) throw new NotFoundException('Pedido não encontrado');
     if (order.buyerId !== buyerId) {
-      throw new ForbiddenException('Apenas o comprador pode confirmar recebimento');
+      throw new ForbiddenException(
+        'Apenas o comprador pode confirmar recebimento',
+      );
     }
     if (order.status !== 'delivered' && order.status !== 'shipped') {
       throw new BadRequestException(
@@ -1830,4 +1884,3 @@ interface PagarmeOrderResponse {
   status: string;
   charges?: PagarmeCharge[];
 }
-

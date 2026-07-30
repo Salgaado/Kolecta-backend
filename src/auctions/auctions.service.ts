@@ -5,17 +5,27 @@ import {
   BadRequestException,
   ForbiddenException,
   ConflictException,
+  ServiceUnavailableException,
   Logger,
 } from '@nestjs/common';
-import { eq, and, desc, lte, lt, ne, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
+import {
+  eq,
+  and,
+  desc,
+  lte,
+  lt,
+  ne,
+  or,
+  isNull,
+  isNotNull,
+  inArray,
+  sql,
+} from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
-import {
-  CARTAO_HABILITADO,
-  LANCE_INDISPONIVEL,
-} from '../common/payment-flags';
+import { CARTAO_HABILITADO, LANCE_INDISPONIVEL } from '../common/payment-flags';
 import { WalletService } from '../wallet/wallet.service';
 import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
@@ -65,6 +75,43 @@ const PAYMENT_DEADLINE_HOURS = parseInt(
 export class AuctionsService {
   private readonly logger = new Logger(AuctionsService.name);
 
+  /**
+   * Monta o split do leilão — ou recusa a operação.
+   *
+   * Antes, faltar recebedor (do vendedor ou da plataforma) fazia a cobrança
+   * seguir SEM split e sem sequer um log: o dinheiro caía inteiro na conta
+   * principal e a divisão existia só no ledger. Mesma régua do fluxo de compra
+   * (`orders.service.ts`), que já recusava a venda nessa situação.
+   */
+  private montarSplitOuRecusar(
+    sellerRecipientId: string | null,
+    amountInCents: number,
+    platformFeeInCents: number,
+  ): PagarmeSplit[] {
+    if (!sellerRecipientId) {
+      throw new BadRequestException(
+        'Este vendedor ainda não está apto a receber pagamentos. ' +
+          'Tente novamente mais tarde.',
+      );
+    }
+    if (!PLATFORM_RECIPIENT_ID) {
+      this.logger.error(
+        'PAGARME_PLATFORM_RECIPIENT_ID ausente — operação de leilão recusada ' +
+          'para não cobrar sem split. Configure o recebedor da plataforma.',
+      );
+      throw new ServiceUnavailableException(
+        'Não foi possível processar o pagamento agora. Já estamos ' +
+          'verificando — tente novamente em alguns minutos.',
+      );
+    }
+    return buildSplit(
+      sellerRecipientId,
+      amountInCents,
+      platformFeeInCents,
+      PLATFORM_RECIPIENT_ID,
+    );
+  }
+
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: LibSQLDatabase<typeof schema>,
@@ -99,18 +146,23 @@ export class AuctionsService {
   // ── Listar leilões ativos (público) ─────────────────────────────────────
 
   async findAll() {
-    return this.db
-      .select(this.auctionListingSelect)
-      .from(schema.auctions)
-      .innerJoin(schema.listings, eq(schema.auctions.listingId, schema.listings.id))
-      // endsAt não-nulo = leilão já iniciado (o admin ativou o anúncio);
-      // leilões "parados" (anúncio em draft) não aparecem publicamente.
-      .where(
-        and(
-          eq(schema.auctions.status, 'active'),
-          isNotNull(schema.auctions.endsAt),
-        ),
-      );
+    return (
+      this.db
+        .select(this.auctionListingSelect)
+        .from(schema.auctions)
+        .innerJoin(
+          schema.listings,
+          eq(schema.auctions.listingId, schema.listings.id),
+        )
+        // endsAt não-nulo = leilão já iniciado (o admin ativou o anúncio);
+        // leilões "parados" (anúncio em draft) não aparecem publicamente.
+        .where(
+          and(
+            eq(schema.auctions.status, 'active'),
+            isNotNull(schema.auctions.endsAt),
+          ),
+        )
+    );
   }
 
   // ── Detalhe de um leilão ─────────────────────────────────────────────────
@@ -119,7 +171,10 @@ export class AuctionsService {
     const [row] = await this.db
       .select(this.auctionListingSelect)
       .from(schema.auctions)
-      .innerJoin(schema.listings, eq(schema.auctions.listingId, schema.listings.id))
+      .innerJoin(
+        schema.listings,
+        eq(schema.auctions.listingId, schema.listings.id),
+      )
       .where(eq(schema.auctions.id, auctionId));
 
     if (!row) throw new NotFoundException('Leilão não encontrado');
@@ -132,7 +187,10 @@ export class AuctionsService {
     const rows = await this.db
       .select(this.auctionListingSelect)
       .from(schema.auctions)
-      .innerJoin(schema.listings, eq(schema.auctions.listingId, schema.listings.id))
+      .innerJoin(
+        schema.listings,
+        eq(schema.auctions.listingId, schema.listings.id),
+      )
       .where(eq(schema.listings.sellerId, sellerId))
       .orderBy(desc(schema.auctions.createdAt));
 
@@ -276,7 +334,9 @@ export class AuctionsService {
 
     // Recebedor do vendedor (p/ split nativo no arremate). Ausente/inapto →
     // pré-auth sem split (fallback legado, igual ao checkout).
-    const sellerRecipientId = await this._getSellerRecipientId(listing.sellerId);
+    const sellerRecipientId = await this._getSellerRecipientId(
+      listing.sellerId,
+    );
 
     // Vencedor anterior (será superado) + a auth dele (a ser cancelada se
     // ganharmos a corrida). Capturado ANTES de criar a nova auth.
@@ -346,7 +406,9 @@ export class AuctionsService {
           auction.endsAt.getTime() - Date.now() < 5 * 60 * 1000
         ) {
           newEndsAt = new Date(Date.now() + 5 * 60 * 1000);
-          this.logger.log(`Anti-sniper ativado: leilão ${auctionId} estendido.`);
+          this.logger.log(
+            `Anti-sniper ativado: leilão ${auctionId} estendido.`,
+          );
         }
 
         // Guarda de concorrência: só vence quem supera o lance atual.
@@ -439,7 +501,9 @@ export class AuctionsService {
     const end = enderecos.find((e) => e.isDefault) ?? enderecos[0];
     if (!end) return null;
     return {
-      line_1: [end.number, end.street, end.neighborhood].filter(Boolean).join(', '),
+      line_1: [end.number, end.street, end.neighborhood]
+        .filter(Boolean)
+        .join(', '),
       ...(end.complement ? { line_2: end.complement } : {}),
       zip_code: String(end.zip).replace(/\D/g, ''),
       city: end.city,
@@ -458,7 +522,10 @@ export class AuctionsService {
    */
   private async _getDefaultAddressId(userId: string): Promise<string | null> {
     const enderecos = await this.db
-      .select({ id: schema.addresses.id, isDefault: schema.addresses.isDefault })
+      .select({
+        id: schema.addresses.id,
+        isDefault: schema.addresses.isDefault,
+      })
       .from(schema.addresses)
       .where(eq(schema.addresses.userId, userId));
     const end = enderecos.find((e) => e.isDefault) ?? enderecos[0];
@@ -525,22 +592,16 @@ export class AuctionsService {
     } | null;
   }): Promise<{ orderId: string; chargeId: string; expiresAt: Date }> {
     // Split nativo no arremate (executado na captura). Sem recebedor apto ou
-    // sem recebedor da plataforma → auth sem split (fluxo legado).
-    let split: PagarmeSplit[] | undefined;
-    if (params.sellerRecipientId && PLATFORM_RECIPIENT_ID) {
-      const commissionPct = await this.founderService.resolveCommissionPercent(
-        params.sellerId,
-      );
-      const platformFeeInCents = Math.round(
-        (params.amountInCents * commissionPct) / 100,
-      );
-      split = buildSplit(
-        params.sellerRecipientId,
-        params.amountInCents,
-        platformFeeInCents,
-        PLATFORM_RECIPIENT_ID,
-      );
-    }
+    // sem recebedor da plataforma, a operação é recusada — nunca autorizada
+    // sem split.
+    const commissionPct = await this.founderService.resolveCommissionPercent(
+      params.sellerId,
+    );
+    const split = this.montarSplitOuRecusar(
+      params.sellerRecipientId,
+      params.amountInCents,
+      Math.round((params.amountInCents * commissionPct) / 100),
+    );
 
     let pagarmeOrder: any;
     try {
@@ -799,7 +860,9 @@ export class AuctionsService {
       throw new ForbiddenException('Acesso negado a este pedido');
     }
     if (order.status !== 'pending_payment') {
-      throw new BadRequestException('Este pedido não está aguardando pagamento.');
+      throw new BadRequestException(
+        'Este pedido não está aguardando pagamento.',
+      );
     }
     if (order.paymentDeadlineAt && order.paymentDeadlineAt < new Date()) {
       throw new BadRequestException(
@@ -817,26 +880,21 @@ export class AuctionsService {
     const sellerRecipientId = await this._getSellerRecipientId(order.sellerId);
     const totalInCents = order.totalInCents;
 
-    // Split nativo (mesma regra do arremate). Sem recebedor apto/plataforma →
-    // cobrança sem split (fluxo legado).
-    let split: PagarmeSplit[] | undefined;
-    if (sellerRecipientId && PLATFORM_RECIPIENT_ID) {
-      const platformFeeInCents =
-        order.platformFeeInCents ??
-        Math.round(
-          (totalInCents *
-            (await this.founderService.resolveCommissionPercent(
-              order.sellerId,
-            ))) /
-            100,
-        );
-      split = buildSplit(
-        sellerRecipientId,
-        totalInCents,
-        platformFeeInCents,
-        PLATFORM_RECIPIENT_ID,
+    // Split nativo (mesma regra do arremate): sem recebedor, recusa.
+    const platformFeeInCents =
+      order.platformFeeInCents ??
+      Math.round(
+        (totalInCents *
+          (await this.founderService.resolveCommissionPercent(
+            order.sellerId,
+          ))) /
+          100,
       );
-    }
+    const split = this.montarSplitOuRecusar(
+      sellerRecipientId,
+      totalInCents,
+      platformFeeInCents,
+    );
 
     let pagarmeOrder: any;
     try {
@@ -1101,7 +1159,11 @@ export class AuctionsService {
   private async _findRunnerUp(
     auction: typeof schema.auctions.$inferSelect,
     excludeBidderId: string,
-  ): Promise<{ bidId: string; bidderId: string; amountInCents: number } | null> {
+  ): Promise<{
+    bidId: string;
+    bidderId: string;
+    amountInCents: number;
+  } | null> {
     const bids = await this.db
       .select({
         bidId: schema.bids.id,
@@ -1149,7 +1211,10 @@ export class AuctionsService {
       })
       .from(schema.bids)
       .innerJoin(schema.auctions, eq(schema.bids.auctionId, schema.auctions.id))
-      .innerJoin(schema.listings, eq(schema.auctions.listingId, schema.listings.id))
+      .innerJoin(
+        schema.listings,
+        eq(schema.auctions.listingId, schema.listings.id),
+      )
       .where(eq(schema.bids.bidderId, bidderId))
       .orderBy(desc(schema.bids.amountInCents));
 
@@ -1226,7 +1291,9 @@ export class AuctionsService {
         await this._closeAuction(auction, listing);
         results.push(auction.id);
       } catch (err: any) {
-        this.logger.error(`Falha ao fechar leilão ${auction.id}: ${err.message}`);
+        this.logger.error(
+          `Falha ao fechar leilão ${auction.id}: ${err.message}`,
+        );
       }
     }
 
@@ -1235,7 +1302,10 @@ export class AuctionsService {
 
   // ── Lógica interna de fechamento ─────────────────────────────────────────
 
-  private async _closeAuction(auction: typeof schema.auctions.$inferSelect, listing: typeof schema.listings.$inferSelect | undefined) {
+  private async _closeAuction(
+    auction: typeof schema.auctions.$inferSelect,
+    listing: typeof schema.listings.$inferSelect | undefined,
+  ) {
     // Comissão efetiva do vendedor (aplica taxa de fundador quando cabível).
     const platformFeePercent = listing?.sellerId
       ? await this.founderService.resolveCommissionPercent(listing.sellerId)
@@ -1374,8 +1444,8 @@ export class AuctionsService {
           status: 'paid',
           paymentMethod: 'external',
           paymentInstrument: 'credit_card',
-          pagarmeOrderId: winnerAuth!.orderId,
-          pagarmeChargeId: winnerAuth!.chargeId,
+          pagarmeOrderId: winnerAuth.orderId,
+          pagarmeChargeId: winnerAuth.chargeId,
           walletAmountInCents: 0,
           externalAmountInCents: totalInCents,
         })
