@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MailService } from './mail/mail.service';
+import { BroadcastService } from './broadcast.service';
 import { OrderListener } from './listeners/order.listener';
 import { KycListener } from './listeners/kyc.listener';
 import { UserListener } from './listeners/user.listener';
@@ -34,6 +35,7 @@ import { DisputeListener } from './listeners/dispute.listener';
 @Module({
   providers: [
     MailService,
+    BroadcastService,
     OrderListener,
     KycListener,
     UserListener,
@@ -43,6 +45,6 @@ import { DisputeListener } from './listeners/dispute.listener';
     FinanceListener,
     DisputeListener,
   ],
-  exports: [MailService],
+  exports: [MailService, BroadcastService],
 })
 export class NotificationsModule {}

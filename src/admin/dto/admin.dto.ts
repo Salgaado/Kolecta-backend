@@ -1,4 +1,13 @@
-import { IsEmail, IsIn, IsOptional, IsString } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Min,
+} from 'class-validator';
 import { TEMPLATES } from '../../notifications/templates';
 // `import type` obrigatório: o tipo é usado num campo decorado e, com
 // isolatedModules + emitDecoratorMetadata, o TS exige a forma type-only.
@@ -34,4 +43,47 @@ export class SendTestEmailDto {
   @IsOptional()
   @IsIn(Object.keys(TEMPLATES))
   template?: TemplateSlug;
+}
+
+/**
+ * Comunicado para toda a base. Só admin.
+ *
+ * `dryRun` é opcional de propósito e vale `true` quando ausente: uma chamada
+ * malfeita ou um curioso batendo no endpoint recebe a contagem, não um disparo
+ * para centenas de pessoas.
+ */
+export class BroadcastDto {
+  @IsIn(Object.keys(TEMPLATES))
+  template: TemplateSlug;
+
+  /**
+   * Identificador da campanha. Vira o refId de cada envio, e é o que garante
+   * que ninguém receba a mesma mensagem duas vezes. Use algo estável e datado,
+   * ex: "aviso-pagamento-2026-07-30".
+   */
+  @IsString()
+  @IsNotEmpty()
+  campanha: string;
+
+  /** Só envia de verdade com `false` explícito. */
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+
+  /** Restringe a um único endereço, para conferir o e-mail antes da base. */
+  @IsOptional()
+  @IsEmail({}, { message: 'apenasPara precisa ser um e-mail válido.' })
+  apenasPara?: string;
+
+  /** Corta a lista nos N primeiros — útil para um lote piloto. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  limite?: number;
+
+  /** Pausa entre envios, em ms. Abaixo de ~500 a Resend começa a devolver 429. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  pausaMs?: number;
 }

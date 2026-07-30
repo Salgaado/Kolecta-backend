@@ -19,7 +19,9 @@ import {
   UpdateUserRoleDto,
   ResolveDisputeDto,
   SendTestEmailDto,
+  BroadcastDto,
 } from './dto/admin.dto';
+import { BroadcastService } from '../notifications/broadcast.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -28,7 +30,10 @@ import { Roles } from '../auth/roles.decorator';
 @UseGuards(AuthGuard, RolesGuard)
 @Roles('admin')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly broadcast: BroadcastService,
+  ) {}
 
   // ── GET /api/admin/stats ─────────────────────────────────────────────────
 
@@ -45,6 +50,20 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   async sendTestEmail(@Body() dto: SendTestEmailDto) {
     return { data: await this.adminService.sendTestEmail(dto) };
+  }
+
+  // ── POST /api/admin/broadcast ────────────────────────────────────────────
+  // Comunicado para toda a base. ENSAIO por padrão: sem `dryRun:false` no
+  // corpo, devolve só a contagem de destinatários e não envia nada.
+  //
+  //   ensaio : { "template":"aviso-pagamento", "campanha":"aviso-pagamento-2026-07-30" }
+  //   teste  : { ..., "dryRun":false, "apenasPara":"voce@exemplo.com" }
+  //   valendo: { ..., "dryRun":false }
+
+  @Post('broadcast')
+  @HttpCode(HttpStatus.OK)
+  async sendBroadcast(@Body() dto: BroadcastDto) {
+    return { data: await this.broadcast.enviar(dto) };
   }
 
   // ── Agregações (dashboards) ──────────────────────────────────────────────
