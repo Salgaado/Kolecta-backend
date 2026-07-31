@@ -30,9 +30,15 @@ import { buildRecipientPayload } from '../recipients/recipient-payload';
 const BASE = process.env.PAGARME_BASE_URL || 'https://api.pagar.me/core/v5';
 const KEY = process.env.PAGARME_SECRET_KEY || '';
 
-// Cartões do simulador (docs/REF-pagarme-api.md). Só o número decide o desfecho.
+// A conta nova é PSP (é o que habilita split), então roda o **simulador PSP** —
+// onde a tabela de cartões do simulador *gateway* não vale: todo número aprova.
+// Quem provoca recusa aqui é o CVV (iniciado em 6 = recusa do emissor) ou o
+// documento `11111111111` (recusa do antifraude). Confirmado em 31/07: com
+// `4000000000000028` + CVV 123 a cobrança volta `paid`; com CVV 612 volta
+// `failed`/`not_authorized` (acquirer 9109). Ver docs/REF-pagarme-api.md.
 const CARTAO_APROVA = '4000000000000010';
-const CARTAO_RECUSA = '4000000000000028';
+const CVV_APROVA = '123';
+const CVV_RECUSA = '612';
 
 const ITEM_EM_CENTAVOS = 10000; // R$ 100,00
 const COMISSAO_EM_CENTAVOS = 1100; // 11%
@@ -154,6 +160,7 @@ async function criarRecebedor(rotulo: string, seed: number) {
 
 function corpoPedido(opts: {
   cartao: string;
+  cvv?: string;
   split?: Array<Record<string, unknown>>;
   preAuth?: boolean;
 }) {
@@ -195,7 +202,7 @@ function corpoPedido(opts: {
             holder_name: 'COMPRADOR ENSAIO',
             exp_month: 12,
             exp_year: 30,
-            cvv: '123',
+            cvv: opts.cvv ?? CVV_APROVA,
             // Obrigatório no cartão. Sem ele a cobrança volta `failed` com
             // `validation_error | billing | "value" is required` — de novo, um
             // erro de payload disfarçado de recusa. A produção monta este
@@ -331,11 +338,11 @@ async function main() {
   }
 
   // ── 5. Compra recusada ────────────────────────────────────────────────────
-  titulo(5, 'Compra no cartão RECUSADO (o antifraude que derrubou julho)');
+  titulo(5, 'Compra RECUSADA pelo emissor (CVV 612 — regra do simulador PSP)');
   const recusada = await api(
     'POST',
     '/orders',
-    corpoPedido({ cartao: CARTAO_RECUSA, split }),
+    corpoPedido({ cartao: CARTAO_APROVA, cvv: CVV_RECUSA, split }),
   );
   const statusRecusada =
     recusada.json?.charges?.[0]?.status ?? recusada.json?.status;
@@ -348,8 +355,8 @@ async function main() {
     );
   } else {
     falhou(
-      `cartão de recusa foi APROVADO (status "${statusRecusada}"). ` +
-        'O simulador não está ativo nesta conta — sem ele não dá para ensaiar ' +
+      `a recusa por CVV foi APROVADA (status "${statusRecusada}"). ` +
+        'A conta não está no simulador PSP — sem ele não dá para ensaiar ' +
         'recusa, e o caminho de erro do checkout fica sem cobertura.',
     );
   }

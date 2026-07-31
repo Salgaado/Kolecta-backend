@@ -111,9 +111,24 @@ export class WithdrawalsService {
       .returning();
 
     try {
-      // NOTA (ponta P-transfer): confirmar em sandbox o endpoint/params exatos
-      // do saque recebedor→banco na Pagar.me v5 (`POST /transfers` vs
-      // `POST /recipients/{id}/withdrawals`). Ajustar se o E2E acusar.
+      // NOTA (ponta P-transfer) — sondado na conta nova em 31/07, os DOIS
+      // endpoints existem e se comportam diferente:
+      //
+      //   `POST /transfers`                    → 401 "IP de origem não
+      //     autorizado a realizar essa operação". Só responde de IP na
+      //     allowlist do dashboard. É o caminho que roda em produção hoje
+      //     (a allowlist da conta ANTIGA já tem os IPs da Render) — e por isso
+      //     mesmo é o que quebra na virada de conta se a allowlist nova não
+      //     for preenchida antes. O 401 não fala de saque nem de saldo, então
+      //     o erro chega ao vendedor como falha genérica.
+      //
+      //   `POST /recipients/{id}/withdrawals`  → não é filtrado por IP; criou
+      //     um `with_...` de verdade (que nasceu `failed` por falta de saldo
+      //     disponível — o dinheiro do cartão fica em `waiting_funds`).
+      //
+      // Mantido em `/transfers` de propósito: é o que já funciona em produção,
+      // e um 401 de IP não é evidência de endpoint errado. Ver
+      // docs/PLAN-pagarme-conta-nova.md (bloqueio 6).
       const transfer = await this.pagarme.post<PagarmeTransfer>(
         '/transfers',
         {
