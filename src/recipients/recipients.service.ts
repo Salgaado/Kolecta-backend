@@ -198,6 +198,19 @@ export class RecipientsService {
       `Recebedor ${recipientId} (seller ${seller.userId}) → status ${status}`,
     );
 
+    // O leilão do vendedor ficou pausado enquanto ele não podia receber: lance
+    // exige recebedor ativo, então relógio correndo sem isso só produziria
+    // "vendedor não está apto" na cara do comprador. Agora que ele pode, os
+    // leilões dele voltam sozinhos, com o tempo que faltava.
+    //
+    // Idempotente por construção: quem retoma só olha leilão pausado, então
+    // `recipient.updated` repetido não mexe em nada.
+    if (canOperate) {
+      this.eventEmitter.emit('seller.apto-a-receber', {
+        sellerId: seller.userId,
+      });
+    }
+
     // Notifica o vendedor por e-mail nos estados relevantes
     const [user] = await this.db
       .select({ name: schema.users.name, email: schema.users.email })

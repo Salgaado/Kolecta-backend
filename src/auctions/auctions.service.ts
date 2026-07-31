@@ -22,7 +22,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { CARTAO_HABILITADO, LANCE_INDISPONIVEL } from '../common/payment-flags';
@@ -728,6 +728,60 @@ export class AuctionsService {
    * e segue: no fechamento a captura da auth vencida cai no ramo
    * `pending_payment` (Fase 4), que dá prazo ao vencedor. Degrada seguro.
    */
+  /**
+   * Devolve ao ar os leilões de um vendedor que acabou de ficar apto a receber.
+   *
+   * Os leilões foram pausados na migração para a conta nova (31/07/2026): sem
+   * recebedor ativo, `montarSplitOuRecusar` recusa o lance, e leilão visível
+   * onde ninguém consegue dar lance é pior que leilão fora do ar — o comprador
+   * culpa a plataforma e o vendedor perde a venda sem saber por quê.
+   *
+   * Cada um volta com o tempo que FALTAVA, não com o resto de um relógio que
+   * continuou correndo no escuro: é o mesmo contrato de `scripts/pausar-leiloes.ts`.
+   *
+   * Idempotente: só toca em leilão pausado. Evento repetido não faz nada.
+   */
+  @OnEvent('seller.apto-a-receber')
+  async retomarLeiloesDoVendedor(evento: { sellerId: string }): Promise<number> {
+    const pausados = await this.db
+      .select({
+        id: schema.auctions.id,
+        restanteMs: schema.auctions.pausedRemainingMs,
+      })
+      .from(schema.auctions)
+      .innerJoin(
+        schema.listings,
+        eq(schema.listings.id, schema.auctions.listingId),
+      )
+      .where(
+        and(
+          eq(schema.listings.sellerId, evento.sellerId),
+          eq(schema.auctions.status, 'active'),
+          isNotNull(schema.auctions.pausedAt),
+        ),
+      );
+
+    if (pausados.length === 0) return 0;
+
+    const agora = Date.now();
+    for (const leilao of pausados) {
+      await this.db
+        .update(schema.auctions)
+        .set({
+          endsAt: new Date(agora + Math.max(0, leilao.restanteMs ?? 0)),
+          pausedAt: null,
+          pausedRemainingMs: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.auctions.id, leilao.id));
+    }
+
+    this.logger.log(
+      `Vendedor ${evento.sellerId} apto a receber: ${pausados.length} leilão(ões) retomado(s).`,
+    );
+    return pausados.length;
+  }
+
   async reauthorizeExpiringBids(): Promise<{
     reauthorized: string[];
     failed: string[];

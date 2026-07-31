@@ -47,11 +47,18 @@ const dur = (ms: number) => {
   const agora = Math.floor(Date.now() / 1000);
 
   if (acao === 'pausar') {
+    // Vendedor APTO fica de fora: o leilão dele funciona, pausar seria tirar do
+    // ar quem já pode receber. Isto torna o script seguro de rodar de novo
+    // enquanto a fila de recadastro anda — cada rodada pausa só quem ainda não
+    // voltou, sem desfazer o que a retomada automática já liberou.
     const r = await client.execute(`
       SELECT a.id, a.ends_at, l.title,
              (SELECT COUNT(*) FROM bids b WHERE b.auction_id = a.id) lances
-      FROM auctions a JOIN listings l ON l.id = a.listing_id
+      FROM auctions a
+      JOIN listings l ON l.id = a.listing_id
+      LEFT JOIN seller_profiles sp ON sp.user_id = l.seller_id
       WHERE a.status = 'active' AND a.paused_at IS NULL AND a.ends_at IS NOT NULL
+        AND NOT (sp.pagarme_recipient_id IS NOT NULL AND sp.can_receive = 1)
       ORDER BY a.ends_at`);
 
     if (r.rows.length === 0) {

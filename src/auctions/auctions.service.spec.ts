@@ -663,6 +663,55 @@ describe('AuctionsService', () => {
     });
   });
 
+  // ── Retomada automática ao vendedor ficar apto ───────────────────────────
+  //
+  // Na migração para a conta nova (31/07/2026) os 110 leilões foram pausados:
+  // sem recebedor ativo o lance é recusado, e leilão visível onde ninguém
+  // consegue dar lance é pior que leilão fora do ar — o comprador culpa a
+  // plataforma e o vendedor perde a venda sem saber por quê. Conforme cada um
+  // refaz o cadastro, os leilões dele voltam sozinhos.
+
+  describe('retomarLeiloesDoVendedor', () => {
+    it('devolve o leilão com o tempo que FALTAVA, não com o relógio corrido', async () => {
+      mockDb = makeDrizzleMock();
+      const doisDiasMs = 2 * 24 * 60 * 60 * 1000;
+      mockDb.where.mockResolvedValueOnce([
+        { id: 'auction_1', restanteMs: doisDiasMs },
+      ]);
+      service = await buildModule();
+
+      const antes = Date.now();
+      const total = await service.retomarLeiloesDoVendedor({
+        sellerId: 'user_seller',
+      });
+
+      expect(total).toBe(1);
+      const patch = mockDb.set.mock.calls[0][0];
+      expect(patch.pausedAt).toBeNull();
+      expect(patch.pausedRemainingMs).toBeNull();
+      // Novo fim ≈ agora + o que faltava (folga de 5s para o relógio do teste).
+      const esperado = antes + doisDiasMs;
+      expect(
+        Math.abs(new Date(patch.endsAt).getTime() - esperado),
+      ).toBeLessThan(5000);
+    });
+
+    it('não faz nada quando o vendedor não tem leilão pausado', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]);
+      service = await buildModule();
+
+      const total = await service.retomarLeiloesDoVendedor({
+        sellerId: 'user_seller',
+      });
+
+      // Idempotência: `recipient.updated` chega várias vezes para o mesmo
+      // vendedor, e a segunda não pode reiniciar relógio de leilão já no ar.
+      expect(total).toBe(0);
+      expect(mockDb.update).not.toHaveBeenCalled();
+    });
+  });
+
   // ── reauthorizeExpiringBids (Fase 3) ─────────────────────────────────────
 
   describe('reauthorizeExpiringBids', () => {
