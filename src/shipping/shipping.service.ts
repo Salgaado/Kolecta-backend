@@ -236,12 +236,27 @@ export class ShippingService {
     const declaredValue =
       dto.declared_value ?? Number((order.totalInCents / 100).toFixed(2));
 
+    // O CPF do VENDEDOR não mora em `users`. Aquela coluna só é preenchida no
+    // checkout, ou seja, quando a pessoa COMPRA — e vendedor que nunca comprou
+    // ficava sem documento nenhum. Quem tem o dado é o cadastro de recebedor,
+    // em `seller_profiles.document_number` (30 vendedores contra 9 em
+    // `users.cpf`, medido em 31/07/2026). Sem esta busca, toda venda de quem só
+    // vende falhava na etiqueta com "CPF do vendedor não encontrado", depois de
+    // o comprador já ter pago.
+    const [sellerProfile] = order.sellerId
+      ? await this.db
+          .select({ documentNumber: schema.sellerProfiles.documentNumber })
+          .from(schema.sellerProfiles)
+          .where(eq(schema.sellerProfiles.userId, order.sellerId))
+      : [];
+
     // Falha cedo e por escrito: sem documento o Melhor Envio recusa o carrinho
     // com um erro que não diz o que fazer, e o vendedor só via "Falha ao gerar
     // etiqueta".
     const fromDoc =
       this.buildPartyDocument(dto.from_document) ??
-      this.buildPartyDocument(seller?.cpf);
+      this.buildPartyDocument(seller?.cpf) ??
+      this.buildPartyDocument(sellerProfile?.documentNumber);
     const toDoc =
       this.buildPartyDocument(dto.to_document) ??
       this.buildPartyDocument(buyer?.cpf);

@@ -12,12 +12,25 @@ const BASE = 'https://sandbox.melhorenvio.com.br/api/v2/me';
 
 // Mock do client Drizzle (API relacional `db.query.*.findFirst`).
 function makeDb() {
+  // `select()` serve ao documento do vendedor em `seller_profiles`. Default
+  // vazio: os testes que já existiam continuam resolvendo pelo `users.cpf`.
+  const selectChain: any = {
+    from: jest.fn().mockReturnThis(),
+    where: jest.fn().mockResolvedValue([]),
+  };
   return {
     query: {
       orders: { findFirst: jest.fn() },
       addresses: { findFirst: jest.fn() },
       users: { findFirst: jest.fn() },
       listings: { findFirst: jest.fn() },
+    },
+    select: jest.fn(() => selectChain),
+    /** Documento no cadastro de recebedor do vendedor (ou nenhum). */
+    __comDocumentoDoRecebedor(documentNumber: string | null) {
+      selectChain.where.mockResolvedValue(
+        documentNumber ? [{ documentNumber }] : [],
+      );
     },
   };
 }
@@ -140,6 +153,54 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
     // Envio e devolve "não encontrado" com HTTP 200 — o vendedor caía num 404.
     expect(result.panelUrl).toContain('/carrinho');
     expect(result.panelUrl).not.toContain('/painel/');
+  });
+
+  // ── Documento do vendedor ────────────────────────────────────────────────
+  //
+  // `users.cpf` só é preenchido no CHECKOUT, ou seja, quando a pessoa COMPRA.
+  // Quem só vende nunca passou por ali. Em 31/07/2026 havia 9 linhas em
+  // `users.cpf` contra 30 em `seller_profiles.document_number` — e uma venda
+  // real de R$ 52,09 falhou na etiqueta por causa disso, depois de o comprador
+  // já ter pago.
+
+  it('usa o documento do cadastro de recebedor quando o vendedor não tem users.cpf', async () => {
+    seedHappyPath();
+    // Vendedor que só vende: nunca comprou, então não tem CPF em `users`.
+    db.query.users.findFirst
+      .mockReset()
+      .mockResolvedValueOnce({
+        email: 'b@x.com',
+        name: 'Comprador',
+        cpf: '52998224725',
+      })
+      .mockResolvedValueOnce({ email: 's@x.com', name: 'Vendedor', cpf: null });
+    db.__comDocumentoDoRecebedor('11590565797');
+    const service = new ShippingService(http, db as any);
+
+    await (service as any).createCart(dto);
+
+    const payload = httpPost.mock.calls[0][1];
+    expect(payload.from.document).toBe('11590565797');
+  });
+
+  it('sem CPF em lugar nenhum, recusa dizendo de quem é o documento que falta', async () => {
+    seedHappyPath();
+    db.query.users.findFirst
+      .mockReset()
+      .mockResolvedValueOnce({
+        email: 'b@x.com',
+        name: 'Comprador',
+        cpf: '52998224725',
+      })
+      .mockResolvedValueOnce({ email: 's@x.com', name: 'Vendedor', cpf: null });
+    db.__comDocumentoDoRecebedor(null);
+    const service = new ShippingService(http, db as any);
+
+    await expect((service as any).createCart(dto)).rejects.toThrow(
+      /CPF do vendedor não encontrado/,
+    );
+    // Nada de carrinho meio criado no Melhor Envio.
+    expect(httpPost).not.toHaveBeenCalled();
   });
 
   it('respeita declared_value do request quando informado', async () => {
