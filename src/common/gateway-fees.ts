@@ -19,14 +19,36 @@
  * venda de R$ 100 isso é ~1%, então o espelho fica perto, não exato.
  */
 
+/**
+ * Lê um percentual de env sem confiar na digitação.
+ *
+ * `parseFloat('3,89')` devolve **3** — silenciosamente, e vírgula é o separador
+ * natural de quem digita em português. Um valor invalido viraria `NaN`, que
+ * contamina `sellerNetInCents` e acaba gravado no pedido. Aqui a vírgula é
+ * aceita como decimal e qualquer coisa que não vire número finito cai em 0 com
+ * aviso — 0 é o comportamento anterior (nada descontado), então degrada para o
+ * conhecido em vez de corromper linha de pedido.
+ */
+function lerPercentual(nome: string): number {
+  const bruto = process.env[nome];
+  if (bruto === undefined || bruto.trim() === '') return 0;
+
+  const valor = parseFloat(bruto.trim().replace(',', '.'));
+  if (!Number.isFinite(valor) || valor < 0) {
+    console.warn(
+      `[gateway-fees] ${nome}="${bruto}" não é um percentual válido — usando 0.`,
+    );
+    return 0;
+  }
+  return valor;
+}
+
 /** Cartão de crédito: MDR à vista. Configurável via env. */
-export const CARD_FEE_PERCENT = parseFloat(
-  process.env.PAGARME_CARD_FEE_PERCENT ?? '0',
-);
+export const CARD_FEE_PERCENT = lerPercentual('PAGARME_CARD_FEE_PERCENT');
 
 /** Demais instrumentos (PIX). Configurável via env. */
-export const GATEWAY_FEE_PERCENT = parseFloat(
-  process.env.PAGARME_GATEWAY_FEE_PERCENT ?? '0',
+export const GATEWAY_FEE_PERCENT = lerPercentual(
+  'PAGARME_GATEWAY_FEE_PERCENT',
 );
 
 /**

@@ -63,4 +63,33 @@ describe('taxa do gateway (espelho da carteira)', () => {
     const { calcGatewayFeeInCents } = carregar();
     expect(calcGatewayFeeInCents(0, 'credit_card')).toBe(0);
   });
+
+  // `parseFloat('3,89')` === 3. Vírgula é o separador natural em português, e o
+  // erro não aparece em lugar nenhum: a venda processa, só desconta menos.
+  it('aceita vírgula como separador decimal', () => {
+    process.env.PAGARME_CARD_FEE_PERCENT = '3,89';
+    const { calcGatewayFeeInCents } = carregar();
+    expect(calcGatewayFeeInCents(10000, 'credit_card')).toBe(389);
+  });
+
+  it('ignora espaço em volta do número', () => {
+    process.env.PAGARME_CARD_FEE_PERCENT = ' 3.89 ';
+    const { calcGatewayFeeInCents } = carregar();
+    expect(calcGatewayFeeInCents(10000, 'credit_card')).toBe(389);
+  });
+
+  // NaN em `sellerNetInCents` seria gravado no pedido e envenenaria a carteira.
+  // Degradar para 0 devolve o comportamento anterior, que é conhecido.
+  it('valor inválido vira 0 em vez de NaN', () => {
+    const avisos = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const lixo of ['abc', '%', '-2']) {
+      process.env.PAGARME_CARD_FEE_PERCENT = lixo;
+      const { calcGatewayFeeInCents } = carregar();
+      const taxa = calcGatewayFeeInCents(10000, 'credit_card');
+      expect(Number.isNaN(taxa)).toBe(false);
+      expect(taxa).toBe(0);
+    }
+    expect(avisos).toHaveBeenCalled();
+    avisos.mockRestore();
+  });
 });
