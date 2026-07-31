@@ -17,6 +17,7 @@ import * as messageReceived from './message-received';
 import * as payoutReleased from './payout-released';
 import * as disputeOpened from './dispute-opened';
 import * as avisoPagamento from './aviso-pagamento';
+import * as recadastroRecebedor from './recadastro-recebedor';
 
 export interface EmailTemplate {
   subject: (data: any) => string;
@@ -45,6 +46,7 @@ export const TEMPLATES = {
   'payout-released': payoutReleased,
   'dispute-opened': disputeOpened,
   'aviso-pagamento': avisoPagamento,
+  'recadastro-recebedor': recadastroRecebedor,
 } satisfies Record<string, EmailTemplate>;
 
 export type TemplateSlug = keyof typeof TEMPLATES;

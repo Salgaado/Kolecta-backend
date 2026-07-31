@@ -1,10 +1,18 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, isNotNull, like, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, like, ne } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { MailService } from './mail/mail.service';
 import { TemplateSlug } from './templates';
+
+/**
+ * Recorte de quem recebe o disparo.
+ *  - `todos`: toda a base com e-mail válido.
+ *  - `recebedores-a-recadastrar`: só os vendedores cujo recebedor Pagar.me
+ *    morre na troca de conta (ver `docs/PLAN-pagarme-conta-nova.md`, Fase 4).
+ */
+export type Audiencia = 'todos' | 'recebedores-a-recadastrar';
 
 /**
  * Disparo de comunicado para toda a base.
@@ -45,8 +53,20 @@ export class BroadcastService {
   private static readonly DOMINIOS_FALSOS =
     /@(email|example|test)\.com$|@localhost/i;
 
-  /** Destinatários: toda conta com e-mail real. */
-  async destinatarios(): Promise<Array<{ email: string; name: string | null }>> {
+  /**
+   * Status de recebedor que serão invalidados pela troca de conta na Pagar.me.
+   *
+   * Recebedor não migra entre CNPJs: quem está nestes estados hoje transaciona
+   * (ver `docs/REF-pagarme-api.md`) e perde isso na virada. `refused` fica de
+   * fora de propósito — essas contas já não vendem nem sacam, então o e-mail
+   * seria um pedido de ação para quem não tem o que recuperar.
+   */
+  private static readonly STATUS_A_RECADASTRAR = ['active', 'affiliation'];
+
+  /** Toda conta com e-mail real. */
+  async destinatarios(): Promise<
+    Array<{ email: string; name: string | null }>
+  > {
     const linhas = await this.db
       .select({ email: schema.users.email, name: schema.users.name })
       .from(schema.users)
@@ -58,6 +78,43 @@ export class BroadcastService {
         ),
       );
 
+    return this.semEnderecosFalsos(linhas);
+  }
+
+  /**
+   * Só os vendedores cujo recebedor morre na troca de conta.
+   *
+   * Público pequeno e específico. Existe porque mandar um pedido de recadastro
+   * para a base inteira geraria dúvida em centenas de pessoas que não têm nada
+   * a fazer — e ruído desses dilui justamente o aviso de quem precisa agir.
+   */
+  async destinatariosRecadastro(): Promise<
+    Array<{ email: string; name: string | null }>
+  > {
+    const linhas = await this.db
+      .select({ email: schema.users.email, name: schema.users.name })
+      .from(schema.sellerProfiles)
+      .innerJoin(
+        schema.users,
+        eq(schema.users.id, schema.sellerProfiles.userId),
+      )
+      .where(
+        and(
+          isNotNull(schema.sellerProfiles.pagarmeRecipientId),
+          ne(schema.sellerProfiles.pagarmeRecipientId, ''),
+          inArray(
+            schema.sellerProfiles.pagarmeRecipientStatus,
+            BroadcastService.STATUS_A_RECADASTRAR,
+          ),
+          isNotNull(schema.users.email),
+          like(schema.users.email, '%@%'),
+        ),
+      );
+
+    return this.semEnderecosFalsos(linhas);
+  }
+
+  private semEnderecosFalsos<T extends { email: string }>(linhas: T[]): T[] {
     return linhas.filter(
       (l) => !BroadcastService.DOMINIOS_FALSOS.test(l.email),
     );
@@ -99,11 +156,13 @@ export class BroadcastService {
     campanha: string;
     dryRun?: boolean;
     apenasPara?: string;
+    audiencia?: Audiencia;
     limite?: number;
     pausaMs?: number;
   }): Promise<{
     dryRun: boolean;
     campanha: string;
+    audiencia: Audiencia;
     total: number;
     enviados: number;
     amostra: string[];
@@ -112,9 +171,13 @@ export class BroadcastService {
     const dryRun = opts.dryRun !== false;
     const pausaMs = opts.pausaMs ?? 600;
 
+    const audiencia: Audiencia = opts.audiencia ?? 'todos';
+
     let alvos = opts.apenasPara
       ? [{ email: opts.apenasPara, name: null as string | null }]
-      : await this.destinatarios();
+      : audiencia === 'recebedores-a-recadastrar'
+        ? await this.destinatariosRecadastro()
+        : await this.destinatarios();
 
     // Tira quem já recebeu esta campanha. O MailService também recusaria o
     // reenvio, mas tarde demais: a pausa entre iterações aconteceria mesmo
@@ -139,12 +202,14 @@ export class BroadcastService {
 
     if (dryRun) {
       this.logger.log(
-        `[ENSAIO] "${opts.template}" atingiria ${alvos.length} destinatário(s). ` +
+        `[ENSAIO] "${opts.template}" (audiência: ${audiencia}) atingiria ` +
+          `${alvos.length} destinatário(s). ` +
           'Nenhum e-mail foi enviado. Para enviar de verdade: dryRun=false.',
       );
       return {
         dryRun: true,
         campanha: opts.campanha,
+        audiencia,
         total: alvos.length,
         enviados: 0,
         amostra,
@@ -152,7 +217,8 @@ export class BroadcastService {
     }
 
     this.logger.warn(
-      `⚠️  DISPARO REAL "${opts.template}" para ${alvos.length} destinatário(s) — campanha ${opts.campanha}.`,
+      `⚠️  DISPARO REAL "${opts.template}" (audiência: ${audiencia}) para ` +
+        `${alvos.length} destinatário(s) — campanha ${opts.campanha}.`,
     );
 
     let enviados = 0;
@@ -179,6 +245,7 @@ export class BroadcastService {
     return {
       dryRun: false,
       campanha: opts.campanha,
+      audiencia,
       total: alvos.length,
       enviados,
       amostra,

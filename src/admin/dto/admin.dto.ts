@@ -12,6 +12,8 @@ import { TEMPLATES } from '../../notifications/templates';
 // `import type` obrigatório: o tipo é usado num campo decorado e, com
 // isolatedModules + emitDecoratorMetadata, o TS exige a forma type-only.
 import type { TemplateSlug } from '../../notifications/templates';
+// Mesmo motivo do import acima: usado em campo decorado, precisa ser type-only.
+import type { Audiencia } from '../../notifications/broadcast.service';
 
 export class UpdateUserRoleDto {
   @IsIn(['user', 'admin'])
@@ -74,6 +76,15 @@ export class BroadcastDto {
   @IsOptional()
   @IsEmail({}, { message: 'apenasPara precisa ser um e-mail válido.' })
   apenasPara?: string;
+
+  /**
+   * Recorte do público. Omitido = `todos` (toda a base).
+   * `recebedores-a-recadastrar` mira só os vendedores cujo recebedor Pagar.me
+   * morre na troca de conta — ver `docs/PLAN-pagarme-conta-nova.md` (Fase 4).
+   */
+  @IsOptional()
+  @IsIn(['todos', 'recebedores-a-recadastrar'])
+  audiencia?: Audiencia;
 
   /** Corta a lista nos N primeiros — útil para um lote piloto. */
   @IsOptional()

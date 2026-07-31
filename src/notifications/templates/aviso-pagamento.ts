@@ -21,7 +21,7 @@ const AVISO =
   'ficar indisponível em alguns momentos. O <strong>Pix</strong> segue ' +
   'funcionando normalmente para todas as compras.';
 
-export function subject(_data: AvisoPagamentoData): string {
+export function subject(): string {
   return 'Estamos melhorando os meios de pagamento da Kolecta';
 }
 
