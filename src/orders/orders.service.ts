@@ -408,17 +408,28 @@ export class OrdersService {
     const shippingInCents: number =
       deliveryMethod === 'pickup' ? 0 : (dto.shippingInCents ?? 0);
     const totalInCents: number = itemInCents + shippingInCents;
-    let walletDeducted = 0;
-    let chargeAmount = totalInCents;
+    // Pagar com saldo da carteira foi REMOVIDO em 31/07/2026, por limitação do
+    // provedor: a Pagar.me não transfere entre usuários, o saldo só sai por
+    // saque. Enquanto existiu, a parte paga com saldo não passava pelo split —
+    // a cobrança caía inteira na conta da Kolecta e o dinheiro do vendedor
+    // ficava só no nosso ledger. Era a Fase 1 furada por uma porta lateral.
+    //
+    // `walletDeducted` continua como constante zero em vez de ser arrancado:
+    // ele atravessa o cálculo de split, o hold e os metadados do pedido, e
+    // remover tudo isso agora seria refatorar o caminho do dinheiro inteiro
+    // para chegar no mesmo resultado. Fica para quando o `orders`/`auctions`
+    // virar um PaymentsService.
+    const walletDeducted = 0;
+    const chargeAmount = totalInCents;
 
-    // ── Verificar saldo da wallet se solicitado ──
-    // Cartão NÃO combina com saldo (compra híbrida no cartão fica fora do split
-    // nativo). Decisão do dono: cartão sempre cobra o valor cheio. Guarda aqui
-    // no back independentemente do que o cliente enviar.
-    if (dto.useWalletBalance && dto.paymentMethod !== 'credit_card') {
-      const wallet = await this.walletService.getOrCreateWallet(buyerId);
-      walletDeducted = Math.min(wallet.balanceInCents, totalInCents);
-      chargeAmount = totalInCents - walletDeducted;
+    // Cliente antigo (bundle em cache) ainda pode mandar o campo. Ignorar é o
+    // certo — recusar quebraria a compra de quem só não recarregou a página —,
+    // mas registra, porque o comprador vai pagar o valor cheio esperando abater.
+    if (dto.useWalletBalance) {
+      this.logger.warn(
+        `Compra de ${buyerId} pediu abatimento com saldo da carteira: ignorado ` +
+          '(pagar com saldo foi removido). Provável frontend desatualizado.',
+      );
     }
 
     const paymentMethod =

@@ -112,6 +112,17 @@ export class CreateOrderDto {
   @IsOptional()
   deliveryMethod?: 'shipping' | 'pickup';
 
+  /**
+   * @deprecated Sem efeito desde 31/07/2026 — pagar com saldo foi removido.
+   *
+   * A Pagar.me não faz transferência entre usuários: o saldo da carteira só sai
+   * por saque. Abater a compra do saldo cobrava sem passar pelo split, então o
+   * dinheiro caía inteiro na conta da Kolecta e a divisão existia só no nosso
+   * ledger — a mesma falha que a Fase 1 fechou, por uma porta lateral.
+   *
+   * O campo continua aceito para não quebrar cliente antigo que ainda o envie;
+   * o serviço ignora o valor.
+   */
   @IsBoolean()
   @IsOptional()
   useWalletBalance?: boolean;
