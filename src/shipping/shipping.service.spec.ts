@@ -260,6 +260,85 @@ describe('ShippingService — cotação (POST /shipment/calculate)', () => {
     });
   });
 
+  // ── Filtro de transportadoras ────────────────────────────────────────────
+  //
+  // A conta habilita 15 serviços; o checkout mostra 6 (decisão do dono,
+  // 31/07/2026). O que estes testes protegem não é a lista — é o comprador não
+  // receber no checkout uma opção que a Kolecta não quer despachar, e o corte
+  // não passar despercebido quando zera a rota.
+
+  const cotacao = (...opts: Array<[number, string, string]>) =>
+    of({
+      data: opts.map(([id, empresa, servico]) => ({
+        id,
+        company: { name: empresa },
+        name: servico,
+        price: '20.00',
+        delivery_time: 5,
+      })),
+    });
+
+  it('esconde as transportadoras fora da lista e mantém as escolhidas', async () => {
+    db.query.listings.findFirst.mockResolvedValue({ sellerId: 'seller-1' });
+    db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
+    httpPost.mockReturnValue(
+      cotacao(
+        [1, 'Correios', 'PAC'], // permitido
+        [4, 'Jadlog', '.Com'], // fora da lista
+        [12, 'LATAM Cargo', 'éFácil'], // fora da lista
+        [33, 'JeT', 'Standard'], // permitido
+      ),
+    );
+    const service = new ShippingService(http, db as any);
+
+    const { options } = await service.quoteShipping({
+      to_cep: '01001-000',
+      listing_id: 'lst-1',
+    } as any);
+
+    expect(options.map((o: any) => o.service)).toEqual(['PAC', 'Standard']);
+  });
+
+  it('não pede à API já filtrado — o corte é nosso, para caber no log', async () => {
+    db.query.listings.findFirst.mockResolvedValue({ sellerId: 'seller-1' });
+    db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
+    httpPost.mockReturnValue(cotacao([1, 'Correios', 'PAC']));
+    const service = new ShippingService(http, db as any);
+
+    await service.quoteShipping({
+      to_cep: '01001-000',
+      listing_id: 'lst-1',
+    } as any);
+
+    // Pedir filtrado esconderia quantas opções o corte custou nesta rota.
+    const [, payload] = httpPost.mock.calls[0];
+    expect(payload.services).toBeUndefined();
+  });
+
+  it('avisa no log quando o filtro zera uma rota que tinha opções', async () => {
+    db.query.listings.findFirst.mockResolvedValue({ sellerId: 'seller-1' });
+    db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
+    httpPost.mockReturnValue(
+      cotacao([4, 'Jadlog', '.Com'], [12, 'LATAM Cargo', 'éFácil']),
+    );
+    const service = new ShippingService(http, db as any);
+    const aviso = jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => {});
+
+    const { options } = await service.quoteShipping({
+      to_cep: '01001-000',
+      listing_id: 'lst-1',
+    } as any);
+
+    // Comprador sem frete não fecha a compra, e do lado dele isso é silencioso.
+    expect(options).toEqual([]);
+    expect(aviso).toHaveBeenCalledWith(
+      expect.stringContaining('nenhuma transportadora permitida atende'),
+    );
+    aviso.mockRestore();
+  });
+
   it('usa peso/dimensões persistidos no anúncio quando existem', async () => {
     db.query.listings.findFirst.mockResolvedValue({
       sellerId: 'seller-1',

@@ -17,6 +17,35 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { QuoteShippingDto, GenerateLabelDto } from './dto/shipping.dto';
 
+/**
+ * Serviços que o comprador pode escolher no checkout.
+ *
+ * A conta do Melhor Envio habilita 15 (Jadlog .Com, LATAM éFácil, Azul, Buslog,
+ * Total Express, Loggi Coleta/Ponto…). Mostrar todos vira uma lista longa de
+ * opções parecidas, e cada uma é uma transportadora a mais para o vendedor
+ * lidar quando dá problema. Estes 6 são a escolha do dono (31/07/2026); os IDs
+ * vêm de `GET /me/shipment/services` na conta de produção.
+ *
+ * Vazio (`MELHOR_ENVIO_SERVICOS=`) desliga o filtro e volta a mostrar tudo —
+ * é a saída rápida se o corte deixar alguma região sem opção.
+ */
+const SERVICOS_PERMITIDOS: ReadonlySet<number> = new Set(
+  (process.env.MELHOR_ENVIO_SERVICOS ?? '1,2,3,17,31,33')
+    .split(',')
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isFinite(n)),
+);
+
+/** Só para o log dizer o nome em vez do número. */
+const NOME_DO_SERVICO: Readonly<Record<number, string>> = {
+  1: 'Correios PAC',
+  2: 'Correios SEDEX',
+  3: 'Jadlog .Package',
+  17: 'Correios Mini Envios',
+  31: 'Loggi Express',
+  33: 'JeT Standard',
+};
+
 @Injectable()
 export class ShippingService {
   private readonly logger = new Logger(ShippingService.name);
@@ -77,15 +106,36 @@ export class ShippingService {
         }),
       );
 
-      const options = response.data
-        .filter((opt: any) => !opt.error)
-        .map((opt: any) => ({
-          carrier: opt.company.name,
-          service: opt.name,
-          price: parseFloat(opt.custom_price || opt.price),
-          delivery_time_days: opt.custom_delivery_time || opt.delivery_time,
-          raw: opt,
-        }));
+      const cotadas = response.data.filter((opt: any) => !opt.error);
+
+      // Filtra AQUI, e não pelo parâmetro `services` da API, de propósito: assim
+      // dá para saber quantas opções o corte custou nesta rota. Pedir já
+      // filtrado economizaria alguns bytes e cegaria o log.
+      const permitidas = SERVICOS_PERMITIDOS.size
+        ? cotadas.filter((opt: any) => SERVICOS_PERMITIDOS.has(Number(opt.id)))
+        : cotadas;
+
+      // Mini Envios só aceita até ~300g; Loggi Express e JeT têm cobertura
+      // regional. Numa rota que nenhum dos escolhidos atende, o comprador fica
+      // SEM frete e não consegue fechar a compra. É silencioso do lado dele, e
+      // este log é o único lugar onde isso aparece.
+      if (permitidas.length === 0 && cotadas.length > 0) {
+        this.logger.warn(
+          `Frete ${fromCep} → ${data.to_cep}: nenhuma transportadora permitida atende. ` +
+            `${cotadas.length} opção(ões) foram descartadas pelo filtro: ` +
+            cotadas
+              .map((o: any) => `${o.company?.name} ${o.name} (id ${o.id})`)
+              .join(', '),
+        );
+      }
+
+      const options = permitidas.map((opt: any) => ({
+        carrier: opt.company.name,
+        service: opt.name,
+        price: parseFloat(opt.custom_price || opt.price),
+        delivery_time_days: opt.custom_delivery_time || opt.delivery_time,
+        raw: opt,
+      }));
 
       return { options };
     } catch (error: any) {
