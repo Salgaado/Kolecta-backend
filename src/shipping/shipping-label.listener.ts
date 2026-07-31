@@ -7,6 +7,7 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { MailService } from '../notifications/mail/mail.service';
+import { BRAND } from '../notifications/templates/layout';
 import { ShippingService } from './shipping.service';
 
 /** Payload de `order.paid` (compra direta) — emitido em orders.service.ts. */
@@ -160,7 +161,17 @@ export class ShippingLabelListener {
         buyerCity: destino ? `${destino.city}/${destino.state}` : null,
         service: order.shippingServiceName ?? null,
         trackingCode: order.trackingCode ?? null,
-        labelUrl,
+        // NÃO manda a URL do Melhor Envio. Aquilo é página de painel protegida
+        // por sessão: o vendedor clicava em "Baixar etiqueta" e caía no login de
+        // uma conta que não é dele — aconteceu em 31/07 com a primeira venda
+        // real da conta nova. O painel já tinha sido corrigido em 25/07
+        // (`GET /shipping/label/:id/pdf`, com a NOSSA autenticação); o e-mail
+        // ficou para trás mandando o link cru.
+        //
+        // O botão aponta para a página do pedido no painel, e não direto para o
+        // PDF, porque o endpoint do arquivo exige Bearer — link de e-mail não
+        // carrega token. Lá o vendedor já está logado e o botão baixa.
+        labelUrl: `${BRAND.site}/painel/pedidos/${orderId}`,
         semAnexo: !pdf,
       },
       attachments: pdf

@@ -23,6 +23,14 @@ export interface ShippingLabelReadyData {
   carrier?: string | null;
   service?: string | null;
   trackingCode?: string | null;
+  /**
+   * Página do pedido no painel da Kolecta — NÃO a URL do Melhor Envio.
+   *
+   * A do ME é página de painel protegida por sessão: quem clicava caía no login
+   * de uma conta que não é dele (aconteceu em 31/07). O download do arquivo
+   * exige a nossa autenticação, e link de e-mail não carrega token — por isso o
+   * botão leva ao painel, onde o vendedor já está logado.
+   */
   labelUrl?: string | null;
   /** true quando o anexo não pôde ser baixado e só resta o link. */
   semAnexo?: boolean;
@@ -73,7 +81,7 @@ export function html(data: ShippingLabelReadyData): string {
         ],
       }),
     cta: data.labelUrl
-      ? { href: data.labelUrl, label: 'Baixar etiqueta (PDF)' }
+      ? { href: data.labelUrl, label: 'Baixar etiqueta no painel' }
       : undefined,
     ctaCaption:
       'O frete já foi pago pela Kolecta — você não precisa desembolsar nada na postagem.',
@@ -99,7 +107,7 @@ export function text(data: ShippingLabelReadyData): string {
       'O frete já foi pago pela Kolecta.',
     ],
     cta: data.labelUrl
-      ? { href: data.labelUrl, label: 'Baixar etiqueta (PDF)' }
+      ? { href: data.labelUrl, label: 'Baixar etiqueta no painel' }
       : undefined,
   });
 }
