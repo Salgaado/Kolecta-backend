@@ -119,7 +119,12 @@ function toAddress(addr: AddressDto | undefined) {
     city: addr.city,
     state: addr.state.toUpperCase(),
     zip_code: addr.zipCode,
-    complementary: addr.complementary ?? '',
+    // Mesma exigência do `reference_point` abaixo, e pela mesma razão: string
+    // vazia conta como ausente e a Pagar.me devolve 422 "The complementary
+    // field is required". Endereço sem complemento é o caso comum (casa, e não
+    // apartamento), então o `?? ''` daqui barrava exatamente o vendedor mais
+    // típico. Encontrado pelo ensaio em sandbox antes de chegar em produção.
+    complementary: addr.complementary?.trim() || 'Não informado',
     // Pagar.me EXIGE reference_point não-vazio (string vazia = "field is required"
     // → 422). Quando o vendedor não informa, mandamos um marcador não-vazio.
     reference_point: addr.referencePoint?.trim() || 'Não informado',

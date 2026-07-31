@@ -53,11 +53,20 @@ const mockCardsService = {
     .mockResolvedValue({ customerId: 'cus_1', cardId: 'card_1' }),
 };
 
-// Pré-auth padrão: order com charge autorizada (pending → authorized_pending_capture).
+// Pré-auth padrão, na forma que a API REAL devolve (conferido em sandbox
+// 30/07): a cobrança fica `pending` e quem carrega `authorized_pending_capture`
+// é a TRANSAÇÃO. O mock antigo punha esse status na cobrança — forma que a
+// Pagar.me nunca retorna, o que fazia o teste validar uma resposta imaginária.
 const authorizedOrder = {
   id: 'or_1',
   status: 'pending',
-  charges: [{ id: 'ch_1', status: 'authorized_pending_capture' }],
+  charges: [
+    {
+      id: 'ch_1',
+      status: 'pending',
+      last_transaction: { status: 'authorized_pending_capture' },
+    },
+  ],
 };
 
 const mockPagarmeService = {
