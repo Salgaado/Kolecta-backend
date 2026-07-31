@@ -168,7 +168,7 @@ describe('AdminService', () => {
         .mockReturnValue(mockDb);
       mockDb.where
         .mockResolvedValueOnce([{ total: 0 }])    // anuncios no ar
-        .mockResolvedValueOnce([{ total: null }]) // revenue null → deve ser 0
+        .mockResolvedValueOnce([])                // nenhum pedido concluido → 0
         .mockResolvedValueOnce([{ total: 0 }])    // disputes
         .mockResolvedValueOnce([{ total: 0 }]);   // leiloes no ar
 
@@ -187,16 +187,49 @@ describe('AdminService', () => {
         .mockResolvedValueOnce([{ total: 2 }])
         .mockReturnValue(mockDb);
       mockDb.where
-        .mockResolvedValueOnce([{ total: 4 }])       // anuncios no ar
-        .mockResolvedValueOnce([{ total: '99999' }]) // sum retorna string no SQLite
-        .mockResolvedValueOnce([{ total: 1 }])       // disputes
-        .mockResolvedValueOnce([{ total: 3 }]);      // leiloes no ar
+        .mockResolvedValueOnce([{ total: 4 }]) // anuncios no ar
+        .mockResolvedValueOnce([
+          { platformFeeInCents: 99999, shippingInCents: 0 },
+        ])
+        .mockResolvedValueOnce([{ total: 1 }]) // disputes
+        .mockResolvedValueOnce([{ total: 3 }]); // leiloes no ar
 
       service = await buildModule();
       const stats = await service.getStats();
 
       expect(typeof stats.totalRevenueInCents).toBe('number');
       expect(stats.totalRevenueInCents).toBe(99999);
+    });
+
+    // `platform_fee_in_cents` carrega o FRETE junto desde 25/07/2026 — o frete
+    // passa pela Kolecta só para comprar a etiqueta. Somar a coluna como
+    // receita inflava o painel em ~4x (R$ 20,22 exibidos, R$ 4,95 reais).
+    it('receita é comissão: o frete embutido na taxa não conta', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.from
+        .mockResolvedValueOnce([{ total: 5 }])
+        .mockResolvedValueOnce([{ total: 10 }])
+        .mockResolvedValueOnce([{ total: 2 }])
+        .mockReturnValue(mockDb);
+      mockDb.where
+        .mockResolvedValueOnce([{ total: 4 }])
+        .mockResolvedValueOnce([
+          // Venda real de 31/07: taxa R$ 15,78 = comissão 3,59 + frete 12,19.
+          { platformFeeInCents: 1578, shippingInCents: 1219 },
+          // Pedido ANTIGO (frete ia ao vendedor): a taxa já era só comissão,
+          // e subtrair o frete daria comissão negativa.
+          { platformFeeInCents: 220, shippingInCents: 1567 },
+          // Retirada em mãos: sem frete, taxa é comissão inteira.
+          { platformFeeInCents: 500, shippingInCents: 0 },
+        ])
+        .mockResolvedValueOnce([{ total: 1 }])
+        .mockResolvedValueOnce([{ total: 3 }]);
+
+      service = await buildModule();
+      const stats = await service.getStats();
+
+      // 359 + 220 + 500 — e não 1578 + 220 + 500 = 2298.
+      expect(stats.totalRevenueInCents).toBe(1079);
     });
   });
 

@@ -12,6 +12,7 @@ import {
 import { ListingsService } from '../listings/listings.service';
 import { FounderService } from '../founder/founder.service';
 import { MailService } from '../notifications/mail/mail.service';
+import { comissaoEmCentavos, freteEmCentavos } from '../common/comissao';
 
 @Injectable()
 export class AdminService {
@@ -36,7 +37,7 @@ export class AdminService {
       [listingsRow],
       [ordersRow],
       [activeListingsRow],
-      [revenueRow],
+      pedidosConcluidos,
       [disputesRow],
       [auctionsRow],
     ] = await Promise.all([
@@ -49,8 +50,14 @@ export class AdminService {
         .select({ total: count() })
         .from(schema.listings)
         .where(eq(schema.listings.status, 'active')),
+      // Receita é COMISSÃO, não `platform_fee`: aquele campo carrega o frete
+      // junto desde 25/07 e o frete sai de novo na etiqueta. Some as linhas
+      // aqui em vez de no SQL — são poucas, e a regra fica num lugar só.
       this.db
-        .select({ total: sum(schema.orders.platformFeeInCents) })
+        .select({
+          platformFeeInCents: schema.orders.platformFeeInCents,
+          shippingInCents: schema.orders.shippingInCents,
+        })
         .from(schema.orders)
         .where(eq(schema.orders.status, 'completed')),
       this.db
@@ -82,7 +89,10 @@ export class AdminService {
       totalListings: listingsRow?.total ?? 0,
       activeListings: activeListingsRow?.total ?? 0,
       totalOrders: ordersRow?.total ?? 0,
-      totalRevenueInCents: Number(revenueRow?.total ?? 0),
+      totalRevenueInCents: (pedidosConcluidos ?? []).reduce(
+        (soma: number, p: any) => soma + comissaoEmCentavos(p),
+        0,
+      ),
       openDisputes: disputesRow?.total ?? 0,
       activeAuctions: auctionsRow?.total ?? 0,
     };
@@ -412,7 +422,8 @@ export class AdminService {
           .select({
             sellerId: schema.orders.sellerId,
             total: schema.orders.totalInCents,
-            fee: schema.orders.platformFeeInCents,
+            platformFeeInCents: schema.orders.platformFeeInCents,
+            shippingInCents: schema.orders.shippingInCents,
             status: schema.orders.status,
             createdAt: schema.orders.createdAt,
             categoryId: schema.listings.categoryId,
@@ -441,7 +452,8 @@ export class AdminService {
       const i = idx.get(`${d.getFullYear()}-${d.getMonth()}`);
       if (i === undefined) continue;
       salesByMonth[i].vendas += (o.total ?? 0) / 100;
-      salesByMonth[i].comissao += (o.fee ?? 0) / 100;
+      // Comissão de verdade: sem o frete que `platform_fee` carrega junto.
+      salesByMonth[i].comissao += comissaoEmCentavos(o) / 100;
     }
 
     // Top vendedores por GMV.
@@ -545,7 +557,8 @@ export class AdminService {
           id: schema.orders.id,
           createdAt: schema.orders.createdAt,
           total: schema.orders.totalInCents,
-          fee: schema.orders.platformFeeInCents,
+          platformFeeInCents: schema.orders.platformFeeInCents,
+          shippingInCents: schema.orders.shippingInCents,
           net: schema.orders.sellerNetInCents,
           status: schema.orders.status,
           buyerName: schema.users.name,
@@ -570,9 +583,16 @@ export class AdminService {
     ]);
 
     // Sequência de nome do vendedor por pedido exige outra query; fazemos leve:
+    // Receita = comissão. O frete que passa por `platform_fee` não é receita:
+    // entra e sai na compra da etiqueta. Somá-lo inflava este número em ~4x.
     const revenue = txRows
       .filter((t) => t.status === 'completed')
-      .reduce((s, t) => s + (t.fee ?? 0) / 100, 0);
+      .reduce((s, t) => s + comissaoEmCentavos(t) / 100, 0);
+    // Frete que atravessou a plataforma, exibido à parte para o número anterior
+    // não parecer uma queda inexplicável de receita.
+    const shippingPassThrough = txRows
+      .filter((t) => t.status === 'completed')
+      .reduce((s, t) => s + freteEmCentavos(t) / 100, 0);
     const volume = txRows.reduce((s, t) => s + (t.total ?? 0) / 100, 0);
     const payouts = txRows
       .filter((t) => t.status === 'completed')
@@ -583,7 +603,7 @@ export class AdminService {
 
     const transactions = txRows.map((t) => {
       const gross = (t.total ?? 0) / 100;
-      const commission = (t.fee ?? 0) / 100;
+      const commission = comissaoEmCentavos(t) / 100;
       return {
         id: t.id,
         orderId: `#${t.id.slice(0, 8)}`,
@@ -591,7 +611,14 @@ export class AdminService {
         buyer: t.buyerName ?? 'Comprador',
         gross,
         commission,
-        commissionPct: gross > 0 && t.fee != null ? Math.round((commission / gross) * 100) : null,
+        // % sobre o ITEM, não sobre o total: o frete não entra na base de
+        // cálculo da comissão, e dividir pelo bruto fazia 11% virar 7%.
+        commissionPct:
+          t.platformFeeInCents != null && gross - (t.shippingInCents ?? 0) / 100 > 0
+            ? Math.round(
+                (commission / (gross - (t.shippingInCents ?? 0) / 100)) * 100,
+              )
+            : null,
         net: t.net != null ? t.net / 100 : null,
         status: t.status,
       };
@@ -607,7 +634,13 @@ export class AdminService {
       }));
 
     return {
-      summary: { revenue, volume, payouts, pendingWithdrawals: pendingWithdrawalsTotal },
+      summary: {
+        revenue,
+        shippingPassThrough,
+        volume,
+        payouts,
+        pendingWithdrawals: pendingWithdrawalsTotal,
+      },
       transactions,
       pendingWithdrawals,
     };
