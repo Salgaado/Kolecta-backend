@@ -24,7 +24,7 @@ describe('OrdersService.simulateInstallments (tabela de CET)', () => {
     expect(first.hasInterest).toBe(false);
   });
 
-  it('2x cobra o acréscimo CET_2 − CET_1x (6,54% − 3,99% = 2,55%)', () => {
+  it('2x cobra o acréscimo CET_2 − CET_1x (6,44% − 3,89% = 2,55%)', () => {
     const { options } = service.simulateInstallments(50000);
     const em2 = options.find((o: any) => o.installments === 2);
     expect(em2).toBeDefined();
@@ -35,14 +35,14 @@ describe('OrdersService.simulateInstallments (tabela de CET)', () => {
     expect(em2.interestInCents).toBe(1276);
   });
 
-  it('12x cobra o acréscimo CET_12 − CET_1x (21,33% − 3,99% = 17,34%)', () => {
+  it('12x cobra o acréscimo CET_12 − CET_1x (21,24% − 3,89% = 17,35%)', () => {
     const { options } = service.simulateInstallments(50000);
     const em12 = options.find((o: any) => o.installments === 12);
     expect(em12).toBeDefined();
-    // 50000 × 1,1734 = 58670 → parcela 4889 (×12 = 58668), juros 8668.
-    expect(em12.installmentInCents).toBe(4889);
-    expect(em12.totalInCents).toBe(58668);
-    expect(em12.interestInCents).toBe(8668);
+    // 50000 × 1,1735 = 58675 → parcela 4890 (×12 = 58680), juros 8680.
+    expect(em12.installmentInCents).toBe(4890);
+    expect(em12.totalInCents).toBe(58680);
+    expect(em12.interestInCents).toBe(8680);
     // total == parcela × n (parcelas iguais, como a Pagar.me exibe)
     expect(em12.totalInCents).toBe(em12.installmentInCents * 12);
   });

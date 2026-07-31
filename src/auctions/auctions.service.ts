@@ -26,6 +26,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { CARTAO_HABILITADO, LANCE_INDISPONIVEL } from '../common/payment-flags';
+import { calcGatewayFeeInCents } from '../common/gateway-fees';
 import { WalletService } from '../wallet/wallet.service';
 import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
@@ -967,6 +968,18 @@ export class AuctionsService {
       .from(schema.auctions)
       .where(eq(schema.auctions.listingId, order.listingId));
 
+    // O pedido nasceu `pending_payment` com taxa de gateway zero — correto na
+    // hora, porque nada tinha sido cobrado. Agora foi: a Pagar.me desconta a
+    // taxa do vendedor no split, então o espelho precisa acompanhar, aqui e no
+    // hold logo abaixo. Sem isto o arremate pago em atraso repetia o saldo
+    // inflado que o arremate normal já corrigia.
+    const gatewayFeeInCents = calcGatewayFeeInCents(
+      order.externalAmountInCents ?? order.totalInCents,
+      order.paymentInstrument,
+    );
+    const sellerNetInCentsComTaxa =
+      (order.sellerNetInCents ?? order.totalInCents) - gatewayFeeInCents;
+
     await this.db.transaction(async (tx: any) => {
       await tx
         .update(schema.orders)
@@ -974,6 +987,8 @@ export class AuctionsService {
           status: 'paid',
           pagarmeOrderId,
           pagarmeChargeId,
+          gatewayFeeInCents,
+          sellerNetInCents: sellerNetInCentsComTaxa,
           paymentDeadlineAt: null,
           updatedAt: new Date(),
         })
@@ -995,14 +1010,13 @@ export class AuctionsService {
       }
     });
 
-    const sellerNetInCents = order.sellerNetInCents ?? order.totalInCents;
     try {
       const sellerWallet = await this.walletService.getOrCreateWallet(
         order.sellerId,
       );
       await this.walletService.hold(
         sellerWallet.id,
-        sellerNetInCents,
+        sellerNetInCentsComTaxa,
         `Arremate #${order.id.slice(0, 8)} — líquido retido`,
         order.id,
       );
@@ -1354,9 +1368,20 @@ export class AuctionsService {
     const platformFeeInCents = Math.round(
       (totalInCents * platformFeePercent) / 100,
     );
-    // Split nativo desconta a taxa do gateway do vendedor (charge_processing_fee);
-    // o valor real é reconciliado à parte (ponta P-fee do plano). Aqui, 0.
+    // Líquido do vendedor ANTES da taxa do gateway. Serve ao pedido
+    // `pending_payment`: nada foi cobrado ainda, então não há taxa a descontar
+    // — ela entra quando o vencedor efetivamente paga (`_settlePaidAuctionOrder`).
     const sellerNetInCents = totalInCents - platformFeeInCents;
+
+    // Já no caminho PAGO a taxa é real: a Pagar.me a desconta do vendedor via
+    // `charge_processing_fee` no split, então o espelho da carteira precisa
+    // descontá-la também. Sem isto o vendedor via saldo maior do que existe no
+    // recebedor dele, e o saque falhava por saldo insuficiente.
+    const gatewayFeeInCents = calcGatewayFeeInCents(
+      totalInCents,
+      'credit_card',
+    );
+    const sellerNetPagoInCents = sellerNetInCents - gatewayFeeInCents;
 
     // Captura a retenção no cartão. Falha (auth expirada/recusada) → Fase 4:
     // pedido/anúncio ficam 'pending_payment' para o vencedor pagar no prazo.
@@ -1438,9 +1463,9 @@ export class AuctionsService {
           listingId: auction.listingId,
           addressId: enderecoVencedor,
           totalInCents,
-          sellerNetInCents,
+          sellerNetInCents: sellerNetPagoInCents,
           platformFeeInCents,
-          gatewayFeeInCents: 0,
+          gatewayFeeInCents,
           status: 'paid',
           paymentMethod: 'external',
           paymentInstrument: 'credit_card',
@@ -1489,7 +1514,7 @@ export class AuctionsService {
       );
       await this.walletService.hold(
         sellerWallet.id,
-        sellerNetInCents,
+        sellerNetPagoInCents,
         `Venda por leilão #${orderId.slice(0, 8)} — líquido retido`,
         orderId,
       );
@@ -1500,7 +1525,7 @@ export class AuctionsService {
     }
 
     this.logger.log(
-      `Leilão ${auction.id} arrematado por cartão: ${auction.currentWinnerId} — R$${(totalInCents / 100).toFixed(2)} (líquido ${sellerNetInCents / 100}).`,
+      `Leilão ${auction.id} arrematado por cartão: ${auction.currentWinnerId} — R$${(totalInCents / 100).toFixed(2)} (líquido ${sellerNetPagoInCents / 100}, taxa gateway ${gatewayFeeInCents / 100}).`,
     );
   }
 }

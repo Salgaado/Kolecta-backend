@@ -24,17 +24,7 @@ import {
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
 import { FounderService } from '../founder/founder.service';
-
-/**
- * Taxa do gateway (Pagar.me) descontada do líquido do vendedor, em %.
- * PIX tem custo muito menor que cartão; o valor real depende do contrato da
- * conta. Default 0 (Kolecta absorve) até o número real ser confirmado — NÃO
- * chutamos um valor para não lesar o vendedor. Ver `PAGARME_GATEWAY_FEE_PERCENT`.
- * Substitui o antigo `~4%` hardcoded que era estimativa da Stripe (bug B4).
- */
-const GATEWAY_FEE_PERCENT = parseFloat(
-  process.env.PAGARME_GATEWAY_FEE_PERCENT ?? '0',
-);
+import { calcGatewayFeeInCents } from '../common/gateway-fees';
 
 /**
  * Recebedor da plataforma (Kolecta) na Pagar.me — destino da comissão no split.
@@ -51,33 +41,24 @@ const PLATFORM_RECIPIENT_ID = process.env.PAGARME_PLATFORM_RECIPIENT_ID ?? '';
 const PIX_EXPIRES_IN_SECONDS = 3600;
 
 /**
- * Taxa do gateway no CARTÃO, em %. Muito maior que o PIX; o vendedor absorve
- * (decisão do dono). Só bookkeeping no pedido — a taxa REAL a Pagar.me já
- * desconta via `charge_processing_fee:true`. Configurável via env.
- */
-const CARD_FEE_PERCENT = parseFloat(
-  process.env.PAGARME_CARD_FEE_PERCENT ?? '0',
-);
-
-/**
  * CET (Custo Efetivo Total) por nº de parcelas — contrato Pagar.me da Kolecta
  * ("Condições acordadas": taxa MDR + antecipação automática). Fração do valor da
  * transação que a Pagar.me retém no recebimento em ~30 dias. É a fonte da verdade
  * do parcelamento; se a Pagar.me renegociar as taxas, atualizar ESTA tabela.
  */
 const PAGARME_CET_BY_INSTALLMENT: Readonly<Record<number, number>> = {
-  1: 0.0399,
-  2: 0.0654,
-  3: 0.0802,
-  4: 0.095,
-  5: 0.1097,
-  6: 0.1245,
-  7: 0.1393,
-  8: 0.1541,
-  9: 0.1689,
-  10: 0.1837,
-  11: 0.1985,
-  12: 0.2133,
+  1: 0.0389,
+  2: 0.0644,
+  3: 0.0792,
+  4: 0.094,
+  5: 0.1088,
+  6: 0.1236,
+  7: 0.1384,
+  8: 0.1532,
+  9: 0.168,
+  10: 0.1828,
+  11: 0.1976,
+  12: 0.2124,
 };
 
 /**
@@ -1623,11 +1604,10 @@ export class OrdersService {
     // usa a taxa do instrumento. Percentual configurável via env; default 0 até o
     // custo real do contrato ser confirmado (bug B4). Base = principal (sem juros).
     const externalInCents = order.externalAmountInCents ?? order.totalInCents;
-    const feePercent =
-      order.paymentInstrument === 'credit_card'
-        ? CARD_FEE_PERCENT
-        : GATEWAY_FEE_PERCENT;
-    const gatewayFeeInCents = Math.round((externalInCents * feePercent) / 100);
+    const gatewayFeeInCents = calcGatewayFeeInCents(
+      externalInCents,
+      order.paymentInstrument,
+    );
     const sellerNetInCents =
       order.totalInCents - platformFeeInCents - gatewayFeeInCents;
 
