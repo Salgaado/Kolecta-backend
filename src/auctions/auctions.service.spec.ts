@@ -72,6 +72,12 @@ const authorizedOrder = {
 const mockPagarmeService = {
   post: jest.fn().mockResolvedValue(authorizedOrder),
   delete: jest.fn().mockResolvedValue({}),
+  // Consulta do estado real da retenção. Default: de pé — assim os testes que
+  // não falam de retenção solta seguem exercitando só o caminho da validade.
+  get: jest.fn().mockResolvedValue({
+    status: 'pending',
+    last_transaction: { status: 'authorized_pending_capture' },
+  }),
 };
 
 const sellerId = 'seller_001';
@@ -660,13 +666,22 @@ describe('AuctionsService', () => {
   // ── reauthorizeExpiringBids (Fase 3) ─────────────────────────────────────
 
   describe('reauthorizeExpiringBids', () => {
+    // Vence daqui a 1h: dentro da janela de renovação (24h), que é o caminho
+    // pela DATA. O caminho por VERIFICAÇÃO usa `reauthRowLonge`, abaixo.
     const reauthRow = {
       bidId: 'bid_001',
       auctionId: mockAuctionId,
       bidderId,
       amountInCents: 6000,
       chargeId: 'ch_old',
+      authExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
       sellerId,
+    };
+
+    /** Mesmo lance, mas com validade longe: só renova se a retenção sumiu. */
+    const reauthRowLonge = {
+      ...reauthRow,
+      authExpiresAt: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
     };
 
     it('não faz nada quando não há pré-auth a expirar', async () => {
@@ -765,6 +780,76 @@ describe('AuctionsService', () => {
       expect(mockPagarmeService.delete).not.toHaveBeenCalledWith(
         '/charges/ch_old',
       );
+    });
+
+    // ── Retenção devolvida antes do prazo ──────────────────────────────────
+    //
+    // `authExpiresAt` é estimativa nossa. Bandeira e banco emissor às vezes
+    // liberam o saldo antes do prazo contratado e não avisam ninguém. Confiar
+    // só na data faz a plataforma acreditar numa garantia inexistente até a
+    // hora de capturar — com o leilão fechado e o vencedor já avisado.
+
+    it('renova quando a retenção sumiu, mesmo com a validade longe', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([reauthRowLonge])
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([mockEndereco]);
+      // O banco devolveu o saldo: a transação não está mais retida.
+      mockPagarmeService.get.mockResolvedValueOnce({
+        status: 'canceled',
+        last_transaction: { status: 'voided' },
+      });
+      service = await buildModule();
+
+      const result = await service.reauthorizeExpiringBids();
+
+      expect(result.reauthorized).toContain('bid_001');
+      expect(mockPagarmeService.get).toHaveBeenCalledWith('/charges/ch_old');
+    });
+
+    it('não renova quando a retenção segue de pé e a validade está longe', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([reauthRowLonge]);
+      mockPagarmeService.get.mockResolvedValueOnce({
+        status: 'pending',
+        last_transaction: { status: 'authorized_pending_capture' },
+      });
+      service = await buildModule();
+
+      const result = await service.reauthorizeExpiringBids();
+
+      expect(result).toEqual({ reauthorized: [], failed: [] });
+      // Renovar à toa criaria uma SEGUNDA retenção no limite do comprador.
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+    });
+
+    it('na dúvida (consulta falhou) NÃO renova — trata como retida', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([reauthRowLonge]);
+      mockPagarmeService.get.mockRejectedValueOnce(new Error('502 bad gateway'));
+      service = await buildModule();
+
+      const result = await service.reauthorizeExpiringBids();
+
+      // Uma instabilidade do gateway não pode bloquear o limite de todos os
+      // líderes de uma vez: dúvida degrada para o comportamento anterior.
+      expect(result).toEqual({ reauthorized: [], failed: [] });
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+    });
+
+    it('não gasta consulta com quem já vai renovar pela data', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([reauthRow]) // vence em 1h
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([mockEndereco]);
+      service = await buildModule();
+      mockPagarmeService.get.mockClear(); // o mock é compartilhado entre casos
+
+      await service.reauthorizeExpiringBids();
+
+      expect(mockPagarmeService.get).not.toHaveBeenCalled();
     });
   });
 

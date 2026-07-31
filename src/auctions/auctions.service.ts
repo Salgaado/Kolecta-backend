@@ -735,6 +735,9 @@ export class AuctionsService {
     const threshold = new Date(
       Date.now() + REAUTH_WINDOW_HOURS * 60 * 60 * 1000,
     );
+    // Todos os líderes com retenção — não só os que vencem na janela. O filtro
+    // por data ficou para depois, porque agora existe um segundo motivo para
+    // renovar (ver abaixo) que a data não enxerga.
     const rows = await this.db
       .select({
         bidId: schema.bids.id,
@@ -742,6 +745,7 @@ export class AuctionsService {
         bidderId: schema.bids.bidderId,
         amountInCents: schema.bids.amountInCents,
         chargeId: schema.bids.pagarmeChargeId,
+        authExpiresAt: schema.bids.authExpiresAt,
         sellerId: schema.listings.sellerId,
       })
       .from(schema.bids)
@@ -756,15 +760,35 @@ export class AuctionsService {
           eq(schema.auctions.status, 'active'),
           isNotNull(schema.bids.pagarmeChargeId),
           isNotNull(schema.bids.authExpiresAt),
-          lte(schema.bids.authExpiresAt, threshold),
         ),
       );
 
     const reauthorized: string[] = [];
     const failed: string[] = [];
     for (const row of rows) {
+      let motivo: string | null =
+        row.authExpiresAt && row.authExpiresAt <= threshold
+          ? 'vence dentro da janela'
+          : null;
+
+      // A data de validade é ESTIMATIVA nossa (`AUTH_VALIDITY_DAYS`), não um
+      // fato: bandeira e banco emissor às vezes devolvem o saldo antes do prazo
+      // contratado, sem avisar ninguém. Confiar só na data deixa a plataforma
+      // achando que tem garantia por dias — e descobrindo o contrário na hora
+      // de capturar, com o leilão já fechado. Por isso, quem ainda não está na
+      // janela tem a retenção CONFERIDA de verdade.
+      if (!motivo) {
+        const retida = await this._preAuthAindaRetida(row.chargeId!);
+        if (retida === false) motivo = 'retenção não existe mais no cartão';
+      }
+
+      if (!motivo) continue;
+
       try {
-        if (await this._reauthorizeBid(row)) reauthorized.push(row.bidId);
+        if (await this._reauthorizeBid(row)) {
+          reauthorized.push(row.bidId);
+          this.logger.log(`Re-auth do lance ${row.bidId}: ${motivo}.`);
+        }
       } catch (err: any) {
         failed.push(row.bidId);
         this.logger.error(
@@ -773,6 +797,36 @@ export class AuctionsService {
       }
     }
     return { reauthorized, failed };
+  }
+
+  /**
+   * A retenção ainda está de pé no cartão?
+   *
+   * `true` retida · `false` sumiu (liberada, cancelada, expirada) ·
+   * **`null` não deu para saber** — erro de rede ou do gateway.
+   *
+   * O `null` é tratado como "retida" por quem chama, e isso é deliberado:
+   * renovar sem necessidade cria uma SEGUNDA retenção no limite do comprador
+   * enquanto a primeira ainda existe. Numa instabilidade do gateway, tratar
+   * dúvida como ausência bloquearia o limite de todos os líderes de uma vez.
+   */
+  private async _preAuthAindaRetida(
+    chargeId: string,
+  ): Promise<boolean | null> {
+    try {
+      const charge: any = await this.pagarme.get(`/charges/${chargeId}`);
+      // O sinal fica em `last_transaction.status`, não em `charge.status`: a
+      // cobrança pré-autorizada aparece como `pending`, e é a transação que
+      // diz `authorized_pending_capture`. Confirmado no ensaio de 31/07.
+      const status =
+        charge?.last_transaction?.status ?? charge?.status ?? 'desconhecido';
+      return status === 'authorized_pending_capture';
+    } catch (err: any) {
+      this.logger.warn(
+        `Não foi possível conferir a retenção da cobrança ${chargeId} (${err?.message}). Assumindo que segue de pé.`,
+      );
+      return null;
+    }
   }
 
   /** Renova a pré-auth de um lance líder. Retorna true se trocou a auth. */
