@@ -1,11 +1,12 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { eq, and, sql, inArray } from 'drizzle-orm';
+import { eq, and, sql, inArray, getTableColumns } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import {
   users,
   sellerProfiles,
   listings,
+  auctions,
   orders,
   reviews,
 } from '../database/schema';
@@ -242,9 +243,38 @@ export class SellersService {
       whereClause = and(whereClause, eq(listings.categoryId, categoryId));
     }
 
+    // Dados do leilão junto do anúncio, como faz `/api/listings`.
+    //
+    // Sem isto a vitrine da loja escondia TODO leilão, rodando ou não: o front
+    // decide a visibilidade por `leilaoAberto()`, que sem `endsAt` trata o
+    // anúncio como leilão nunca iniciado e o descarta. A loja do vendedor era a
+    // única tela pública que não recebia estes campos — 110 anúncios de leilão
+    // ativos sumiam da própria loja enquanto apareciam na home e na busca.
+    //
+    // `leftJoin` e não `innerJoin`: anúncio de venda direta não tem leilão e não
+    // pode sumir. É 1:1 (nenhum anúncio tem dois leilões), então não duplica
+    // linha nem estraga a paginação.
     const data = await this.db
-      .select()
+      .select({
+        ...getTableColumns(listings),
+        auctionId: auctions.id,
+        startingBidInCents: auctions.startingBidInCents,
+        minIncrementInCents: auctions.minIncrementInCents,
+        currentBidInCents: auctions.currentBidInCents,
+        reservePriceInCents: auctions.reservePriceInCents,
+        endsAt: auctions.endsAt,
+        auctionStatus: auctions.status,
+        // Distingue leilão pausado de leilão nunca iniciado: hoje os dois têm
+        // `endsAt` na sentinela de 2099, e só este campo os separa.
+        auctionPausedAt: auctions.pausedAt,
+        // O card do leilão escreve "{bidsCount} lances" sem proteção — faltando
+        // o campo ele imprime "undefined lances".
+        bidsCount: sql<number>`(
+          SELECT COUNT(*) FROM bids WHERE bids.auction_id = ${auctions.id}
+        )`.as('bids_count'),
+      })
       .from(listings)
+      .leftJoin(auctions, eq(auctions.listingId, listings.id))
       .where(whereClause)
       .limit(limit)
       .offset(offset);
