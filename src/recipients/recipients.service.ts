@@ -49,7 +49,7 @@ export class RecipientsService {
   ): Promise<{
     recipientId: string;
     status: string;
-    kyc: KycLink;
+    kyc: KycLink | null;
   }> {
     // Validação de dígito verificador (a regex do DTO só valida formato)
     if (!isValidDocument(dto.document)) {
@@ -66,7 +66,7 @@ export class RecipientsService {
       this.logger.log(
         `Seller ${userId} já tem recebedor ${seller.pagarmeRecipientId} — gerando novo link KYC.`,
       );
-      const kyc = await this.createKycLink(seller.pagarmeRecipientId);
+      const kyc = await this.tryCreateKycLink(seller.pagarmeRecipientId);
       return {
         recipientId: seller.pagarmeRecipientId,
         status: seller.pagarmeRecipientStatus ?? 'registration',
@@ -99,7 +99,7 @@ export class RecipientsService {
       })
       .where(eq(schema.sellerProfiles.userId, userId));
 
-    const kyc = await this.createKycLink(recipient.id);
+    const kyc = await this.tryCreateKycLink(recipient.id);
     return { recipientId: recipient.id, status: recipient.status, kyc };
   }
 
@@ -256,6 +256,35 @@ export class RecipientsService {
       .values({ userId, pagarmeRecipientStatus: 'not_started' })
       .returning();
     return created;
+  }
+
+  /**
+   * Versão tolerante do link de KYC, usada no `onboard`.
+   *
+   * O cadastro são duas chamadas à Pagar.me: `POST /recipients` (que cria o
+   * recebedor de verdade, dispara o e-mail de conta ativa e é gravada aqui) e
+   * `POST /recipients/{id}/kyc_link`. Deixar a segunda derrubar o request
+   * inteiro produz o pior resultado possível: o vendedor vê "Erro ao cadastrar
+   * recebedor" para um cadastro que **deu certo** — e pior, fica preso, porque
+   * toda nova tentativa cai no ramo "já tem recebedor" acima, que não recria
+   * nada e só refaz justamente a chamada que falha.
+   *
+   * Foi o que aconteceu em 31/07: o `kyc_link` voltou 401 "IP de origem não
+   * autorizado" (allowlist da conta nova) e vendedores com recebedor criado
+   * repetiam o mesmo erro vermelho sem saída. O link é reemitível a qualquer
+   * momento pelo botão da tela — perdê-lo nunca justifica descartar o cadastro.
+   */
+  private async tryCreateKycLink(recipientId: string): Promise<KycLink | null> {
+    try {
+      return await this.createKycLink(recipientId);
+    } catch (error: any) {
+      this.logger.error(
+        `Recebedor ${recipientId} sem link de KYC (a emissão falhou) — ` +
+          `cadastro mantido, vendedor gera o link depois.`,
+        JSON.stringify(error?.response ?? error?.message ?? error),
+      );
+      return null;
+    }
   }
 
   private async createKycLink(recipientId: string): Promise<KycLink> {
