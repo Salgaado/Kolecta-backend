@@ -115,12 +115,18 @@ export class WithdrawalsService {
       // endpoints existem e se comportam diferente:
       //
       //   `POST /transfers`                    → 401 "IP de origem não
-      //     autorizado a realizar essa operação". Só responde de IP na
-      //     allowlist do dashboard. É o caminho que roda em produção hoje
-      //     (a allowlist da conta ANTIGA já tem os IPs da Render) — e por isso
-      //     mesmo é o que quebra na virada de conta se a allowlist nova não
-      //     for preenchida antes. O 401 não fala de saque nem de saldo, então
-      //     o erro chega ao vendedor como falha genérica.
+      //     autorizado a realizar essa operação". **A mensagem mente: não é
+      //     filtro de IP.** Descartado por eliminação em 01/08 — o campo
+      //     "IPs permitidos" da conta foi esvaziado e o 401 permaneceu, do
+      //     Shell da Render, com a `sk_live`, que era o cenário em que um
+      //     filtro de IP teria que passar. Reproduz também com `sk_test` da
+      //     máquina local, no mesmo segundo em que `POST /recipients` dá 200.
+      //     A conta ANTIGA tem o mesmo campo vazio e sempre funcionou.
+      //     Sobra permissão de conta não liberada para operações sensíveis —
+      //     o mesmo que `kyc_link` (ver recipients.service.ts) e o mesmo tipo
+      //     de liberação que marketplace/split exigiu do suporte.
+      //     ⇒ Enquanto não for liberado, TODO saque falha aqui. O estorno
+      //     abaixo devolve o saldo, então não há perda — mas ninguém saca.
       //
       //   `POST /recipients/{id}/withdrawals`  → não é filtrado por IP; criou
       //     um `with_...` de verdade (que nasceu `failed` por falta de saldo
