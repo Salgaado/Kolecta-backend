@@ -1001,3 +1001,43 @@ export const emailLog = sqliteTable(
     ),
   }),
 );
+
+// ─── Recipient Status History ────────────────────────────────────────────────
+// Trilha append-only do que a Pagar.me respondeu sobre cada recebedor, e quando.
+//
+// `seller_profiles.pagarme_recipient_status` guarda só o estado ATUAL (é
+// sobrescrito a cada webhook) e `webhook_events` guarda id e tipo do evento,
+// sem payload. Sem esta tabela não sobra prova de que a Pagar.me devolveu
+// `active` — só os logs da Render, que expiram.
+//
+// Virou necessário em 01/08: na conta nova o recebedor volta `active` na hora,
+// **sem que o link de KYC seja emitido** (o endpoint responde 401). Se esses
+// cadastros forem reavaliados depois e a prova de vida cobrada retroativamente,
+// isto aqui é a evidência.
+//
+// `userId` NÃO referencia `users` de propósito: trilha de auditoria não pode
+// ser apagada em cascata — é justamente quando alguém some que ela importa.
+export const recipientStatusHistory = sqliteTable(
+  'recipient_status_history',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text('user_id').notNull(),
+    recipientId: text('recipient_id').notNull(),
+    // registration | affiliation | active | refused | suspended | blocked
+    status: text('status').notNull(),
+    // 'onboard' = resposta do POST /recipients | 'webhook' = recipient.*
+    source: text('source').notNull(),
+    providerEventId: text('provider_event_id'),
+    // O link de prova de vida chegou a ser emitido neste momento?
+    kycLinkIssued: integer('kyc_link_issued', { mode: 'boolean' }),
+    ...timestamps,
+  },
+  (t) => ({
+    byRecipient: index('recipient_status_history_recipient_idx').on(
+      t.recipientId,
+      t.createdAt,
+    ),
+  }),
+);

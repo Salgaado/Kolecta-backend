@@ -113,6 +113,15 @@ export class RecipientsService {
       recipient.status === ACTIVE_STATUS
         ? null
         : await this.tryCreateKycLink(recipient.id);
+
+    await this.recordStatus({
+      userId,
+      recipientId: recipient.id,
+      status: recipient.status,
+      source: 'onboard',
+      kycLinkIssued: kyc !== null,
+    });
+
     return { recipientId: recipient.id, status: recipient.status, kyc };
   }
 
@@ -252,6 +261,13 @@ export class RecipientsService {
       `Recebedor ${recipientId} (seller ${seller.userId}) → status ${status}`,
     );
 
+    await this.recordStatus({
+      userId: seller.userId,
+      recipientId,
+      status,
+      source: 'webhook',
+    });
+
     // O leilão do vendedor ficou pausado enquanto ele não podia receber: lance
     // exige recebedor ativo, então relógio correndo sem isso só produziria
     // "vendedor não está apto" na cara do comprador. Agora que ele pode, os
@@ -338,6 +354,44 @@ export class RecipientsService {
         JSON.stringify(error?.response ?? error?.message ?? error),
       );
       return null;
+    }
+  }
+
+  /**
+   * Anota, sem poder falhar, o que a Pagar.me disse sobre o recebedor.
+   *
+   * `seller_profiles` guarda só o estado atual — é sobrescrito a cada webhook —
+   * então sem isto não sobra prova de que ELES devolveram `active`. Importa
+   * porque na conta nova o recebedor é aprovado sem que o link de KYC seja
+   * emitido: se a prova de vida for cobrada retroativamente, esta tabela é a
+   * evidência. Ver `scripts/add-recipient-status-history.ts`.
+   *
+   * **Fail-open, deliberadamente.** É trilha de auditoria: perder uma linha é
+   * ruim, mas derrubar o cadastro de um vendedor por causa dela é pior — e a
+   * tabela é nova, então um ambiente sem ela não pode quebrar o onboarding.
+   * Mesma régua do `email_log` em `mail.service.ts`.
+   */
+  private async recordStatus(entry: {
+    userId: string;
+    recipientId: string;
+    status: string;
+    source: 'onboard' | 'webhook';
+    kycLinkIssued?: boolean;
+  }): Promise<void> {
+    try {
+      await this.db.insert(schema.recipientStatusHistory).values({
+        userId: entry.userId,
+        recipientId: entry.recipientId,
+        status: entry.status,
+        source: entry.source,
+        kycLinkIssued: entry.kycLinkIssued ?? null,
+      });
+    } catch (err: any) {
+      this.logger.debug(
+        `recipient_status_history insert falhou (${entry.recipientId} → ${entry.status}): ${
+          err?.message ?? err
+        }`,
+      );
     }
   }
 

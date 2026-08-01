@@ -23,6 +23,7 @@ describe('RecipientsService — onboard resiste ao kyc_link falhando', () => {
   let pagarmePost: jest.Mock;
   let sellerRow: Record<string, any> | undefined;
   let updateSet: jest.Mock;
+  let insertValues: jest.Mock;
 
   // CPF com dígito verificador válido (isValidDocument roda antes de tudo).
   const CPF = '52998224725';
@@ -50,15 +51,16 @@ describe('RecipientsService — onboard resiste ao kyc_link falhando', () => {
   beforeEach(async () => {
     pagarmePost = jest.fn();
     updateSet = jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) });
+    insertValues = jest
+      .fn()
+      .mockReturnValue({ returning: () => Promise.resolve([{ userId: 'user_1' }]) });
 
     const db = {
       select: () => ({
         from: () => ({ where: () => Promise.resolve(sellerRow ? [sellerRow] : []) }),
       }),
       update: () => ({ set: updateSet }),
-      insert: () => ({
-        values: () => ({ returning: () => Promise.resolve([{ userId: 'user_1' }]) }),
-      }),
+      insert: () => ({ values: insertValues }),
     };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -161,6 +163,40 @@ describe('RecipientsService — onboard resiste ao kyc_link falhando', () => {
     expect(result).toEqual({ recipientId: 're_novo', status: 'active', kyc: null });
     // Uma chamada só: o POST /recipients. Nada de kyc_link.
     expect(pagarmePost).toHaveBeenCalledTimes(1);
+  });
+
+  it('grava na trilha o que a Pagar.me respondeu, com e sem link de KYC', async () => {
+    // A tabela existe para provar que ELES devolveram `active` sem prova de
+    // vida. Se o insert nao acontecer, a evidencia nao existe quando precisar.
+    sellerRow = { userId: 'user_1', pagarmeRecipientId: null };
+    pagarmePost.mockResolvedValueOnce({ id: 're_novo', status: 'active' });
+
+    await service.onboard('user_1', dto);
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user_1',
+        recipientId: 're_novo',
+        status: 'active',
+        source: 'onboard',
+        kycLinkIssued: false,
+      }),
+    );
+  });
+
+  it('a trilha e fail-open: insert quebrado nao derruba o cadastro', async () => {
+    // Tabela nova. Um ambiente sem ela (ou um erro transitorio) nao pode fazer
+    // o vendedor perder um cadastro que a Pagar.me ja aceitou.
+    sellerRow = { userId: 'user_1', pagarmeRecipientId: null };
+    pagarmePost.mockResolvedValueOnce({ id: 're_novo', status: 'active' });
+    insertValues.mockImplementation(() => {
+      throw new Error('no such table: recipient_status_history');
+    });
+
+    const result = await service.onboard('user_1', dto);
+
+    expect(result.recipientId).toBe('re_novo');
+    expect(result.status).toBe('active');
   });
 
   it('/kyc-link para recebedor ja ativo nem chega na Pagar.me', async () => {
