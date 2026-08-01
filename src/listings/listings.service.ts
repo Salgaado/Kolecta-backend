@@ -35,6 +35,15 @@ import {
   CONDITION_VALUES,
 } from './import-rules';
 
+/**
+ * Fim sentinela de leilão pausado — o mesmo `LIMBO` de `scripts/pausar-leiloes.ts`.
+ *
+ * Não é prazo, é marcador: mantém o leilão fora do cron de encerramento, e o
+ * front (`lib/leilao.ts`) esconde da vitrine todo fim a mais de um ano daqui.
+ * O `endsAt` real é recalculado na retomada, a partir do tempo que faltava.
+ */
+const FIM_SENTINELA = new Date('2099-01-01T00:00:00Z');
+
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
 // DTOs movidos para ./dto/listing.dto.ts (classes, p/ o ValidationPipe global).
@@ -722,6 +731,19 @@ export class ListingsService {
    * Inicia o cronômetro do leilão vinculado (endsAt = agora + durationHours) na
    * primeira vez que o anúncio vira `active`. Idempotente: se `endsAt` já estiver
    * setado (leilão já iniciado), não faz nada.
+   *
+   * Vendedor sem recebedor apto na Pagar.me: o leilão nasce PAUSADO em vez de ir
+   * ao ar. Sem recebedor, `montarSplitOuRecusar` recusa todo lance com "este
+   * vendedor ainda não está apto a receber pagamentos" — o leilão ficava visível
+   * e indisputável, e quem levava a culpa era a plataforma. Antes disto o único
+   * freio era `scripts/pausar-leiloes.ts`, rodado à mão: leilão ativado depois da
+   * última rodada passava direto (foi o que aconteceu com 2 deles em 31/07).
+   *
+   * A pausa aqui segue o mesmo contrato do script e de
+   * `AuctionsService.retomarLeiloesDoVendedor`, que devolve o leilão ao ar
+   * sozinho quando o vendedor fica apto: guarda a duração cheia em
+   * `pausedRemainingMs` e joga `endsAt` na sentinela distante, que tira o leilão
+   * da vitrine e do alcance do cron de encerramento.
    */
   private async startAuctionClockIfPending(listingId: string): Promise<void> {
     const [auction] = await this.db
@@ -729,16 +751,48 @@ export class ListingsService {
         id: schema.auctions.id,
         endsAt: schema.auctions.endsAt,
         durationHours: schema.auctions.durationHours,
+        sellerId: schema.listings.sellerId,
+        recipientId: schema.sellerProfiles.pagarmeRecipientId,
+        canReceive: schema.sellerProfiles.canReceive,
       })
       .from(schema.auctions)
+      .innerJoin(
+        schema.listings,
+        eq(schema.listings.id, schema.auctions.listingId),
+      )
+      .leftJoin(
+        schema.sellerProfiles,
+        eq(schema.sellerProfiles.userId, schema.listings.sellerId),
+      )
       .where(eq(schema.auctions.listingId, listingId))
       .limit(1);
 
     if (!auction || auction.endsAt) return; // sem leilão ou já iniciado
 
-    const endsAt = new Date(
-      Date.now() + (auction.durationHours ?? 48) * 60 * 60 * 1000,
-    );
+    const duracaoMs = (auction.durationHours ?? 48) * 60 * 60 * 1000;
+    const apto = Boolean(auction.recipientId && auction.canReceive);
+
+    if (!apto) {
+      await this.db
+        .update(schema.auctions)
+        .set({
+          endsAt: FIM_SENTINELA,
+          status: 'active',
+          pausedAt: new Date(),
+          pausedRemainingMs: duracaoMs,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.auctions.id, auction.id));
+
+      this.logger.warn(
+        `[updateStatus] Leilão do anúncio ${listingId} nasceu PAUSADO: vendedor ` +
+          `${auction.sellerId} sem recebedor apto na Pagar.me. Volta ao ar com ` +
+          `${auction.durationHours ?? 48}h cheias quando o recebedor for ativado.`,
+      );
+      return;
+    }
+
+    const endsAt = new Date(Date.now() + duracaoMs);
 
     await this.db
       .update(schema.auctions)

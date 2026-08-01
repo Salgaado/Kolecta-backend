@@ -34,6 +34,7 @@ const fakeListing = {
 
 const selectChain = {
   from: jest.fn().mockReturnThis(),
+  innerJoin: jest.fn().mockReturnThis(),
   leftJoin: jest.fn().mockReturnThis(),
   where: jest.fn().mockReturnThis(),
   orderBy: jest.fn().mockReturnThis(),
@@ -334,14 +335,63 @@ describe('ListingsService', () => {
       const auctionListing = { ...fakeListing, type: 'auction' };
       selectChain.limit
         .mockResolvedValueOnce([auctionListing]) // findById inicial
-        .mockResolvedValueOnce([{ id: 'auc_1', endsAt: null, durationHours: 48 }]) // busca auction
+        .mockResolvedValueOnce([
+          {
+            id: 'auc_1',
+            endsAt: null,
+            durationHours: 48,
+            sellerId: 'seller_001',
+            // Vendedor APTO: é o que autoriza o leilão a ir ao ar.
+            recipientId: 're_seller',
+            canReceive: true,
+          },
+        ]) // busca auction
         .mockResolvedValueOnce([auctionListing]); // findById final
 
       await service.updateStatus('listing_001', 'active');
 
-      expect(updateChain.set).toHaveBeenCalledWith(
-        expect.objectContaining({ endsAt: expect.any(Date) }),
+      const set = updateChain.set.mock.calls.find(
+        (c: any[]) => c[0]?.endsAt instanceof Date,
+      )?.[0];
+      expect(set).toBeDefined();
+      // Vai ao ar de verdade: fim dentro da duração, não na sentinela de 2099.
+      expect(set.endsAt.getTime()).toBeLessThan(
+        Date.now() + 49 * 60 * 60 * 1000,
       );
+      expect(set.pausedAt ?? null).toBeNull();
+    });
+
+    // Sem recebedor apto na Pagar.me todo lance é recusado por falta de split.
+    // O leilão ia ao ar assim mesmo e ficava visível e indisputável — só o
+    // script manual `pausar-leiloes.ts` segurava, e quem era ativado depois da
+    // última rodada passava direto.
+    it('vendedor SEM recebedor apto: leilão nasce pausado, não vai ao ar', async () => {
+      const auctionListing = { ...fakeListing, type: 'auction' };
+      selectChain.limit
+        .mockResolvedValueOnce([auctionListing])
+        .mockResolvedValueOnce([
+          {
+            id: 'auc_1',
+            endsAt: null,
+            durationHours: 48,
+            sellerId: 'seller_001',
+            recipientId: null,
+            canReceive: false,
+          },
+        ])
+        .mockResolvedValueOnce([auctionListing]);
+
+      await service.updateStatus('listing_001', 'active');
+
+      const set = updateChain.set.mock.calls.find(
+        (c: any[]) => c[0]?.pausedAt instanceof Date,
+      )?.[0];
+      expect(set).toBeDefined();
+      // Guarda a duração CHEIA: o leilão ainda não correu um minuto.
+      expect(set.pausedRemainingMs).toBe(48 * 60 * 60 * 1000);
+      // E some da vitrine pela sentinela distante, sem virar leilão encerrado.
+      expect(set.endsAt.getUTCFullYear()).toBe(2099);
+      expect(set.status).toBe('active');
     });
 
     // ── E-mail de moderação: só em ação de admin ──
