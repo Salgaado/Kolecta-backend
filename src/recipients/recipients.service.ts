@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   Logger,
@@ -67,7 +68,10 @@ export class RecipientsService {
       this.logger.log(
         `Seller ${userId} já tem recebedor ${seller.pagarmeRecipientId} — gerando novo link KYC.`,
       );
-      const kyc = await this.tryCreateKycLink(seller.pagarmeRecipientId);
+      const kyc =
+        seller.pagarmeRecipientStatus === ACTIVE_STATUS
+          ? null
+          : await this.tryCreateKycLink(seller.pagarmeRecipientId);
       return {
         recipientId: seller.pagarmeRecipientId,
         status: seller.pagarmeRecipientStatus ?? 'registration',
@@ -100,7 +104,15 @@ export class RecipientsService {
       })
       .where(eq(schema.sellerProfiles.userId, userId));
 
-    const kyc = await this.tryCreateKycLink(recipient.id);
+    // Recebedor que já nasce `active` não tem prova de vida pendente — pedir um
+    // link de KYC para ele é uma chamada que só pode dar errado, e dava: era ela
+    // que produzia o `401` no log a cada cadastro. Na conta nova a aprovação é
+    // automática nesse perfil de risco (medido: PF e PJ, sandbox e produção,
+    // todos `active` na resposta do próprio POST).
+    const kyc =
+      recipient.status === ACTIVE_STATUS
+        ? null
+        : await this.tryCreateKycLink(recipient.id);
     return { recipientId: recipient.id, status: recipient.status, kyc };
   }
 
@@ -160,6 +172,17 @@ export class RecipientsService {
     if (!seller?.pagarmeRecipientId) {
       throw new NotFoundException(
         'Recebedor ainda não criado para este vendedor.',
+      );
+    }
+
+    // Quem já está ativo não tem prova de vida a fazer. A tela chegava aqui por
+    // status velho (o KYC é aprovado ~11s depois, por webhook, e o vendedor
+    // continuava vendo "Verificação pendente"), então a chamada ia à Pagar.me
+    // só para voltar erro. Responde o que é verdade, sem sair daqui.
+    if (seller.pagarmeRecipientStatus === ACTIVE_STATUS) {
+      throw new ConflictException(
+        'Seu cadastro já foi aprovado — não é preciso fazer a prova de vida. ' +
+          'Atualize a página para ver o status novo.',
       );
     }
 

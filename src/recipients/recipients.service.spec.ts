@@ -4,6 +4,7 @@ import {
   HttpException,
   NotFoundException,
   ServiceUnavailableException,
+  ConflictException,
 } from '@nestjs/common';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { PagarmeService } from '../pagarme/pagarme.service';
@@ -146,6 +147,33 @@ describe('RecipientsService — onboard resiste ao kyc_link falhando', () => {
     expect(body).toContain('cadastro está salvo');
     // Nada de infraestrutura na cara do vendedor.
     expect(body).not.toContain('IP de origem');
+  });
+
+  it('recebedor que nasce active nao pede link de KYC (era a origem do 401)', async () => {
+    // Na conta nova a aprovação é automática nesse perfil: PF e PJ, sandbox e
+    // produção, todos voltam `active` na resposta do próprio POST. Pedir prova
+    // de vida para quem já passou é uma chamada que só pode falhar.
+    sellerRow = { userId: 'user_1', pagarmeRecipientId: null };
+    pagarmePost.mockResolvedValueOnce({ id: 're_novo', status: 'active' });
+
+    const result = await service.onboard('user_1', dto);
+
+    expect(result).toEqual({ recipientId: 're_novo', status: 'active', kyc: null });
+    // Uma chamada só: o POST /recipients. Nada de kyc_link.
+    expect(pagarmePost).toHaveBeenCalledTimes(1);
+  });
+
+  it('/kyc-link para recebedor ja ativo nem chega na Pagar.me', async () => {
+    sellerRow = {
+      userId: 'user_1',
+      pagarmeRecipientId: 're_ativo',
+      pagarmeRecipientStatus: 'active',
+    };
+
+    await expect(service.getKycLink('user_1')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(pagarmePost).not.toHaveBeenCalled();
   });
 
   it('/kyc-link sem recebedor continua 404 (não é indisponibilidade)', async () => {
