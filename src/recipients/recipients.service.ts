@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { eq } from 'drizzle-orm';
@@ -130,6 +131,24 @@ export class RecipientsService {
     };
   }
 
+  /**
+   * Link de KYC sob demanda — o botão "Gerar novo link de verificação".
+   *
+   * A emissão depende de `POST /recipients/{id}/kyc_link`, que na conta nova
+   * responde `401 "IP de origem não autorizado"`: a allowlist de operações
+   * sensíveis não foi replicada na virada de conta (ver
+   * `docs/PLAN-pagarme-conta-nova.md`). Repassar esse erro cru punha infraestrutura
+   * num toast vermelho na tela do vendedor — para um problema que ele não tem
+   * como resolver e que, pior, o faz achar que está travado.
+   *
+   * **Ele não está.** O link daqui é um atalho, não o único caminho: a Pagar.me
+   * manda o convite da prova de vida por e-mail direto ao recebedor. Foi assim
+   * que `re_cms9tvqb…` virou `active` em 31/07 — este endpoint não funcionou
+   * uma única vez naquela noite e o KYC foi aprovado mesmo assim.
+   *
+   * Então a falha vira 503 com o caminho que sobra, em vez do erro do gateway.
+   * O motivo técnico continua inteiro no log do `PagarmeService`.
+   */
   async getKycLink(userId: string): Promise<KycLink> {
     const [seller] = await this.db
       .select()
@@ -141,7 +160,18 @@ export class RecipientsService {
         'Recebedor ainda não criado para este vendedor.',
       );
     }
-    return this.createKycLink(seller.pagarmeRecipientId);
+
+    try {
+      return await this.createKycLink(seller.pagarmeRecipientId);
+    } catch {
+      throw new ServiceUnavailableException(
+        'Não foi possível gerar o link de verificação agora. A Pagar.me envia ' +
+          'o convite da prova de vida por e-mail para o endereço do seu ' +
+          'cadastro de recebedor — procure por "Pagar.me" na caixa de entrada ' +
+          'e no spam. Seu cadastro está salvo e segue em análise; não é ' +
+          'preciso preencher nada de novo.',
+      );
+    }
   }
 
   // ── Sync vindo do webhook recipient.updated ────────────────────────────────

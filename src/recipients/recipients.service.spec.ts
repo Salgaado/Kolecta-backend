@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { HttpException } from '@nestjs/common';
+import {
+  HttpException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { RecipientsService } from './recipients.service';
@@ -125,10 +129,31 @@ describe('RecipientsService — onboard resiste ao kyc_link falhando', () => {
     });
   });
 
-  it('/kyc-link sob demanda continua falhando alto (é só isso que ele faz)', async () => {
+  it('/kyc-link sob demanda falha alto, mas sem vazar o erro do gateway', async () => {
+    // O vendedor via um toast vermelho com "IP de origem não autorizado" — um
+    // detalhe de infraestrutura que ele não resolve e que o faz achar que está
+    // travado. Gerar o link continua sendo a única função do endpoint, então
+    // ele ainda falha; o que muda é 503 + instrução no lugar do 401 cru.
     sellerRow = { userId: 'user_1', pagarmeRecipientId: 're_existente' };
     pagarmePost.mockRejectedValueOnce(ipBlocked());
 
-    await expect(service.getKycLink('user_1')).rejects.toBeInstanceOf(HttpException);
+    const err = await service.getKycLink('user_1').catch((e) => e);
+
+    expect(err).toBeInstanceOf(ServiceUnavailableException);
+    expect(err.getStatus()).toBe(503);
+
+    const body = JSON.stringify(err.getResponse());
+    expect(body).toContain('Pagar.me envia');
+    // Nada de infraestrutura na cara do vendedor.
+    expect(body).not.toContain('IP de origem');
+  });
+
+  it('/kyc-link sem recebedor continua 404 (não é indisponibilidade)', async () => {
+    sellerRow = { userId: 'user_1', pagarmeRecipientId: null };
+
+    await expect(service.getKycLink('user_1')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(pagarmePost).not.toHaveBeenCalled();
   });
 });
