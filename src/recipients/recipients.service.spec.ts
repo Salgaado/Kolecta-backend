@@ -143,7 +143,7 @@ describe('RecipientsService — onboard resiste ao kyc_link falhando', () => {
     expect(err.getStatus()).toBe(503);
 
     const body = JSON.stringify(err.getResponse());
-    expect(body).toContain('Pagar.me envia');
+    expect(body).toContain('cadastro está salvo');
     // Nada de infraestrutura na cara do vendedor.
     expect(body).not.toContain('IP de origem');
   });

@@ -141,13 +141,15 @@ export class RecipientsService {
    * num toast vermelho na tela do vendedor — para um problema que ele não tem
    * como resolver e que, pior, o faz achar que está travado.
    *
-   * **Ele não está.** O link daqui é um atalho, não o único caminho: a Pagar.me
-   * manda o convite da prova de vida por e-mail direto ao recebedor. Foi assim
-   * que `re_cms9tvqb…` virou `active` em 31/07 — este endpoint não funcionou
-   * uma única vez naquela noite e o KYC foi aprovado mesmo assim.
+   * **Ele não está.** Medido, não suposto: os 6 recebedores criados na conta
+   * nova desde a virada estão TODOS `active`, e o link nunca foi emitido uma
+   * única vez no período (`scripts/diagnostico-kyc-conta-nova.ts`). Mais: o
+   * `recipient.created` chega ~11s depois do cadastro já com `active`, rápido
+   * demais para prova de vida humana — a Pagar.me está aprovando sozinha nesse
+   * perfil de risco. O link é um atalho para o caso que precisar, não o caminho.
    *
-   * Então a falha vira 503 com o caminho que sobra, em vez do erro do gateway.
-   * O motivo técnico continua inteiro no log do `PagarmeService`.
+   * Então a falha vira 503 dizendo isso, em vez do erro do gateway. O motivo
+   * técnico continua inteiro no log do `PagarmeService`.
    */
   async getKycLink(userId: string): Promise<KycLink> {
     const [seller] = await this.db
@@ -165,11 +167,10 @@ export class RecipientsService {
       return await this.createKycLink(seller.pagarmeRecipientId);
     } catch {
       throw new ServiceUnavailableException(
-        'Não foi possível gerar o link de verificação agora. A Pagar.me envia ' +
-          'o convite da prova de vida por e-mail para o endereço do seu ' +
-          'cadastro de recebedor — procure por "Pagar.me" na caixa de entrada ' +
-          'e no spam. Seu cadastro está salvo e segue em análise; não é ' +
-          'preciso preencher nada de novo.',
+        'Não foi possível gerar o link de verificação agora, mas seu cadastro ' +
+          'está salvo e em análise. Na maioria dos casos a Pagar.me aprova em ' +
+          'poucos instantes, sem precisar do link — esta tela avisa sozinha ' +
+          'quando isso acontecer. Não é preciso preencher nada de novo.',
       );
     }
   }
