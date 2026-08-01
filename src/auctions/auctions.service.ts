@@ -123,6 +123,22 @@ export class AuctionsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  /**
+   * Nome de exibição do vendedor, na mesma régua da vitrine
+   * (`listings.service.ts`): quem vende como loja cadastra o nome em
+   * `seller_profiles.store_name`, e é ele que deve aparecer — cair em
+   * `users.name` mostraria a parte local do e-mail de quem entrou sem loja.
+   *
+   * O leilão não trazia nome nenhum: o select tinha só `sellerId`, e a página
+   * de lance chumbava "Vendedor Kolecta" no lugar. Duas lojas diferentes
+   * apareciam com o mesmo nome, e o comprador não sabia de quem estava
+   * comprando na hora de dar lance.
+   */
+  private readonly sellerDisplayName = sql<string | null>`COALESCE(
+    NULLIF(TRIM(${schema.sellerProfiles.storeName}), ''),
+    NULLIF(TRIM(${schema.users.name}), '')
+  )`.as('seller_name');
+
   private readonly auctionListingSelect = {
     pausedAt: schema.auctions.pausedAt,
     id: schema.auctions.id,
@@ -142,6 +158,7 @@ export class AuctionsService {
     images: schema.listings.images,
     condition: schema.listings.condition,
     sellerId: schema.listings.sellerId,
+    sellerName: this.sellerDisplayName,
   };
 
   // ── Listar leilões ativos (público) ─────────────────────────────────────
@@ -154,6 +171,13 @@ export class AuctionsService {
         .innerJoin(
           schema.listings,
           eq(schema.auctions.listingId, schema.listings.id),
+        )
+        // Vendedor + loja: `leftJoin` porque quem ainda não abriu loja não tem
+        // `seller_profiles` e não pode sumir da vitrine por causa disso.
+        .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+        .leftJoin(
+          schema.sellerProfiles,
+          eq(schema.sellerProfiles.userId, schema.listings.sellerId),
         )
         // endsAt não-nulo = leilão já iniciado (o admin ativou o anúncio);
         // leilões "parados" (anúncio em draft) não aparecem publicamente.
@@ -176,6 +200,11 @@ export class AuctionsService {
         schema.listings,
         eq(schema.auctions.listingId, schema.listings.id),
       )
+      .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .leftJoin(
+        schema.sellerProfiles,
+        eq(schema.sellerProfiles.userId, schema.listings.sellerId),
+      )
       .where(eq(schema.auctions.id, auctionId));
 
     if (!row) throw new NotFoundException('Leilão não encontrado');
@@ -191,6 +220,11 @@ export class AuctionsService {
       .innerJoin(
         schema.listings,
         eq(schema.auctions.listingId, schema.listings.id),
+      )
+      .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
+      .leftJoin(
+        schema.sellerProfiles,
+        eq(schema.sellerProfiles.userId, schema.listings.sellerId),
       )
       .where(eq(schema.listings.sellerId, sellerId))
       .orderBy(desc(schema.auctions.createdAt));

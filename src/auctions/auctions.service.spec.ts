@@ -127,6 +127,8 @@ const makeDrizzleMock = () => {
   chain.from = jest.fn().mockReturnValue(chain);
   chain.where = jest.fn().mockReturnValue(chain); // retorna chain por padrão
   chain.innerJoin = jest.fn().mockReturnValue(chain);
+  // Vendedor + perfil de loja entram por leftJoin (nome do vendedor no leilão).
+  chain.leftJoin = jest.fn().mockReturnValue(chain);
   chain.orderBy = jest.fn().mockResolvedValue([mockBid]);
   chain.groupBy = jest.fn().mockResolvedValue([]); // contagem de lances por leilão
   chain.limit = jest.fn().mockReturnValue(chain);
