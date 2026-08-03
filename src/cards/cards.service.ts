@@ -45,6 +45,17 @@ interface PagarmeCustomer {
 }
 
 /**
+ * O que a leitura do customer remoto concluiu.
+ *
+ * `inexistente` é o caso da TROCA DE CONTA: o `cus_...` guardado no nosso banco
+ * nasceu sob outra credencial (outra conta da Pagar.me, ou uma chave de teste
+ * gravada no banco de produção) e simplesmente não existe para a chave que está
+ * em uso agora. Não há o que consertar num id que não existe — o caminho é
+ * descartar e criar outro.
+ */
+type EstadoDoCustomer = 'ok' | 'inexistente';
+
+/**
  * Gestão do cartão salvo do usuário (usado no LANCE por cartão / pré-autorização).
  *
  * PCI: guardamos apenas o `card_id` da Pagar.me + metadados mascarados. O número
@@ -103,8 +114,13 @@ export class CardsService {
         { token: cardToken },
       );
     } catch (err: any) {
+      // `pagarme.message` entra na lista porque é onde a API põe o motivo quando
+      // não há `errors[]` — o 404 de customer inexistente, por exemplo. Sem ele
+      // a falha chegava ao usuário como "Erro na comunicação com a Pagar.me",
+      // que não diz nada a ninguém.
       const detail =
         err?.response?.pagarme?.errors?.[0]?.message ||
+        err?.response?.pagarme?.message ||
         err?.response?.message ||
         'Não foi possível salvar o cartão. Verifique os dados e tente novamente.';
       throw new BadRequestException(detail);
@@ -177,7 +193,19 @@ export class CardsService {
     // aconteceu ao gravar o telefone na mao para destravar um vendedor. O custo
     // e um GET por lance, e `completarCadastroDoCustomer` sai na hora quando o
     // customer ja esta completo.
-    await this.completarCadastroDoCustomer(user.customerId, userId);
+    //
+    // Se o customer nao existe mais na conta em uso, o cartao vinculado a ele
+    // tambem nao existe: devolver a dupla so adiaria a falha para dentro da
+    // pre-autorizacao. Limpa e devolve null — quem chama ja sabe dizer "salve
+    // um cartao no Financeiro".
+    const estado = await this.completarCadastroDoCustomer(
+      user.customerId,
+      userId,
+    );
+    if (estado === 'inexistente') {
+      await this.descartarCustomerMorto(userId, user.customerId);
+      return null;
+    }
 
     return { customerId: user.customerId, cardId: card.cardId };
   }
@@ -305,7 +333,7 @@ export class CardsService {
   private async completarCadastroDoCustomer(
     customerId: string,
     userId: string,
-  ): Promise<void> {
+  ): Promise<EstadoDoCustomer> {
     let remoto: {
       document?: string | null;
       name?: string | null;
@@ -314,12 +342,16 @@ export class CardsService {
     } | null = null;
     try {
       remoto = await this.pagarme.get(`/customers/${customerId}`);
-    } catch {
-      return; // sem leitura, deixa a cobranca decidir
+    } catch (err: unknown) {
+      // 404 e o unico erro que responde a pergunta "esse id ainda vale?". Os
+      // outros (rede, 5xx, timeout) nao provam nada — seguir e deixar a cobranca
+      // decidir, como antes.
+      if (this.statusDoErro(err) === 404) return 'inexistente';
+      return 'ok';
     }
 
     const temTelefone = Object.keys(remoto?.phones ?? {}).length > 0;
-    if (remoto?.document && temTelefone) return; // ja esta completo
+    if (remoto?.document && temTelefone) return 'ok'; // ja esta completo
 
     const doc = await this.resolveDocument(userId);
     if (!doc) {
@@ -357,6 +389,41 @@ export class CardsService {
     this.logger.log(
       `Cadastro completado no customer ${customerId} (user ${userId}).`,
     );
+    return 'ok';
+  }
+
+  /** Status HTTP que a Pagar.me devolveu, quando der para saber. */
+  private statusDoErro(err: unknown): number | null {
+    const e = err as { getStatus?: () => number; status?: unknown };
+    const status =
+      typeof e?.getStatus === 'function' ? e.getStatus() : e?.status;
+    return typeof status === 'number' ? status : null;
+  }
+
+  /**
+   * Apaga a referencia a um customer que nao existe mais na conta em uso.
+   *
+   * O cartao salvo vai junto de proposito: ele e um `card_...` VINCULADO aquele
+   * customer, entao morreu com ele. Deixar a linha para tras faria a tela dizer
+   * "cartao cadastrado" e o lance falhar na hora da retencao — pior do que
+   * pedir um cadastro novo.
+   */
+  private async descartarCustomerMorto(
+    userId: string,
+    customerId: string,
+  ): Promise<void> {
+    this.logger.warn(
+      `Customer ${customerId} nao existe na conta Pagar.me atual (user ` +
+        `${userId}). Descartando a referencia — provavelmente foi criado sob ` +
+        'outra credencial (troca de conta ou chave de teste).',
+    );
+    await this.db
+      .delete(schema.savedCards)
+      .where(eq(schema.savedCards.userId, userId));
+    await this.db
+      .update(schema.users)
+      .set({ pagarmeCustomerId: null, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
   }
 
   private async ensureCustomer(userId: string): Promise<string> {
@@ -370,9 +437,18 @@ export class CardsService {
     // Customer que JA existe pode ter nascido sem documento/telefone (o caso antes
     // desta correcao). Devolver ele direto deixaria o usuario preso: o cartao
     // salva e a cobranca falha para sempre. Completa o documento no lugar.
+    //
+    // E pode nao existir mais: quem guardou o `cus_...` sob a conta antiga da
+    // Pagar.me ficava travado para sempre neste ponto — o GET dava 404, o erro
+    // era engolido, e o POST do cartao logo abaixo falhava com um 400 que nao
+    // dizia nada. Nesse caso descarta e cai no fluxo de criacao, abaixo.
     if (user.pagarmeCustomerId) {
-      await this.completarCadastroDoCustomer(user.pagarmeCustomerId, userId);
-      return user.pagarmeCustomerId;
+      const estado = await this.completarCadastroDoCustomer(
+        user.pagarmeCustomerId,
+        userId,
+      );
+      if (estado === 'ok') return user.pagarmeCustomerId;
+      await this.descartarCustomerMorto(userId, user.pagarmeCustomerId);
     }
 
     // Sem documento a Pagar.me cria o customer, mas recusa a cobranca depois.

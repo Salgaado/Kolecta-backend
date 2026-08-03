@@ -24,6 +24,8 @@ import { PagarmeService } from '../pagarme/pagarme.service';
  */
 const mockPagarme = {
   post: jest.fn(),
+  get: jest.fn(),
+  put: jest.fn().mockResolvedValue({}),
   delete: jest.fn().mockResolvedValue({}),
 };
 
@@ -73,6 +75,7 @@ describe('CardsService — dados do titular', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockPagarme.post.mockReset();
+    mockPagarme.get.mockReset();
     db = makeDb();
   });
 
@@ -193,5 +196,99 @@ describe('CardsService — dados do titular', () => {
       /telefone/i,
     );
     expect(mockPagarme.post).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A troca de conta na Pagar.me (31/07) deixou `users.pagarme_customer_id`
+ * apontando para customers que só existem na conta ANTIGA. O código lia o
+ * customer, engolia o 404 e seguia mesmo assim — o `POST /customers/:id/cards`
+ * então falhava, e o usuário levava um 400 opaco em toda tentativa, para
+ * sempre. Sem caminho de saída: o id morto nunca era descartado.
+ *
+ * O mesmo vale para um `cus_...` de TESTE gravado no banco de produção.
+ */
+describe('CardsService — customer que não existe mais na conta', () => {
+  let db: any;
+
+  const CPF = '52998224725';
+  const naoEncontrado = () =>
+    Object.assign(new Error('Not Found'), { status: 404 });
+
+  const build = async () => {
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        CardsService,
+        { provide: DATABASE_CONNECTION, useValue: db },
+        { provide: PagarmeService, useValue: mockPagarme },
+      ],
+    }).compile();
+    return mod.get<CardsService>(CardsService);
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPagarme.post.mockReset();
+    mockPagarme.get.mockReset();
+    db = makeDb();
+  });
+
+  it('descarta o id morto e cria um customer novo ao salvar o cartão', async () => {
+    db.where
+      .mockResolvedValueOnce([
+        usuario({ cpf: CPF, pagarmeCustomerId: 'cus_da_conta_antiga' }),
+      ]) // ensureCustomer → usuário
+      .mockResolvedValueOnce([]) // descarte → delete saved_cards
+      .mockResolvedValueOnce([]) // descarte → update users (limpa o customer)
+      .mockResolvedValueOnce([usuario({ cpf: CPF })]) // resolveDocument → users
+      .mockResolvedValueOnce([]) // resolveDocument → seller_profiles
+      .mockResolvedValueOnce([usuario({ cpf: CPF })]); // resolvePhone
+    mockPagarme.get.mockRejectedValueOnce(naoEncontrado());
+    mockPagarme.post
+      .mockResolvedValueOnce({ id: 'cus_novo' })
+      .mockResolvedValueOnce({
+        id: 'card_1',
+        brand: 'visa',
+        last_four_digits: '1234',
+      });
+
+    const service = await build();
+    await service.saveCard('user_1', 'tok_1');
+
+    // Criou um customer novo em vez de insistir no morto...
+    expect(mockPagarme.post.mock.calls[0][0]).toBe('/customers');
+    // ...e o cartão foi vinculado a ELE, não ao id antigo.
+    expect(mockPagarme.post.mock.calls[1][0]).toBe('/customers/cus_novo/cards');
+  });
+
+  it('não devolve cartão para lance quando o customer sumiu', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_da_conta_antiga' }]) // saved_cards
+      .mockResolvedValueOnce([{ customerId: 'cus_da_conta_antiga' }]); // users
+    mockPagarme.get.mockRejectedValueOnce(naoEncontrado());
+
+    const service = await build();
+
+    // O cartão salvo estava vinculado ao customer que sumiu: devolver a dupla
+    // só adiaria a falha para dentro da pré-autorização do lance.
+    await expect(service.getCardRef('user_1')).resolves.toBeNull();
+    expect(db.delete).toHaveBeenCalled();
+  });
+
+  it('erro que NÃO é 404 não destrói o cadastro (rede/5xx não provam nada)', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_1' }])
+      .mockResolvedValueOnce([{ customerId: 'cus_1' }]);
+    mockPagarme.get.mockRejectedValueOnce(
+      Object.assign(new Error('Bad Gateway'), { status: 502 }),
+    );
+
+    const service = await build();
+
+    await expect(service.getCardRef('user_1')).resolves.toEqual({
+      customerId: 'cus_1',
+      cardId: 'card_1',
+    });
+    expect(db.delete).not.toHaveBeenCalled();
   });
 });
