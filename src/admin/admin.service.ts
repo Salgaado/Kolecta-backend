@@ -27,6 +27,13 @@ export class AdminService {
   /** Alias da tabela `users` para o moderador (users já é usado p/ o vendedor). */
   private readonly moderatorAlias = alias(schema.users, 'moderator_user');
 
+  /**
+   * Alias de `users` para o VENDEDOR do pedido no financeiro, onde `users` já
+   * está ocupado pelo comprador. Sem os dois lados, a transação aparecia no
+   * painel sem dizer quem vendeu.
+   */
+  private static readonly sellerAlias = alias(schema.users, 'seller_user');
+
   // ── GET /api/admin/stats ─────────────────────────────────────────────────
 
   async getStats() {
@@ -562,12 +569,30 @@ export class AdminService {
           net: schema.orders.sellerNetInCents,
           status: schema.orders.status,
           buyerName: schema.users.name,
+          // Quem vendeu e o que foi vendido. Sem estes campos o painel mostrava
+          // a venda sem dizer de qual vendedor nem de qual produto, e a equipe
+          // precisava caçar no banco toda vez que saía um pedido.
+          sellerName: AdminService.sellerAlias.name,
+          productTitle: schema.listings.title,
+          listingId: schema.orders.listingId,
+          paymentInstrument: schema.orders.paymentInstrument,
+          // Compra direta ou Modo Lance. Sem isto, um arremate e um Pix comum
+          // ficam idênticos na tela.
+          listingType: schema.listings.type,
         })
         .from(schema.orders)
         .leftJoin(schema.users, eq(schema.orders.buyerId, schema.users.id))
-        .where(inArray(schema.orders.status, AdminService.SALE_STATUSES))
+        .leftJoin(
+          AdminService.sellerAlias,
+          eq(schema.orders.sellerId, AdminService.sellerAlias.id),
+        )
+        .leftJoin(schema.listings, eq(schema.orders.listingId, schema.listings.id))
+        // SEM filtro de status de propósito: o acompanhamento precisa mostrar o
+        // pedido nascendo (Pix gerado, aguardando pagamento) e o que não vingou,
+        // não só o que já virou dinheiro. Os totais financeiros abaixo continuam
+        // contando só venda de verdade — ver `ehVenda`.
         .orderBy(desc(schema.orders.createdAt))
-        .limit(100),
+        .limit(200),
       this.db
         .select({
           id: schema.withdrawalRequests.id,
@@ -582,7 +607,12 @@ export class AdminService {
         .orderBy(desc(schema.withdrawalRequests.createdAt)),
     ]);
 
-    // Sequência de nome do vendedor por pedido exige outra query; fazemos leve:
+    // A lista agora traz TODO pedido (inclusive Pix gerado e cancelado), mas
+    // dinheiro só conta quando virou venda de verdade. Sem esta trava, um Pix
+    // abandonado entrava no volume transacionado e inflava o número.
+    const ehVenda = (status: string) =>
+      (AdminService.SALE_STATUSES as readonly string[]).includes(status);
+
     // Receita = comissão. O frete que passa por `platform_fee` não é receita:
     // entra e sai na compra da etiqueta. Somá-lo inflava este número em ~4x.
     const revenue = txRows
@@ -593,7 +623,9 @@ export class AdminService {
     const shippingPassThrough = txRows
       .filter((t) => t.status === 'completed')
       .reduce((s, t) => s + freteEmCentavos(t) / 100, 0);
-    const volume = txRows.reduce((s, t) => s + (t.total ?? 0) / 100, 0);
+    const volume = txRows
+      .filter((t) => ehVenda(t.status))
+      .reduce((s, t) => s + (t.total ?? 0) / 100, 0);
     const payouts = txRows
       .filter((t) => t.status === 'completed')
       .reduce((s, t) => s + (t.net ?? t.total ?? 0) / 100, 0);
@@ -621,6 +653,14 @@ export class AdminService {
             : null,
         net: t.net != null ? t.net / 100 : null,
         status: t.status,
+        seller: t.sellerName ?? 'Vendedor',
+        product: t.productTitle ?? null,
+        listingId: t.listingId ?? null,
+        paymentInstrument: t.paymentInstrument ?? null,
+        /** 'auction' = arremate do Modo Lance; 'direct' = compra direta. */
+        origin: t.listingType === 'auction' ? 'auction' : 'direct',
+        /** Já virou dinheiro? Separa venda de Pix gerado/abandonado na tela. */
+        isSale: ehVenda(t.status),
       };
     });
 
