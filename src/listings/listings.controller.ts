@@ -19,7 +19,11 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { ListingsService } from './listings.service';
-import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
+import {
+  CreateListingDto,
+  UpdateListingDto,
+  ReorderListingsDto,
+} from './dto/listing.dto';
 import { ColocarEmLeilaoDto } from './dto/colocar-em-leilao.dto';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -134,6 +138,19 @@ export class ListingsController {
     const sellerId = (req as any).auth.userId as string;
     const listings = await this.listingsService.findBySeller(sellerId);
     return { data: listings };
+  }
+
+  // ── PATCH /api/listings/reorder — Vendedor: ordem da vitrine da loja ─────
+  //
+  // Rota ESTÁTICA declarada antes de `@Patch(':id')` de propósito: senão o
+  // "reorder" cairia como se fosse um id de anúncio.
+  @Patch('reorder')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  async reorder(@Req() req: Request, @Body() dto: ReorderListingsDto) {
+    const sellerId = (req as any).auth.userId as string;
+    await this.listingsService.reorder(sellerId, dto.ids);
+    return { data: { ok: true } };
   }
 
   // ── POST /api/listings/import — Importar lote de anúncios ────────────────

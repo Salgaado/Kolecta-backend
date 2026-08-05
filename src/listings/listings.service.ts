@@ -636,6 +636,33 @@ export class ListingsService {
     return this.findById(id);
   }
 
+  // ── Reordenar a vitrine da loja ──────────────────────────────────────────
+  //
+  // O vendedor arrasta os próprios anúncios para a ordem em que quer que
+  // apareçam na página dele. `ids` chega na ordem desejada (o primeiro é o
+  // topo); cada anúncio recebe `position` = seu índice. O `and(sellerId)`
+  // garante que ninguém reordene anúncio de outro: id de terceiro não casa e é
+  // simplesmente ignorado, sem erro.
+  async reorder(sellerId: string, ids: string[]): Promise<void> {
+    if (!ids.length) return;
+    const updates = ids.map((id, i) =>
+      this.db
+        .update(schema.listings)
+        .set({ position: i, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.listings.id, id),
+            eq(schema.listings.sellerId, sellerId),
+          ),
+        ),
+    );
+    // Uma ida só ao banco em vez de N: a loja pode ter dezenas de anúncios.
+    await this.db.batch(updates as any);
+    this.logger.log(
+      `[reorder] ${ids.length} anúncios reordenados (vendedor ${sellerId}).`,
+    );
+  }
+
   // ── Deletar anúncio ──────────────────────────────────────────────────────
 
   async remove(id: string, sellerId: string): Promise<void> {

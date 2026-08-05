@@ -1,10 +1,13 @@
 import {
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
+  ArrayNotEmpty,
+  ArrayMaxSize,
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -231,4 +234,15 @@ export class UpdateListingDto {
   @Min(1)
   @Type(() => Number)
   lengthCm?: number;
+}
+
+// Reordenar a vitrine da loja: os ids dos anúncios do vendedor na ordem
+// desejada (o primeiro é o topo). O teto evita payload abusivo; uma loja real
+// não chega perto de 2000 anúncios.
+export class ReorderListingsDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(2000)
+  @IsString({ each: true })
+  ids: string[];
 }

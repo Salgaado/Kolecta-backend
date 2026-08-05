@@ -314,6 +314,13 @@ export const listings = sqliteTable('listings', {
   // founder_credit | admin | (futuro: paid)
   featuredSource: text('featured_source'),
 
+  // ── Ordem na vitrine da loja ──
+  // Posição escolhida pelo vendedor para os próprios anúncios na página dele
+  // (arrastar para reordenar). Menor = mais acima. null = ainda não ordenado,
+  // e cai para o fim na ordem padrão por data. Só afeta a vitrine da loja, não
+  // a vitrine geral nem a busca.
+  position: integer('position'),
+
   ...timestamps,
 }, (t) => ({
   // A vitrine, a categoria e a busca saem todas de `GET /api/listings`, que

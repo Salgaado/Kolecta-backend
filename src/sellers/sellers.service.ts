@@ -386,6 +386,13 @@ export class SellersService {
       .from(listings)
       .leftJoin(auctions, eq(auctions.listingId, listings.id))
       .where(whereClause)
+      // Ordem escolhida pelo vendedor (arrastar para reordenar): quem tem
+      // `position` vem primeiro, do menor para o maior; quem ainda não foi
+      // ordenado cai no fim, na ordem padrão por data. Só a vitrine da loja usa
+      // isto — a home e a busca seguem por data.
+      .orderBy(
+        sql`(${listings.position} IS NULL) ASC, ${listings.position} ASC, ${listings.createdAt} DESC`,
+      )
       .limit(limit)
       .offset(offset);
 
