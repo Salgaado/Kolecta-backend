@@ -76,6 +76,12 @@ export class ShippingService {
           })
         : null) ?? null;
 
+    // Preferências do vendedor (transportadoras e retirada em mãos). Resolvidas
+    // uma vez só: a retirada acompanha a resposta em TODOS os caminhos, inclusive
+    // no mock, senão o checkout mostraria a opção justamente quando a cotação
+    // falhou.
+    const prefs = await this.preferenciasDoVendedor(listing);
+
     // Origem: request > endereço do vendedor (via listing) > env. Sem origem,
     // não dá pra cotar de verdade → cai no mock (o front trata como "a calcular").
     const fromCep =
@@ -85,7 +91,7 @@ export class ShippingService {
       this.logger.warn(
         'CEP de origem indisponível (sem from_cep, endereço do vendedor ou SHIPPING_ORIGIN_CEP). Retornando mock.',
       );
-      return this.getMockShippingQuote();
+      return this.getMockShippingQuote(prefs.aceitaRetirada);
     }
 
     const pkg = this.resolvePackage(data, listing);
@@ -111,7 +117,7 @@ export class ShippingService {
       // na prática). Ver shipping/servicos.ts.
       const permitidosIds = servicosDoVendedor(
         servicosDaPlataforma(),
-        await this.servicosDoVendedorDoAnuncio(listing),
+        prefs.servicos,
       );
 
       // Filtra AQUI, e não pelo parâmetro `services` da API, de propósito: assim
@@ -145,13 +151,13 @@ export class ShippingService {
         raw: opt,
       }));
 
-      return { options };
+      return { options, pickup: prefs.aceitaRetirada };
     } catch (error: any) {
       this.logger.error(
         'Erro ao cotar frete no Melhor Envio',
         error?.response?.data || error.message,
       );
-      return this.getMockShippingQuote();
+      return this.getMockShippingQuote(prefs.aceitaRetirada);
     }
   }
 
@@ -613,20 +619,55 @@ export class ShippingService {
   private async servicosDoVendedorDoAnuncio(
     listing: typeof schema.listings.$inferSelect | null,
   ): Promise<number[] | null> {
-    if (!listing?.sellerId) return null;
+    return (await this.preferenciasDoVendedor(listing)).servicos;
+  }
+
+  /**
+   * Preferências de envio do dono do anúncio.
+   *
+   * Engole o erro de propósito. Migrations não são versionadas neste backend:
+   * se o código subir antes do `ALTER TABLE`, esta consulta estoura com "no such
+   * column" e derrubaria a COTAÇÃO, ou seja, ninguém compraria nada até alguém
+   * perceber. Sem as colunas, o comportamento é o de antes: todas as
+   * transportadoras da plataforma e retirada em mãos disponível.
+   */
+  private async preferenciasDoVendedor(
+    listing: typeof schema.listings.$inferSelect | null,
+  ): Promise<{ servicos: number[] | null; aceitaRetirada: boolean }> {
+    if (!listing?.sellerId) return { servicos: null, aceitaRetirada: true };
     try {
       const [perfil] = await this.db
-        .select({ servicos: schema.sellerProfiles.shippingServices })
+        .select({
+          servicos: schema.sellerProfiles.shippingServices,
+          aceitaRetirada: schema.sellerProfiles.acceptsPickup,
+        })
         .from(schema.sellerProfiles)
         .where(eq(schema.sellerProfiles.userId, listing.sellerId));
-      return parseServicos(perfil?.servicos ?? null);
+      return {
+        servicos: parseServicos(perfil?.servicos ?? null),
+        // null = nunca escolheu = aceita, como sempre foi.
+        aceitaRetirada: perfil?.aceitaRetirada !== false,
+      };
     } catch (err: any) {
       this.logger.warn(
-        `Não foi possível ler as transportadoras do vendedor ${listing.sellerId}: ` +
-          `${err?.message ?? err}. Usando o conjunto da plataforma.`,
+        `Não foi possível ler as preferências de envio do vendedor ${listing.sellerId}: ` +
+          `${err?.message ?? err}. Usando o padrão da plataforma.`,
       );
-      return null;
+      return { servicos: null, aceitaRetirada: true };
     }
+  }
+
+  /**
+   * Este vendedor entrega em mãos?
+   *
+   * Público, porque quem precisa saber é o CHECKOUT (para mostrar ou não a
+   * opção) e a criação do pedido (para recusar um pickup que o vendedor não
+   * oferece). Sem a segunda, o botão da tela seria enfeite: bastava um cliente
+   * antigo em cache mandar `deliveryMethod: 'pickup'` para furar.
+   */
+  async vendedorAceitaRetirada(sellerId: string): Promise<boolean> {
+    const falso = { sellerId } as typeof schema.listings.$inferSelect;
+    return (await this.preferenciasDoVendedor(falso)).aceitaRetirada;
   }
 
   /** Endereço de origem do vendedor (padrão, ou o primeiro). */
@@ -1017,8 +1058,9 @@ export class ShippingService {
     return `${site}/carrinho`;
   }
 
-  private getMockShippingQuote() {
+  private getMockShippingQuote(pickup = true) {
     return {
+      pickup,
       options: [
         {
           carrier: 'Correios',

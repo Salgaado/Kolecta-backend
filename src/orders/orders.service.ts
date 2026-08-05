@@ -404,6 +404,7 @@ export class OrdersService {
     // Retirada pessoal (pickup): sem frete, sem etiqueta; libera na hora ao confirmar.
     const deliveryMethod: 'shipping' | 'pickup' =
       dto.deliveryMethod === 'pickup' ? 'pickup' : 'shipping';
+
     const itemInCents: number = listing.priceInCents ?? 0;
     const shippingInCents: number =
       deliveryMethod === 'pickup' ? 0 : (dto.shippingInCents ?? 0);
@@ -483,9 +484,25 @@ export class OrdersService {
         .select({
           recipientId: schema.sellerProfiles.pagarmeRecipientId,
           canReceive: schema.sellerProfiles.canReceive,
+          // Carona nesta consulta de propósito: o perfil do vendedor já está
+          // sendo lido aqui, e uma segunda ida ao banco só para ler um booleano
+          // seria desperdício num caminho que roda em toda compra.
+          acceptsPickup: schema.sellerProfiles.acceptsPickup,
         })
         .from(schema.sellerProfiles)
         .where(eq(schema.sellerProfiles.userId, listing.sellerId));
+
+      // O vendedor pode ter desligado a entrega em mãos. Conferir no SERVIDOR,
+      // e não só esconder a opção no checkout: sem isto o botão da tela dele
+      // seria enfeite, porque bastava um comprador com a página velha em cache
+      // mandar `deliveryMethod: 'pickup'` e furar a preferência.
+      //
+      // `null` = nunca escolheu = aceita, que é como sempre funcionou.
+      if (deliveryMethod === 'pickup' && sellerProfile?.acceptsPickup === false) {
+        throw new BadRequestException(
+          'Este vendedor não faz entrega em mãos. Escolha uma opção de frete.',
+        );
+      }
 
       if (!sellerProfile?.canReceive || !sellerProfile.recipientId) {
         throw new BadRequestException(

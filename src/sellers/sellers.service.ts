@@ -157,7 +157,10 @@ export class SellersService {
         maxDiscountPercent: profile?.maxDiscountPercent ?? null,
       },
       notificationPrefs,
-      shipping: this.montarEnvio(profile?.shippingServices ?? null),
+      shipping: this.montarEnvio(
+        profile?.shippingServices ?? null,
+        profile?.acceptsPickup ?? null,
+      ),
       account: {
         name: user?.name ?? null,
         email: user?.email ?? null,
@@ -177,11 +180,13 @@ export class SellersService {
    * `services: []` significa "não escolheu", que é o estado de todo mundo: a
    * cotação usa o conjunto da plataforma inteiro.
    */
-  private montarEnvio(csv: string | null) {
+  private montarEnvio(csv: string | null, aceitaRetirada: boolean | null) {
     const daPlataforma = servicosDaPlataforma();
     const escolhidos = parseServicos(csv) ?? [];
     return {
       services: escolhidos,
+      // null = nunca escolheu = aceita, que é como sempre funcionou.
+      acceptsPickup: aceitaRetirada !== false,
       disponiveis: daPlataforma.map((id) => {
         const s = servicoPorId(id);
         return {
@@ -276,7 +281,11 @@ export class SellersService {
    *    consegue fechar a compra e vai embora. Não existe erro na tela de
    *    ninguém, e o vendedor jura que a loja está no ar.
    */
-  async updateMyShipping(userId: string, services: number[]) {
+  async updateMyShipping(
+    userId: string,
+    services: number[],
+    acceptsPickup?: boolean,
+  ) {
     await this.ensureProfile(userId);
     const daPlataforma = servicosDaPlataforma();
     const escolhidos = [...new Set(services ?? [])];
@@ -300,9 +309,16 @@ export class SellersService {
       }
     }
 
+    const patch: Record<string, unknown> = {
+      shippingServices: serializarServicos(escolhidos),
+    };
+    // Só toca na retirada se veio no corpo: um cliente antigo, que não conhece o
+    // campo, não pode religar a entrega em mãos de quem desligou.
+    if (acceptsPickup !== undefined) patch.acceptsPickup = acceptsPickup;
+
     await this.db
       .update(sellerProfiles)
-      .set({ shippingServices: serializarServicos(escolhidos) })
+      .set(patch)
       .where(eq(sellerProfiles.userId, userId))
       .run();
     return this.getMyProfile(userId);

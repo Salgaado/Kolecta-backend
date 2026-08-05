@@ -53,6 +53,7 @@ export class SellerSelfController {
     const data = await this.sellersService.updateMyShipping(
       req.auth.userId,
       dto.services,
+      dto.acceptsPickup,
     );
     return { data };
   }

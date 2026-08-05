@@ -88,6 +88,11 @@ export class UpdateSellerShippingDto {
   @IsArray()
   @IsInt({ each: true })
   services: number[];
+
+  /** Entrega em mãos. Omitido = não mexe no que já estava gravado. */
+  @IsBoolean()
+  @IsOptional()
+  acceptsPickup?: boolean;
 }
 
 /** PUT /api/seller/notification-preferences — preferências de notificação.

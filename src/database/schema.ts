@@ -152,6 +152,12 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
   // escolha do vendedor RESTRINGE, nunca amplia.
   shippingServices: text('shipping_services'),
 
+  // Aceita entregar em mãos? O comprador via "Retirada pessoal" no checkout de
+  // TODO vendedor, inclusive o de outro estado, que depois tinha que explicar
+  // que não dava. null = aceita, que é o comportamento de sempre e evita
+  // backfill (o SQLite recria a tabela para adicionar NOT NULL).
+  acceptsPickup: integer('accepts_pickup', { mode: 'boolean' }),
+
   // ─── Preferências de notificação ────────────────────────────────────────────
   // JSON stringificado: { "newOrder": { "email": true, "push": true }, ... }
   notificationPrefs: text('notification_prefs'),
