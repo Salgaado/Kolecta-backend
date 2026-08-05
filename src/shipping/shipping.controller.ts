@@ -7,6 +7,7 @@ import {
   Req,
   Res,
   Param,
+  Query,
   ForbiddenException,
   NotFoundException,
   Inject,
@@ -16,7 +17,7 @@ import { eq } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
-import { ShippingService } from './shipping.service';
+import { ShippingService, TipoArquivoEnvio } from './shipping.service';
 import { QuoteShippingDto, GenerateLabelDto } from './dto/shipping.dto';
 import { AuthGuard } from '../auth/auth.guard';
 
@@ -60,29 +61,48 @@ export class ShippingController {
   }
 
   /**
-   * Entrega o PDF da etiqueta pela NOSSA autenticação.
+   * Entrega o PDF do envio pela NOSSA autenticação.
    *
    * Antes o botão apontava para a URL do `print` do Melhor Envio — que é página
    * de painel: o vendedor caía na tela de login de uma conta que não é dele, e
    * mesmo com conta própria não acharia o envio, porque ele pertence à conta da
    * Kolecta. Agora o arquivo passa por aqui e ele nunca precisa saber que
    * existe um Melhor Envio no meio.
+   *
+   * `?tipo=` escolhe o arquivo. O padrão é `completo` (etiqueta + declaração de
+   * conteúdo na mesma folha), porque envio sem nota fiscal exige a declaração e
+   * o vendedor não tem por que saber disso nem imprimir duas vezes. `etiqueta` e
+   * `declaracao` existem para quem imprime a etiqueta em térmica e a declaração
+   * em A4.
    */
   @Get('label/:orderId/pdf')
   @UseGuards(AuthGuard)
   async baixarEtiqueta(
     @Req() req: any,
     @Param('orderId') orderId: string,
+    @Query('tipo') tipo: string | undefined,
     @Res() res: Response,
   ) {
     await this.exigirDonoOuAdmin(req.auth.userId, orderId);
-    const { arquivo, nome } =
-      await this.shippingService.obterPdfDaEtiqueta(orderId);
+    const { arquivo, nome, contem } =
+      await this.shippingService.obterPdfDaEtiqueta(
+        orderId,
+        this.tipoValido(tipo),
+      );
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${nome}"`);
     res.setHeader('Content-Length', String(arquivo.length));
+    // O front avisa o vendedor quando pediu o completo e veio só a etiqueta (a
+    // DC-e é assíncrona no Melhor Envio). Sem isto, ele imprimiria achando que a
+    // declaração está junta.
+    res.setHeader('X-Kolecta-Conteudo', contem);
     res.end(arquivo);
+  }
+
+  /** Query string é entrada de usuário: valor estranho vira o padrão. */
+  private tipoValido(tipo: string | undefined): TipoArquivoEnvio {
+    return tipo === 'etiqueta' || tipo === 'declaracao' ? tipo : 'completo';
   }
 
   /** Só o vendedor dono do pedido (ou um admin) mexe na etiqueta dele. */

@@ -77,6 +77,19 @@ export class UpdateSellerPoliciesDto {
   maxDiscountPercent?: number;
 }
 
+/**
+ * PUT /api/seller/shipping — transportadoras que o vendedor topa usar.
+ *
+ * Lista vazia é válida e significa "usar o padrão da plataforma". As regras de
+ * negócio (serviço existir e ter cobertura nacional) ficam no service, não aqui:
+ * elas dependem do MELHOR_ENVIO_SERVICOS, que muda sem deploy.
+ */
+export class UpdateSellerShippingDto {
+  @IsArray()
+  @IsInt({ each: true })
+  services: number[];
+}
+
 /** PUT /api/seller/notification-preferences — preferências de notificação.
  *  Mapa livre: { [tipo]: { email: boolean, push: boolean } }. */
 export class UpdateNotificationPrefsDto {

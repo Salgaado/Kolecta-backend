@@ -140,9 +140,32 @@ export class ShippingLabelListener {
 
     // O PDF vem do arquivo da S3 (via ShippingService), não da URL do print —
     // aquela é página de painel e chegava como HTML.
+    //
+    // Pede o `completo`: etiqueta E declaração de conteúdo na mesma folha. A
+    // declaração é obrigatória em envio sem nota fiscal, e todo envio daqui é
+    // assim. Ela sempre esteve disponível na API; o e-mail simplesmente anexava
+    // só a etiqueta, e o vendedor descobria a falta no balcão dos Correios.
+    //
+    // A DC-e é assíncrona no Melhor Envio, então pode não estar pronta neste
+    // instante. `contem` diz o que veio de verdade, e o texto do e-mail muda de
+    // acordo em vez de prometer o que não está anexado.
     let pdf: Buffer | null = null;
+    let nomeDoAnexo = `etiqueta-${orderId.slice(0, 8)}.pdf`;
+    let comDeclaracao = false;
     try {
-      pdf = (await this.shipping.obterPdfDaEtiqueta(orderId)).arquivo;
+      const arquivo = await this.shipping.obterPdfDaEtiqueta(
+        orderId,
+        'completo',
+      );
+      pdf = arquivo.arquivo;
+      nomeDoAnexo = arquivo.nome;
+      comDeclaracao = arquivo.contem === 'completo';
+      if (!comDeclaracao) {
+        this.logger.warn(
+          `Pedido ${orderId}: declaração de conteúdo ainda não disponível no ` +
+            `Melhor Envio, e-mail vai só com a etiqueta.`,
+        );
+      }
     } catch (err: any) {
       this.logger.warn(
         `Etiqueta do pedido ${orderId} sem PDF para anexar: ${err?.message ?? err}`,
@@ -173,9 +196,10 @@ export class ShippingLabelListener {
         // carrega token. Lá o vendedor já está logado e o botão baixa.
         labelUrl: `${BRAND.site}/painel/pedidos/${orderId}`,
         semAnexo: !pdf,
+        comDeclaracao,
       },
       attachments: pdf
-        ? [{ filename: `etiqueta-${orderId.slice(0, 8)}.pdf`, content: pdf }]
+        ? [{ filename: nomeDoAnexo, content: pdf }]
         : undefined,
     });
   }

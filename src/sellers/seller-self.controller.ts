@@ -7,6 +7,7 @@ import {
   UpdateNotificationPrefsDto,
   UpdateSellerPoliciesDto,
   UpdateSellerProfileDto,
+  UpdateSellerShippingDto,
 } from './dto/seller-self.dto';
 
 /**
@@ -36,6 +37,23 @@ export class SellerSelfController {
   @Roles('user', 'admin')
   async updateMyPolicies(@Req() req: any, @Body() dto: UpdateSellerPoliciesDto) {
     const data = await this.sellersService.updateMyPolicies(req.auth.userId, dto);
+    return { data };
+  }
+
+  /**
+   * Transportadoras com que este vendedor topa trabalhar.
+   *
+   * Só RESTRINGE o que a plataforma já libera: a cotação cruza as duas listas.
+   * Existe porque a agência perto da casa do vendedor é o que decide se ele
+   * consegue despachar, e antes ele recebia as seis opções e se virava.
+   */
+  @Put('shipping')
+  @Roles('user', 'admin')
+  async updateMyShipping(@Req() req: any, @Body() dto: UpdateSellerShippingDto) {
+    const data = await this.sellersService.updateMyShipping(
+      req.auth.userId,
+      dto.services,
+    );
     return { data };
   }
 

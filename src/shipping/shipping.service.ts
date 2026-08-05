@@ -16,34 +16,32 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { QuoteShippingDto, GenerateLabelDto } from './dto/shipping.dto';
+import {
+  nomeDoServico,
+  parseServicos,
+  servicosDaPlataforma,
+  servicosDoVendedor,
+} from './servicos';
 
 /**
- * Serviços que o comprador pode escolher no checkout.
+ * Arquivos que o Melhor Envio disponibiliza por envio.
  *
- * A conta do Melhor Envio habilita 15 (Jadlog .Com, LATAM éFácil, Azul, Buslog,
- * Total Express, Loggi Coleta/Ponto…). Mostrar todos vira uma lista longa de
- * opções parecidas, e cada uma é uma transportadora a mais para o vendedor
- * lidar quando dá problema. Estes 6 são a escolha do dono (31/07/2026); os IDs
- * vêm de `GET /me/shipment/services` na conta de produção.
+ * - `etiqueta`   → `files["1"].pdf`, só a etiqueta.
+ * - `declaracao` → `files.dace.pdf`, só a declaração de conteúdo (DC-e).
+ * - `completo`   → `files.dace.fullPdf`, os dois na mesma folha.
  *
- * Vazio (`MELHOR_ENVIO_SERVICOS=`) desliga o filtro e volta a mostrar tudo —
- * é a saída rápida se o corte deixar alguma região sem opção.
+ * Sim, os três já existiam desde sempre. A Kolecta entregava só o primeiro, e o
+ * vendedor que despachava pelos Correios apanhava no balcão porque a declaração
+ * de conteúdo é obrigatória em envio sem nota fiscal — que é todo envio daqui,
+ * já que mandamos `non_commercial: true`.
  */
-const SERVICOS_PERMITIDOS: ReadonlySet<number> = new Set(
-  (process.env.MELHOR_ENVIO_SERVICOS ?? '1,2,3,17,31,33')
-    .split(',')
-    .map((s) => parseInt(s.trim(), 10))
-    .filter((n) => Number.isFinite(n)),
-);
+export type TipoArquivoEnvio = 'etiqueta' | 'declaracao' | 'completo';
 
-/** Só para o log dizer o nome em vez do número. */
-const NOME_DO_SERVICO: Readonly<Record<number, string>> = {
-  1: 'Correios PAC',
-  2: 'Correios SEDEX',
-  3: 'Jadlog .Package',
-  17: 'Correios Mini Envios',
-  31: 'Loggi Express',
-  33: 'JeT Standard',
+/** Nome do arquivo que o vendedor baixa. Ele nunca vê a palavra "DACE". */
+const NOME_DO_ARQUIVO: Readonly<Record<TipoArquivoEnvio, string>> = {
+  etiqueta: 'etiqueta',
+  declaracao: 'declaracao-de-conteudo',
+  completo: 'etiqueta-e-declaracao',
 };
 
 @Injectable()
@@ -108,11 +106,20 @@ export class ShippingService {
 
       const cotadas = response.data.filter((opt: any) => !opt.error);
 
+      // Quem manda no que aparece: a plataforma corta, e o VENDEDOR pode cortar
+      // mais dentro do que sobrou (a agência perto da casa dele é o que decide
+      // na prática). Ver shipping/servicos.ts.
+      const permitidosIds = servicosDoVendedor(
+        servicosDaPlataforma(),
+        await this.servicosDoVendedorDoAnuncio(listing),
+      );
+
       // Filtra AQUI, e não pelo parâmetro `services` da API, de propósito: assim
       // dá para saber quantas opções o corte custou nesta rota. Pedir já
       // filtrado economizaria alguns bytes e cegaria o log.
-      const permitidas = SERVICOS_PERMITIDOS.size
-        ? cotadas.filter((opt: any) => SERVICOS_PERMITIDOS.has(Number(opt.id)))
+      const permitidos = new Set(permitidosIds);
+      const permitidas = permitidos.size
+        ? cotadas.filter((opt: any) => permitidos.has(Number(opt.id)))
         : cotadas;
 
       // Mini Envios só aceita até ~300g; Loggi Express e JeT têm cobertura
@@ -122,6 +129,7 @@ export class ShippingService {
       if (permitidas.length === 0 && cotadas.length > 0) {
         this.logger.warn(
           `Frete ${fromCep} → ${data.to_cep}: nenhuma transportadora permitida atende. ` +
+            `Permitidos: ${permitidosIds.map(nomeDoServico).join(', ') || 'nenhum'}. ` +
             `${cotadas.length} opção(ões) foram descartadas pelo filtro: ` +
             cotadas
               .map((o: any) => `${o.company?.name} ${o.name} (id ${o.id})`)
@@ -232,9 +240,21 @@ export class ShippingService {
         })
       : null;
 
-    // Valor declarado: request tem prioridade; senão total do pedido (centavos → reais)
+    // Valor declarado: o do request tem prioridade; senão o valor do ITEM.
+    //
+    // Era `order.totalInCents`, que é item MAIS frete: a peça ia declarada
+    // valendo mais do que vale, e o seguro junto. Enquanto a declaração de
+    // conteúdo era papel isso passava batido; desde 06/04/2026 o Melhor Envio
+    // transmite `products` para a SEFAZ ao emitir a DC-e, então virou dado
+    // fiscal declarado errado. Frete não é conteúdo do pacote.
+    //
+    // Cai no total se a subtração não sobrar nada: valor declarado zero faz o
+    // Melhor Envio recusar o carrinho, e declarar a mais é menos ruim do que não
+    // emitir a etiqueta de uma venda já paga.
+    const itemInCents = order.totalInCents - (order.shippingInCents ?? 0);
+    const baseInCents = itemInCents > 0 ? itemInCents : order.totalInCents;
     const declaredValue =
-      dto.declared_value ?? Number((order.totalInCents / 100).toFixed(2));
+      dto.declared_value ?? Number((baseInCents / 100).toFixed(2));
 
     // O CPF do VENDEDOR não mora em `users`. Aquela coluna só é preenchida no
     // checkout, ou seja, quando a pessoa COMPRA — e vendedor que nunca comprou
@@ -581,6 +601,34 @@ export class ShippingService {
     return Number(maisBarata.raw.id);
   }
 
+  /**
+   * Transportadoras que o dono do anúncio topa usar. `null` = não escolheu, usa
+   * o conjunto da plataforma.
+   *
+   * Engole o erro de propósito. Migrations não são versionadas neste backend:
+   * se o código subir antes do `ALTER TABLE`, esta consulta estoura com "no such
+   * column" e derrubaria a COTAÇÃO, ou seja, ninguém compraria nada até alguém
+   * perceber. Sem a coluna, o comportamento é o de antes.
+   */
+  private async servicosDoVendedorDoAnuncio(
+    listing: typeof schema.listings.$inferSelect | null,
+  ): Promise<number[] | null> {
+    if (!listing?.sellerId) return null;
+    try {
+      const [perfil] = await this.db
+        .select({ servicos: schema.sellerProfiles.shippingServices })
+        .from(schema.sellerProfiles)
+        .where(eq(schema.sellerProfiles.userId, listing.sellerId));
+      return parseServicos(perfil?.servicos ?? null);
+    } catch (err: any) {
+      this.logger.warn(
+        `Não foi possível ler as transportadoras do vendedor ${listing.sellerId}: ` +
+          `${err?.message ?? err}. Usando o conjunto da plataforma.`,
+      );
+      return null;
+    }
+  }
+
   /** Endereço de origem do vendedor (padrão, ou o primeiro). */
   private async enderecoDoVendedor(sellerId: string) {
     const enderecos = await this.db
@@ -603,7 +651,7 @@ export class ShippingService {
   }
 
   /**
-   * Baixa o PDF da etiqueta do pedido.
+   * Baixa o PDF de um pedido: etiqueta, declaração de conteúdo, ou as duas.
    *
    * A URL do `/shipment/print` NÃO serve: é página do painel, protegida por
    * sessão do Melhor Envio — o vendedor caía no login de uma conta que não é
@@ -613,10 +661,16 @@ export class ShippingService {
    * Não guardamos o arquivo nem a URL: a assinatura expira em 30 minutos, então
    * link salvo vira link morto. Buscamos na hora, a cada download — sem cache
    * para sincronizar e sem storage para pagar.
+   *
+   * `contem` diz o que veio de verdade, porque o pedido nem sempre é atendido: a
+   * DC-e é assíncrona no Melhor Envio e pode não existir ainda no instante em que
+   * a etiqueta sai. Quem chama usa isso para nomear o arquivo e escrever o texto
+   * certo, em vez de prometer uma declaração que não está no PDF.
    */
   async obterPdfDaEtiqueta(
     orderId: string,
-  ): Promise<{ arquivo: Buffer; nome: string }> {
+    tipo: TipoArquivoEnvio = 'completo',
+  ): Promise<{ arquivo: Buffer; nome: string; contem: TipoArquivoEnvio }> {
     const order = await this.db.query.orders.findFirst({
       where: eq(schema.orders.id, orderId),
     });
@@ -627,16 +681,26 @@ export class ShippingService {
       );
     }
 
-    const url = await this.urlDoPdfNoMelhorEnvio(order.shippingCartId);
-    if (!url) {
+    const escolhido = await this.urlDoPdfNoMelhorEnvio(
+      order.shippingCartId,
+      tipo,
+    );
+    if (!escolhido) {
       throw new BadRequestException(
-        'O Melhor Envio ainda não disponibilizou o arquivo da etiqueta. ' +
-          'Tente de novo em alguns instantes.',
+        tipo === 'declaracao'
+          ? 'O Melhor Envio ainda não emitiu a declaração de conteúdo deste ' +
+            'envio. Ela costuma sair alguns minutos depois da etiqueta — tente ' +
+            'de novo em instantes.'
+          : 'O Melhor Envio ainda não disponibilizou o arquivo da etiqueta. ' +
+            'Tente de novo em alguns instantes.',
       );
     }
 
     const resposta = await firstValueFrom(
-      this.httpService.get(url, { responseType: 'arraybuffer', timeout: 30000 }),
+      this.httpService.get(escolhido.url, {
+        responseType: 'arraybuffer',
+        timeout: 30000,
+      }),
     );
     const arquivo = Buffer.from(resposta.data as ArrayBuffer);
     if (arquivo.subarray(0, 5).toString('latin1') !== '%PDF-') {
@@ -645,17 +709,34 @@ export class ShippingService {
         HttpStatus.BAD_GATEWAY,
       );
     }
-    return { arquivo, nome: `etiqueta-${orderId.slice(0, 8)}.pdf` };
+    return {
+      arquivo,
+      nome: `${NOME_DO_ARQUIVO[escolhido.contem]}-${orderId.slice(0, 8)}.pdf`,
+      contem: escolhido.contem,
+    };
   }
 
   /**
-   * URL assinada do PDF da etiqueta dentro de `files`.
+   * URL assinada do PDF pedido, dentro de `files`.
    *
-   * `files` vem como `{ "1": { pdf, jpeg, zpl }, "dace": {...} }` — a chave "1"
-   * é a etiqueta e "dace" é a declaração de conteúdo. Pegamos a etiqueta e, na
-   * falta dela, qualquer entrada que tenha PDF.
+   * `files` vem assim (conferido em produção, 05/08/2026, em envios de Correios,
+   * JeT e Loggi):
+   *
+   *     { "1":    { pdf, jpeg, zpl },
+   *       "dace": { pdf, jpeg, zpl, fullPdf } }
+   *
+   * A chave "1" é a etiqueta. "dace" é o Documento Auxiliar da Declaração de
+   * Conteúdo, e o `fullPdf` dele (`complete-dace.pdf`) traz etiqueta e
+   * declaração na MESMA folha — uma impressão só, que é o que o vendedor quer.
+   *
+   * O `completo` degrada em cascata: sem `fullPdf`, tenta a etiqueta sozinha. É o
+   * caso da DC-e que ainda não ficou pronta, e é melhor entregar a etiqueta do
+   * que travar a postagem esperando.
    */
-  private async urlDoPdfNoMelhorEnvio(cartId: string): Promise<string | null> {
+  private async urlDoPdfNoMelhorEnvio(
+    cartId: string,
+    tipo: TipoArquivoEnvio,
+  ): Promise<{ url: string; contem: TipoArquivoEnvio } | null> {
     const resposta = await firstValueFrom(
       this.httpService.get(`${this.baseUrl}/orders/${cartId}`, {
         headers: this.authHeaders(),
@@ -664,10 +745,21 @@ export class ShippingService {
     );
     const files = (resposta.data as any)?.files ?? {};
     const etiqueta = files['1']?.pdf;
-    if (etiqueta) return String(etiqueta);
-    for (const grupo of Object.values(files)) {
-      const pdf = (grupo as any)?.pdf;
-      if (pdf) return String(pdf);
+    const declaracao = files?.dace?.pdf;
+    const completo = files?.dace?.fullPdf;
+
+    const preferencia: Array<[TipoArquivoEnvio, unknown]> =
+      tipo === 'etiqueta'
+        ? [['etiqueta', etiqueta]]
+        : tipo === 'declaracao'
+          ? [['declaracao', declaracao]]
+          : [
+              ['completo', completo],
+              ['etiqueta', etiqueta],
+            ];
+
+    for (const [contem, url] of preferencia) {
+      if (url) return { url: String(url), contem };
     }
     return null;
   }

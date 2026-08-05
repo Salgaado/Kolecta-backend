@@ -100,3 +100,92 @@ describe('SellersService.getSellerListings', () => {
     expect(r.meta.page).toBe(2);
   });
 });
+
+/**
+ * Transportadoras que o vendedor topa usar.
+ *
+ * A escolha RESTRINGE o que a plataforma libera, nunca amplia. E há um piso: sem
+ * pelo menos uma transportadora de cobertura nacional, o vendedor que marcasse
+ * só a da esquina perderia toda venda fora da região dela sem nunca saber. O
+ * comprador de outro estado não vê frete, não fecha a compra e vai embora: não
+ * aparece erro na tela de ninguém.
+ */
+describe('SellersService.updateMyShipping', () => {
+  const USER = 'user_abc';
+
+  const build = () => {
+    const gravado: any[] = [];
+    const db: any = {
+      select: jest.fn().mockReturnThis(),
+      from: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      get: jest.fn().mockResolvedValue({ userId: USER, shippingServices: null }),
+      insert: jest.fn().mockReturnThis(),
+      values: jest.fn().mockReturnThis(),
+      run: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn((patch: any) => {
+        gravado.push(patch);
+        return db;
+      }),
+    };
+    return { db, gravado, service: new SellersService(db as any) };
+  };
+
+  beforeEach(() => {
+    process.env.MELHOR_ENVIO_SERVICOS = '1,2,3,17,31,33';
+  });
+
+  it('grava a escolha como CSV ordenado', async () => {
+    const { service, gravado } = build();
+
+    await service.updateMyShipping(USER, [33, 1]);
+
+    expect(gravado[0]).toEqual({ shippingServices: '1,33' });
+  });
+
+  it('lista vazia volta ao padrão da plataforma', async () => {
+    // Saída de emergência: o vendedor sempre desfaz a própria escolha sozinho.
+    const { service, gravado } = build();
+
+    await service.updateMyShipping(USER, []);
+
+    expect(gravado[0]).toEqual({ shippingServices: null });
+  });
+
+  it('recusa serviço que a plataforma não libera, em vez de ignorar calado', async () => {
+    // Salvar "ok" e guardar outra coisa é como o vendedor descobre semanas
+    // depois que a configuração dele nunca valeu.
+    const { service } = build();
+
+    await expect(service.updateMyShipping(USER, [1, 4])).rejects.toThrow(
+      /Jadlog \.Com/,
+    );
+  });
+
+  it('exige pelo menos uma transportadora de cobertura nacional', async () => {
+    const { service } = build();
+
+    await expect(service.updateMyShipping(USER, [31, 33])).rejects.toThrow(
+      /cobertura nacional/,
+    );
+  });
+
+  it('Mini Envios sozinho não conta como cobertura nacional', async () => {
+    // É nacional, mas trava em 300 g: "só Mini Envios" deixa sem frete a maior
+    // parte do que se vende aqui.
+    const { service } = build();
+
+    await expect(service.updateMyShipping(USER, [17, 31])).rejects.toThrow(
+      /cobertura nacional/,
+    );
+  });
+
+  it('PAC ou SEDEX satisfazem o piso', async () => {
+    const { service, gravado } = build();
+
+    await service.updateMyShipping(USER, [1, 31]);
+
+    expect(gravado[0]).toEqual({ shippingServices: '1,31' });
+  });
+});

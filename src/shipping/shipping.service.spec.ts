@@ -867,3 +867,247 @@ describe('ShippingService — telefone das pontas', () => {
     expect(chamar(null)).toBe('');
   });
 });
+
+/**
+ * Declaração de conteúdo (DC-e).
+ *
+ * O Melhor Envio SEMPRE devolveu os dois arquivos: `files["1"]` é a etiqueta e
+ * `files.dace` é a declaração, com um `fullPdf` que traz as duas na mesma folha.
+ * Conferido na produção em 05/08/2026 nos 5 envios reais, de Correios, JeT e
+ * Loggi. A Kolecta entregava só a etiqueta, e o vendedor que postava nos
+ * Correios sem nota fiscal descobria a falta no balcão, com a venda já paga.
+ */
+describe('ShippingService — declaração de conteúdo', () => {
+  const cartId = 'cart-9';
+  const pdfValido = Buffer.from('%PDF-1.4\nconteudo');
+
+  function servico(files: any) {
+    const httpGet = jest.fn((url: string) => {
+      if (url.includes('/orders/')) return of({ data: { files } });
+      return of({ data: pdfValido });
+    });
+    const db = {
+      query: {
+        orders: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'ord-1',
+            shippingCartId: cartId,
+          }),
+        },
+      },
+    };
+    const service = new ShippingService(
+      { get: httpGet } as any,
+      db as any,
+    );
+    return { service, httpGet };
+  }
+
+  const completos = {
+    '1': { pdf: 'https://s3/etiqueta.pdf' },
+    dace: { pdf: 'https://s3/dace.pdf', fullPdf: 'https://s3/completo.pdf' },
+  };
+
+  it('entrega etiqueta e declaração na mesma folha por padrão', async () => {
+    const { service, httpGet } = servico(completos);
+
+    const r = await service.obterPdfDaEtiqueta('ord-1');
+
+    expect(r.contem).toBe('completo');
+    expect(r.nome).toBe('etiqueta-e-declaracao-ord-1.pdf');
+    // O `complete-dace` do Melhor Envio, não a etiqueta sozinha.
+    expect(httpGet.mock.calls[1][0]).toBe('https://s3/completo.pdf');
+  });
+
+  it('cai na etiqueta sozinha quando a DC-e ainda não saiu, e diz que caiu', async () => {
+    // A DC-e é assíncrona: pode não existir no instante em que a etiqueta sai.
+    // Travar a postagem esperando por ela seria pior que entregar a etiqueta,
+    // desde que quem chama saiba o que veio — é o que `contem` resolve.
+    const { service } = servico({ '1': { pdf: 'https://s3/etiqueta.pdf' } });
+
+    const r = await service.obterPdfDaEtiqueta('ord-1');
+
+    expect(r.contem).toBe('etiqueta');
+    expect(r.nome).toBe('etiqueta-ord-1.pdf');
+  });
+
+  it('entrega só a declaração quando pedida', async () => {
+    const { service, httpGet } = servico(completos);
+
+    const r = await service.obterPdfDaEtiqueta('ord-1', 'declaracao');
+
+    expect(r.contem).toBe('declaracao');
+    expect(r.nome).toBe('declaracao-de-conteudo-ord-1.pdf');
+    expect(httpGet.mock.calls[1][0]).toBe('https://s3/dace.pdf');
+  });
+
+  it('pedir só a declaração NÃO cai na etiqueta por engano', async () => {
+    // Entregar a etiqueta a quem pediu a declaração é pior que devolver erro: o
+    // vendedor imprime, vai ao balcão e leva a recusa achando que está com o
+    // documento certo.
+    const { service } = servico({ '1': { pdf: 'https://s3/etiqueta.pdf' } });
+
+    await expect(
+      service.obterPdfDaEtiqueta('ord-1', 'declaracao'),
+    ).rejects.toThrow(/declaração de conteúdo/i);
+  });
+
+  it('só a etiqueta quando pedida, mesmo com a declaração disponível', async () => {
+    const { service, httpGet } = servico(completos);
+
+    const r = await service.obterPdfDaEtiqueta('ord-1', 'etiqueta');
+
+    expect(r.contem).toBe('etiqueta');
+    expect(httpGet.mock.calls[1][0]).toBe('https://s3/etiqueta.pdf');
+  });
+});
+
+/**
+ * Valor declarado: o ITEM, sem o frete.
+ *
+ * Era `order.totalInCents`, que é item mais frete. Enquanto a declaração de
+ * conteúdo era papel, declarar a mais só inflava o seguro. Desde 06/04/2026 o
+ * Melhor Envio transmite `products` para a SEFAZ ao emitir a DC-e, e aí virou
+ * dado fiscal errado.
+ */
+describe('ShippingService — valor declarado', () => {
+  function payloadDoCarrinho(pedido: any) {
+    const httpPost: jest.Mock = jest.fn(() => of({ data: { id: 1 } }));
+    const db = {
+      query: {
+        orders: { findFirst: jest.fn().mockResolvedValue(pedido) },
+        addresses: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValueOnce(toAddress)
+            .mockResolvedValueOnce(fromAddress),
+        },
+        users: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValueOnce({ name: 'C', cpf: '52998224725' })
+            .mockResolvedValueOnce({ name: 'V', cpf: '11144477735' }),
+        },
+        listings: { findFirst: jest.fn().mockResolvedValue({ title: 'Item' }) },
+      },
+      select: jest.fn(() => ({
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockResolvedValue([]),
+      })),
+    };
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+    const service = new ShippingService({ post: httpPost } as any, db as any);
+    return (service as any)
+      .createCart(dto)
+      .then(() => httpPost.mock.calls[0][1] as any);
+  }
+
+  it('desconta o frete do valor do item', async () => {
+    // R$ 150 no total, R$ 30 de frete → a peça vale R$ 120.
+    const payload = await payloadDoCarrinho({
+      ...order,
+      totalInCents: 15000,
+      shippingInCents: 3000,
+    });
+
+    expect(payload.products[0].unitary_value).toBe(120);
+    expect(payload.options.insurance_value).toBe(120);
+  });
+
+  it('pedido antigo sem frete gravado continua valendo o total', async () => {
+    const payload = await payloadDoCarrinho({ ...order, totalInCents: 15000 });
+
+    expect(payload.products[0].unitary_value).toBe(150);
+  });
+
+  it('cai no total se a subtração zerar, em vez de declarar zero', async () => {
+    // Valor declarado zero faz o Melhor Envio recusar o carrinho, e a venda já
+    // foi paga: declarar a mais é menos ruim do que não emitir a etiqueta.
+    const payload = await payloadDoCarrinho({
+      ...order,
+      totalInCents: 5000,
+      shippingInCents: 5000,
+    });
+
+    expect(payload.products[0].unitary_value).toBe(50);
+  });
+});
+
+/**
+ * Transportadoras que o VENDEDOR topa usar.
+ *
+ * A agência perto da casa dele é o que decide se ele consegue despachar. Antes
+ * ele recebia as seis opções da plataforma e se virava.
+ */
+describe('ShippingService — escolha de transportadora do vendedor', () => {
+  function servico(escolhidas: string | null) {
+    const httpPost = jest.fn(() =>
+      of({
+        data: [1, 2, 3, 33].map((id) => ({
+          id,
+          company: { name: 'X' },
+          name: `svc-${id}`,
+          price: '20.00',
+          delivery_time: 5,
+        })),
+      }),
+    );
+    const db = {
+      query: {
+        listings: {
+          findFirst: jest.fn().mockResolvedValue({ sellerId: 'seller-1' }),
+        },
+        addresses: { findFirst: jest.fn().mockResolvedValue({ zip: '22000-000' }) },
+      },
+      select: jest.fn(() => ({
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockResolvedValue([{ servicos: escolhidas }]),
+      })),
+    };
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+    return new ShippingService({ post: httpPost } as any, db as any);
+  }
+
+  const cotar = (s: ShippingService) =>
+    s
+      .quoteShipping({ to_cep: '01001-000', listing_id: 'lst-1' } as any)
+      .then((r: any) => r.options.map((o: any) => Number(o.raw.id)));
+
+  it('restringe dentro do que a plataforma libera', async () => {
+    expect(await cotar(servico('1,33'))).toEqual([1, 33]);
+  });
+
+  it('vendedor sem escolha continua com tudo que a plataforma libera', async () => {
+    expect(await cotar(servico(null))).toEqual([1, 2, 3, 33]);
+  });
+
+  it('escolha do vendedor não amplia: 4 não está liberado pela plataforma', async () => {
+    // A palavra final é sempre da plataforma. Um vendedor que marcou Jadlog
+    // .Com antes de a Kolecta cortá-la não pode continuar vendendo nela.
+    expect(await cotar(servico('1,4'))).toEqual([1]);
+  });
+
+  it('coluna inexistente no banco não derruba a cotação', async () => {
+    // Migrations não são versionadas aqui: se o código subir antes do ALTER
+    // TABLE, uma exceção nesta consulta impediria QUALQUER compra no site.
+    const httpPost = jest.fn(() =>
+      of({
+        data: [{ id: 1, company: { name: 'X' }, name: 'PAC', price: '20.00', delivery_time: 5 }],
+      }),
+    );
+    const db = {
+      query: {
+        listings: { findFirst: jest.fn().mockResolvedValue({ sellerId: 's1' }) },
+        addresses: { findFirst: jest.fn().mockResolvedValue({ zip: '22000-000' }) },
+      },
+      select: jest.fn(() => ({
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockRejectedValue(new Error('no such column: shipping_services')),
+      })),
+    };
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+    const service = new ShippingService({ post: httpPost } as any, db as any);
+
+    expect(await cotar(service)).toEqual([1]);
+  });
+});

@@ -1,4 +1,9 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { eq, and, sql, inArray, getTableColumns } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -10,6 +15,15 @@ import {
   orders,
   reviews,
 } from '../database/schema';
+import {
+  nomeDoServico,
+  nomesComCoberturaNacional,
+  parseServicos,
+  serializarServicos,
+  servicoPorId,
+  servicosDaPlataforma,
+  temCoberturaNacional,
+} from '../shipping/servicos';
 
 @Injectable()
 export class SellersService {
@@ -143,11 +157,41 @@ export class SellersService {
         maxDiscountPercent: profile?.maxDiscountPercent ?? null,
       },
       notificationPrefs,
+      shipping: this.montarEnvio(profile?.shippingServices ?? null),
       account: {
         name: user?.name ?? null,
         email: user?.email ?? null,
         createdAt: user?.createdAt ?? null,
       },
+    };
+  }
+
+  /**
+   * Bloco de envio do perfil: o que ele escolheu e o que ele PODE escolher.
+   *
+   * As duas coisas vêm juntas de propósito. A lista de disponíveis sai do
+   * `MELHOR_ENVIO_SERVICOS`, que muda por variável de ambiente: mandar só os ids
+   * escolhidos obrigaria o front a ter uma cópia do catálogo e a ficar
+   * desatualizado no dia em que a plataforma cortasse uma transportadora.
+   *
+   * `services: []` significa "não escolheu", que é o estado de todo mundo: a
+   * cotação usa o conjunto da plataforma inteiro.
+   */
+  private montarEnvio(csv: string | null) {
+    const daPlataforma = servicosDaPlataforma();
+    const escolhidos = parseServicos(csv) ?? [];
+    return {
+      services: escolhidos,
+      disponiveis: daPlataforma.map((id) => {
+        const s = servicoPorId(id);
+        return {
+          id,
+          carrier: s?.transportadora ?? 'Transportadora',
+          service: s?.nome ?? `Serviço ${id}`,
+          nacional: !!s?.nacional && !s?.aviso,
+          aviso: s?.aviso ?? null,
+        };
+      }),
     };
   }
 
@@ -211,6 +255,56 @@ export class SellersService {
         .where(eq(sellerProfiles.userId, userId))
         .run();
     }
+    return this.getMyProfile(userId);
+  }
+
+  /**
+   * Grava com quais transportadoras o vendedor topa trabalhar.
+   *
+   * Lista vazia volta ao padrão da plataforma, e é a saída de emergência: o
+   * vendedor sempre consegue desfazer a própria escolha sem depender de suporte.
+   *
+   * Duas validações, as duas por um motivo concreto:
+   *
+   * 1. Serviço fora do que a plataforma libera é recusado, e não ignorado em
+   *    silêncio. Salvar "ok" e guardar outra coisa é como o vendedor descobre
+   *    semanas depois que a configuração dele nunca valeu.
+   *
+   * 2. Pelo menos um serviço de cobertura nacional. Sem isso, quem marcasse só a
+   *    transportadora da esquina perderia TODA venda fora da região dela sem
+   *    nunca saber: o comprador de outro estado simplesmente não vê frete, não
+   *    consegue fechar a compra e vai embora. Não existe erro na tela de
+   *    ninguém, e o vendedor jura que a loja está no ar.
+   */
+  async updateMyShipping(userId: string, services: number[]) {
+    await this.ensureProfile(userId);
+    const daPlataforma = servicosDaPlataforma();
+    const escolhidos = [...new Set(services ?? [])];
+
+    if (escolhidos.length > 0 && daPlataforma.length > 0) {
+      const foraDoCatalogo = escolhidos.filter(
+        (id) => !daPlataforma.includes(id),
+      );
+      if (foraDoCatalogo.length > 0) {
+        throw new BadRequestException(
+          `A Kolecta não trabalha com ${foraDoCatalogo.map(nomeDoServico).join(', ')}.`,
+        );
+      }
+      if (!temCoberturaNacional(escolhidos)) {
+        const nacionais = nomesComCoberturaNacional(daPlataforma);
+        throw new BadRequestException(
+          'Escolha pelo menos uma transportadora com cobertura nacional ' +
+            `(${nacionais.join(' ou ')}). Sem ela, quem mora fora da região das ` +
+            'outras não consegue comprar de você e você não fica sabendo.',
+        );
+      }
+    }
+
+    await this.db
+      .update(sellerProfiles)
+      .set({ shippingServices: serializarServicos(escolhidos) })
+      .where(eq(sellerProfiles.userId, userId))
+      .run();
     return this.getMyProfile(userId);
   }
 

@@ -140,6 +140,18 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
   acceptOffers: integer('accept_offers', { mode: 'boolean' }).default(false),
   maxDiscountPercent: integer('max_discount_percent'),
 
+  // ─── Preferências de envio ──────────────────────────────────────────────────
+  // CSV de ids de serviço do Melhor Envio ('1,2,17'), no mesmo formato do
+  // MELHOR_ENVIO_SERVICOS. Diz com quais transportadoras ESTE vendedor topa
+  // trabalhar, porque a agência perto da casa dele é o que decide na prática.
+  //
+  // null = usa o conjunto da plataforma. É o estado de todo mundo hoje, e é por
+  // isso que a coluna pode nascer sem backfill.
+  //
+  // A cotação cruza com o conjunto da plataforma (ver shipping/servicos.ts): a
+  // escolha do vendedor RESTRINGE, nunca amplia.
+  shippingServices: text('shipping_services'),
+
   // ─── Preferências de notificação ────────────────────────────────────────────
   // JSON stringificado: { "newOrder": { "email": true, "push": true }, ... }
   notificationPrefs: text('notification_prefs'),

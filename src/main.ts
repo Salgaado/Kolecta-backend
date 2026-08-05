@@ -23,6 +23,12 @@ async function bootstrap() {
     origin: ['https://kolecta.com.br', 'https://kolecta.vercel.app', 'http://localhost:5173', 'http://localhost:8080'],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type, Accept, Authorization, x-dev-user-id',
+    // Sem `exposedHeaders`, o navegador ESCONDE do JavaScript qualquer cabeçalho
+    // de resposta fora da lista padrão do CORS. `X-Kolecta-Conteudo` diz se o PDF
+    // baixado traz a declaração de conteúdo junto da etiqueta ou só a etiqueta
+    // (a declaração é assíncrona no Melhor Envio), e o painel usa isso para
+    // avisar o vendedor. Sem esta linha ele chega sempre nulo, sem erro nenhum.
+    exposedHeaders: 'X-Kolecta-Conteudo',
     credentials: true,
   });
 
