@@ -560,6 +560,17 @@ export class FounderService {
       listingsSubmitted: submitted,
       listingsRequired: FOUNDER_QUALIFY_LISTINGS,
       remaining: Math.max(0, FOUNDER_QUALIFY_LISTINGS - submitted),
+      // A comissão que ESTE vendedor paga de verdade, pela mesma função que o
+      // fechamento do pedido e do leilão usa. O front tinha 11% cravado numa
+      // constante e mostrava isso ao fundador no wizard de anúncio — o número
+      // errado exatamente onde ele decide o preço. Mandar daqui evita que a
+      // regra ("active" E dentro dos 6 meses) seja reimplementada no navegador
+      // e saia de sincronia com a cobrança.
+      commissionPercent: await this.resolveCommissionPercent(userId),
+      baseCommissionPercent: parseInt(
+        process.env.PLATFORM_FEE_PERCENT ?? '11',
+        10,
+      ),
       benefitEndsAt: profile.founderSince
         ? this.benefitEnd(profile.founderSince)
         : null,
