@@ -240,5 +240,34 @@ describe('MessagesService', () => {
         }),
       );
     });
+
+    // ── Qual caixa de entrada o e-mail deve indicar ──
+    // Comprador lê em /conta/mensagens, vendedor em /painel/mensagens. É este
+    // campo que o template usa para escolher; errar aqui manda o destinatário
+    // para a caixa do outro, que foi o que aconteceu com os dois avisos reais.
+
+    it('comprador escrevendo → destinatário é VENDEDOR (caixa do painel)', async () => {
+      queryMock.conversations.findFirst.mockResolvedValueOnce(fakeConversation);
+      insertChain.returning.mockResolvedValueOnce([{ id: 'm3' }]);
+
+      await service.sendMessage('buyer_123', 'conv_123', { content: 'Oi' });
+
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'message.received',
+        expect.objectContaining({ recipientIsSeller: true }),
+      );
+    });
+
+    it('vendedor escrevendo → destinatário é COMPRADOR (caixa da conta)', async () => {
+      queryMock.conversations.findFirst.mockResolvedValueOnce(fakeConversation);
+      insertChain.returning.mockResolvedValueOnce([{ id: 'm4' }]);
+
+      await service.sendMessage('seller_123', 'conv_123', { content: 'Olá' });
+
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'message.received',
+        expect.objectContaining({ recipientIsSeller: false }),
+      );
+    });
   });
 });

@@ -12,6 +12,8 @@ interface MessageReceivedEvent {
   recipientId: string;
   listingId: string | null;
   content: string;
+  /** Destinatário é o vendedor da conversa? Decide a caixa de entrada do CTA. */
+  recipientIsSeller?: boolean;
 }
 
 /** Trecho curto para o corpo e o preheader — não mandamos a mensagem inteira. */
@@ -68,6 +70,7 @@ export class MessageListener {
         senderName: sender?.name ?? null,
         excerpt: excerpt(event.content),
         listingTitle,
+        recipientIsSeller: event.recipientIsSeller === true,
       },
     });
   }

@@ -23,10 +23,15 @@ export class MessagesController {
 
   // ── GET /api/messages/conversations ──────────────────────────────────────────
 
+  // Envelopado em `{ data }` como os demais endpoints daqui. Devolvia o array
+  // cru, e o front faz `.then(r => r.data)`: `[].data` é `undefined`, o React
+  // Query v5 trata `undefined` como query com erro, e a caixa de entrada caía
+  // no default `[]`. Resultado: comprador e vendedor viam "nenhuma conversa"
+  // com as conversas gravadas no banco, sem erro em lugar nenhum.
   @Get('conversations')
   async getConversations(@Req() req: Request) {
     const userId = (req as any).auth.userId as string;
-    return this.messagesService.getConversations(userId);
+    return { data: await this.messagesService.getConversations(userId) };
   }
 
   // ── GET /api/messages/conversations/:id ──────────────────────────────────────

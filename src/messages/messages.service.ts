@@ -257,6 +257,9 @@ export class MessagesService {
           : conversation.buyerId,
       listingId: conversation.listingId ?? null,
       content: dto.content,
+      // Comprador e vendedor têm caixas de entrada diferentes (`/conta/...` e
+      // `/painel/...`). Sem isto o e-mail manda os dois para a do comprador.
+      recipientIsSeller: conversation.buyerId === userId,
     });
 
     return newMessage[0];
