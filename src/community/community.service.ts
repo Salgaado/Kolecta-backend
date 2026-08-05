@@ -364,11 +364,17 @@ export class CommunityService {
           images: schema.listings.images,
           type: schema.listings.type,
           status: schema.listings.status,
+          // Leilão não usa `priceInCents`, então sem estes dois o card diria só
+          // "Modo Lance", sem valor nenhum. São 114 leilões em 1.043 anúncios
+          // ativos: uma menção em cada nove cairia nesse vazio.
+          startingBidInCents: schema.auctions.startingBidInCents,
+          currentBidInCents: schema.auctions.currentBidInCents,
         },
       })
       .from(schema.communityComments)
       .innerJoin(schema.users, eq(schema.communityComments.authorId, schema.users.id))
       .leftJoin(schema.listings, eq(schema.listings.id, schema.communityComments.listingId))
+      .leftJoin(schema.auctions, eq(schema.auctions.listingId, schema.listings.id))
       .where(
         and(
           eq(schema.communityComments.postId, postId),
