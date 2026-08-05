@@ -20,6 +20,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { ListingsService } from './listings.service';
 import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
+import { ColocarEmLeilaoDto } from './dto/colocar-em-leilao.dto';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -215,6 +216,25 @@ export class ListingsController {
     const sellerId = (req as any).auth.userId as string;
     const listing = await this.listingsService.publish(id, sellerId);
     return { data: listing };
+  }
+
+  // ── POST /api/listings/:id/colocar-em-leilao ─────────────────────────────
+  //
+  // Reaproveita o anúncio que o vendedor já montou. Estoque 1 converte o
+  // próprio; estoque maior duplica e tira uma unidade do original, para ele
+  // seguir vendendo o resto na compra direta sem risco de vender a mesma peça
+  // duas vezes.
+
+  @Post(':id/colocar-em-leilao')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  async colocarEmLeilao(
+    @Param('id') id: string,
+    @Req() req: Request,
+    @Body() dto: ColocarEmLeilaoDto,
+  ) {
+    const sellerId = (req as any).auth.userId as string;
+    return { data: await this.listingsService.colocarEmLeilao(id, sellerId, dto) };
   }
 
   // ── PATCH /api/listings/:id/status — Admin: mudar status ────────────────

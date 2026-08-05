@@ -27,6 +27,12 @@ import { SUBMITTED_LISTING_STATUSES } from '../founder/founder.constants';
 import { alvoDeBusca, condicaoDeBusca } from '../common/busca-sql';
 import { listingPublishBlockers } from './listing-publish-rules';
 import {
+  decidirAcao,
+  copiarCampos,
+  normalizarConfig,
+  type ConfigLeilao,
+} from './colocar-em-leilao';
+import {
   isInstructionRow,
   validateImportRow,
   mapImportRow,
@@ -465,6 +471,109 @@ export class ListingsService {
     );
 
     return this.findById(id);
+  }
+
+
+  // ── Colocar em leilão ──────────────────────────────────────────────────────
+
+  /**
+   * Transforma um anúncio de compra direta em leilão.
+   *
+   * O vendedor já montou tudo (fotos, descrição, medidas, atributos) e quer
+   * leiloar. Refazer isso num anúncio novo é o trabalho que este método existe
+   * para evitar. Foi pedido por um cliente.
+   *
+   * Estoque 1 CONVERTE o próprio anúncio; estoque maior DUPLICA e tira uma
+   * unidade do original. A decisão está em `colocar-em-leilao.ts`, com o porquê:
+   * duplicar peça única deixaria o vendedor vender o mesmo objeto duas vezes.
+   *
+   * O resultado volta para `pending_review` nos dois casos, e não é burocracia:
+   * o relógio do leilão só começa em `startAuctionClockIfPending`, que roda na
+   * aprovação. Leilão criado já ativo ficaria com `endsAt` nulo para sempre,
+   * ou seja, um leilão que nunca corre.
+   */
+  async colocarEmLeilao(
+    listingId: string,
+    sellerId: string,
+    config: ConfigLeilao,
+  ) {
+    const [anuncio] = await this.db
+      .select()
+      .from(schema.listings)
+      .where(eq(schema.listings.id, listingId));
+
+    if (!anuncio) throw new NotFoundException('Anúncio não encontrado.');
+    if (anuncio.sellerId !== sellerId) {
+      throw new ForbiddenException('Este anúncio não é seu.');
+    }
+    if (!config?.startingBidInCents || config.startingBidInCents <= 0) {
+      throw new BadRequestException('Informe o lance inicial.');
+    }
+
+    const pedidos = await this.db
+      .select({ status: schema.orders.status })
+      .from(schema.orders)
+      .where(eq(schema.orders.listingId, listingId));
+
+    const { acao, motivo } = decidirAcao({
+      type: anuncio.type,
+      stock: anuncio.stock,
+      statusDosPedidos: pedidos.map((p: any) => p.status),
+    });
+    if (!acao) throw new BadRequestException(motivo!);
+
+    const leilao = normalizarConfig(config);
+    let idDoLeilao = listingId;
+
+    await this.db.transaction(async (tx: any) => {
+      if (acao === 'duplicar') {
+        idDoLeilao = crypto.randomUUID();
+        await tx.insert(schema.listings).values({
+          ...copiarCampos(anuncio as any),
+          id: idDoLeilao,
+          sellerId,
+          type: 'auction',
+          // Leilão é de UMA peça. O preço de compra direta não se aplica.
+          priceInCents: null,
+          stock: 1,
+          status: 'pending_review',
+        });
+        // A unidade leiloada sai do anúncio direto, senão o vendedor teria 3 na
+        // vitrine e 1 no leilão, com 3 peças na prateleira: uma venda a mais do
+        // que ele tem.
+        await tx
+          .update(schema.listings)
+          .set({
+            stock: Math.max(0, Number(anuncio.stock ?? 1) - 1),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.listings.id, listingId));
+      } else {
+        await tx
+          .update(schema.listings)
+          .set({
+            type: 'auction',
+            priceInCents: null,
+            stock: 1,
+            status: 'pending_review',
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.listings.id, listingId));
+      }
+
+      // `endsAt` omitido = leilão parado. O relógio começa na aprovação, e lá
+      // vale a regra de vendedor sem recebedor nascer pausado.
+      await tx.insert(schema.auctions).values({
+        listingId: idDoLeilao,
+        ...leilao,
+        status: 'active',
+      });
+    });
+
+    this.logger.log(
+      `[colocarEmLeilao] ${acao} anúncio ${listingId} -> leilão ${idDoLeilao} (vendedor ${sellerId}).`,
+    );
+    return { acao, listingId: idDoLeilao, original: listingId };
   }
 
   // ── Atualizar anúncio ────────────────────────────────────────────────────
