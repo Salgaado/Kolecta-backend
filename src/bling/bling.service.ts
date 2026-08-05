@@ -4,11 +4,13 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  BadGatewayException,
 } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
+import { normalizarProduto } from './bling-catalogo';
 
 type Database = any;
 
@@ -235,6 +237,58 @@ export class BlingService {
 
     this.logger.log(`Token Bling renovado para userId=${userId}`);
     return data.access_token;
+  }
+
+  // ── Catálogo do lojista ──────────────────────────────────────────────────────
+
+  /**
+   * Uma página do catálogo do Bling, já normalizada para a tela.
+   *
+   * Usa a listagem BARATA de propósito. Ela não traz peso, dimensões nem GTIN,
+   * que só existem no detalhe: buscar detalhe de tudo aqui custaria uma
+   * requisição por produto para preencher uma tela que o lojista talvez nem
+   * role até o fim. O detalhe é buscado só do que ele escolher importar.
+   */
+  async listarProdutos(userId: string, pagina = 1) {
+    const token = await this.getValidToken(userId);
+    const limite = 100; // teto da API
+    const url = `${BLING_API_URL}/produtos?pagina=${pagina}&limite=${limite}&criterio=2`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      const corpo = await res.text();
+      this.logger.error(`Bling /produtos ${res.status}: ${corpo.slice(0, 300)}`);
+      throw new BadGatewayException(
+        'Não foi possível ler o catálogo do seu Bling. Tente de novo em instantes.',
+      );
+    }
+
+    const { data } = await res.json();
+    const produtos = (Array.isArray(data) ? data : []).map(normalizarProduto);
+    return {
+      produtos,
+      pagina,
+      // A API não devolve total. Página cheia significa que provavelmente há
+      // mais; página curta é a última. Mesmo critério do `getAllPaged` do front.
+      temMais: produtos.length === limite,
+    };
+  }
+
+  /** Detalhe de um produto: peso, dimensões, GTIN e as fotos extras. */
+  async detalharProduto(userId: string, produtoId: number): Promise<any> {
+    const token = await this.getValidToken(userId);
+    const res = await fetch(`${BLING_API_URL}/produtos/${produtoId}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      throw new BadGatewayException(
+        `O Bling não devolveu o produto ${produtoId} (HTTP ${res.status}).`,
+      );
+    }
+    const { data } = await res.json();
+    return data;
   }
 
   // ── Criar ou buscar contato no Bling ─────────────────────────────────────────

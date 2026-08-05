@@ -15,6 +15,11 @@ import {
   MIN_IMAGES,
   MAX_IMAGES,
 } from './listing-publish-rules';
+import {
+  normalizarMarca,
+  normalizarEscala,
+  normalizarLinha,
+} from './normalizacao';
 
 export { MIN_IMAGES, MAX_IMAGES };
 
@@ -33,7 +38,18 @@ export const CONDITION_VALUES = [
 const COLUMN_KEYS = new Set(['brand', 'scale', 'line', 'year', 'edition']);
 
 /** Metadados por categoria que vivem no JSON `attributes`. */
-const ATTRIBUTE_KEYS = ['jogo', 'personagem', 'numero', 'tituloObra'];
+const ATTRIBUTE_KEYS = [
+  'jogo',
+  'personagem',
+  'numero',
+  'tituloObra',
+  // Prateleira de mangás e os dois campos obrigatórios de acessórios. Sem eles
+  // na planilha, apertar o portão de publicação tornaria essas duas categorias
+  // impossíveis de importar.
+  'editora',
+  'tipo',
+  'escalaCompativel',
+];
 
 export interface ImportRowError {
   linha: number;
@@ -168,6 +184,8 @@ export interface MappedImportRow {
   year: string | null;
   edition: string | null;
   sku: string | null;
+  /** Unidades à venda. A planilha do front sempre teve a coluna; o backend a ignorava. */
+  stock: number;
   attributes: string | null;
 }
 
@@ -193,12 +211,20 @@ export function mapImportRow(row: Record<string, string>): MappedImportRow {
     widthCm: parsePositiveInt(val('width_cm'))!,
     heightCm: parsePositiveInt(val('height_cm'))!,
     lengthCm: parsePositiveInt(val('length_cm'))!,
-    brand: opt('brand'),
-    scale: opt('scale'),
-    line: opt('line'),
+    // Normalizados, e não crus. Os formulários de criação e edição já faziam
+    // isso; a planilha era o caminho de escrita que passava por fora, e o banco
+    // guarda o resultado: "COPAG", "Copag" e "Copag " viraram três prateleiras
+    // para a mesma marca.
+    brand: normalizarMarca(val('brand')),
+    scale: normalizarEscala(val('scale')),
+    line: normalizarLinha(val('line')),
     year: opt('year'),
     edition: opt('edition'),
     sku: opt('sku'),
+    // A coluna existia no modelo gerado pelo front e o backend não lia: quem
+    // preenchia estoque na planilha perdia o valor em silêncio. Vazio vira 1,
+    // que é o padrão do formulário.
+    stock: parsePositiveInt(val('stock')) ?? 1,
     attributes: Object.keys(attrs).length ? JSON.stringify(attrs) : null,
   };
 }
@@ -223,6 +249,10 @@ export const TEMPLATE_COLUMNS = [
   'height_cm',
   'length_cm',
   'sku',
+  'stock',
   'year',
   'edition',
+  'editora',
+  'tipo',
+  'escalaCompativel',
 ];

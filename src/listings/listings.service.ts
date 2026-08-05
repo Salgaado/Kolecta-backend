@@ -935,6 +935,7 @@ export class ListingsService {
             edition: mapped.edition,
             sku: mapped.sku,
             attributes: mapped.attributes,
+            stock: mapped.stock,
             status: 'pending_review',
           });
 

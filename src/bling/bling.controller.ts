@@ -1,6 +1,8 @@
 import {
+  Body,
   Controller,
   Get,
+  Post,
   Delete,
   Logger,
   Query,
@@ -12,13 +14,18 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { BlingService } from './bling.service';
+import { BlingImportService } from './bling-import.service';
+import { ImportarBlingDto } from './dto/bling.dto';
 import { AuthGuard } from '../auth/auth.guard';
 
 @Controller('api/bling')
 export class BlingController {
   private readonly logger = new Logger(BlingController.name);
 
-  constructor(private readonly blingService: BlingService) {}
+  constructor(
+    private readonly blingService: BlingService,
+    private readonly importService: BlingImportService,
+  ) {}
 
   // ── GET /api/bling/status — status da conexão do seller ──────────────────────
 
@@ -74,6 +81,48 @@ export class BlingController {
       );
       return res.redirect(`${frontendUrl}/painel/integracoes?bling=error`);
     }
+  }
+
+  // ── GET /api/bling/produtos — catálogo do lojista, uma página ────────────────
+  //
+  // Listagem barata: sem peso, dimensões nem GTIN, que só existem no detalhe.
+  // Buscar detalhe de tudo aqui custaria uma requisição por produto para encher
+  // uma tela que o lojista talvez nem role até o fim.
+
+  @Get('produtos')
+  @UseGuards(AuthGuard)
+  async produtos(@Req() req: Request, @Query('pagina') pagina?: string) {
+    const userId = (req as any).auth.userId as string;
+    const n = Math.max(1, parseInt(pagina ?? '1', 10) || 1);
+    return { data: await this.blingService.listarProdutos(userId, n) };
+  }
+
+  // ── POST /api/bling/conferir — o que falta, SEM criar nada ───────────────────
+
+  @Post('conferir')
+  @UseGuards(AuthGuard)
+  async conferir(@Req() req: Request, @Body() dto: ImportarBlingDto) {
+    const userId = (req as any).auth.userId as string;
+    return {
+      data: await this.importService.conferir(userId, dto.ids, {
+        categoria: dto.categoria,
+        condicao: dto.condicao,
+      }),
+    };
+  }
+
+  // ── POST /api/bling/importar — cria os anúncios que passam ───────────────────
+
+  @Post('importar')
+  @UseGuards(AuthGuard)
+  async importar(@Req() req: Request, @Body() dto: ImportarBlingDto) {
+    const userId = (req as any).auth.userId as string;
+    return {
+      data: await this.importService.importar(userId, dto.ids, {
+        categoria: dto.categoria,
+        condicao: dto.condicao,
+      }),
+    };
   }
 
   // ── DELETE /api/bling/disconnect — remove a conexão ──────────────────────────

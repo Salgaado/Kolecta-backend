@@ -273,6 +273,13 @@ export const listings = sqliteTable('listings', {
   // travaria a publicação dele. O mesmo código pode se repetir entre vendedores
   // diferentes — cada um só enxerga o próprio.
   sku: text('sku'),
+
+  // ID do produto no Bling do vendedor, quando o anúncio veio de lá.
+  //
+  // É o elo que faltava: sem ele não dá para saber que este anúncio e aquele
+  // produto são a mesma coisa, então não haveria como reimportar sem duplicar
+  // nem sincronizar estoque depois. null = anúncio criado na Kolecta.
+  blingProductId: integer('bling_product_id'),
   // Quantidade em estoque. O front já coleta (criação, edição e planilha) e o
   // backend descartava — o valor sumia e o estoque não aparecia em lugar
   // nenhum. null = não informado (o MVP vende 1 unidade por anúncio).

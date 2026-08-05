@@ -6,10 +6,31 @@
 
 export const MIN_DESCRIPTION_LENGTH = 30;
 export const MIN_TITLE_LENGTH = 10;
-// 2, igual ao frontend (`src/lib/photos.ts`). Ficaram dessincronizados: o front
-// baixou para 2, o backend seguiu exigindo 3, e como a APROVAÇÃO do admin usa
-// esta regra, o anúncio publicado com 2 fotos era recusado sem explicação.
-export const MIN_IMAGES = 2;
+/**
+ * Mínimo de fotos para o anúncio poder ir ao ar.
+ *
+ * Era 2, espelhando o wizard. Baixou para 1 por causa da IMPORTAÇÃO EM MASSA:
+ * o ERP do lojista guarda uma imagem principal por produto, e as extras só
+ * existem se ele cadastrou links externos. Exigir 2 faria a maior parte de um
+ * catálogo de centenas de itens ser recusada, e a importação perderia o
+ * sentido, que é justamente poupar o trabalho manual.
+ *
+ * O wizard de criação continua pedindo 2 (`MIN_IMAGES_FORMULARIO`, espelhado no
+ * front): quem cadastra um item de cada vez tem o produto na mão e tira a
+ * segunda foto. A exceção é para quem traz o catálogo pronto de fora.
+ *
+ * A contrapartida, que é real e é decisão de produto: um anúncio com uma foto
+ * só pode ficar publicado. Se isso incomodar na vitrine, é esta constante que
+ * volta para 2.
+ *
+ * Histórico: front e backend já ficaram dessincronizados aqui (o front baixou
+ * para 2 e o backend seguia em 3), e como a APROVAÇÃO do admin usa esta regra,
+ * o anúncio com 2 fotos era recusado sem explicação. Mudar aqui muda tudo.
+ */
+export const MIN_IMAGES = 1;
+
+/** O que o wizard de criação manual pede. Espelhado em `src/lib/photos.ts`. */
+export const MIN_IMAGES_FORMULARIO = 2;
 /**
  * Teto de fotos. O front já bloqueia no upload (wizard, edição e importação),
  * mas a trava no navegador não vale para quem chama a API direto — e um anúncio
@@ -21,12 +42,25 @@ export const MAX_IMAGES = 8;
  * Campos obrigatórios por categoria (slug). Espelha `required: true` do front
  * (`src/lib/category-fields.ts`) — fonte única do backend. `brand/line/scale`
  * têm coluna própria no listing; os demais vivem no JSON `attributes`.
+ *
+ * O critério de o que entra aqui: **o campo que serve de PRATELEIRA da
+ * categoria** (`subcategoria: true` no front) é obrigatório, porque é por ele
+ * que o comprador navega na vitrine. Vazio, o anúncio cai em "Outros" e some da
+ * navegação sem ninguém perceber, nem o vendedor nem a gente.
+ *
+ * Conferido contra a produção em 05/08/2026: tudo que esta lista exigia estava
+ * 100% preenchido nos anúncios ativos, o que mostra que o portão funciona. O
+ * problema estava no que ele NÃO exigia (ver 'acessorios' abaixo).
  */
 export const CATEGORY_REQUIRED_FIELDS: Record<
   string,
   Array<{ key: string; label: string }>
 > = {
   'miniaturas-diecast': [
+    // `line` NÃO entra de propósito, embora o formulário pedisse. Não é a
+    // prateleira (marca é), e 142 dos 829 anúncios ativos já vivem sem ela:
+    // exigir agora travaria esses 142 na próxima edição sem o comprador ganhar
+    // nada. O formulário foi alinhado a esta lista, e não o contrário.
     { key: 'brand', label: 'Fabricante da miniatura' },
     { key: 'scale', label: 'Escala' },
   ],
@@ -40,7 +74,19 @@ export const CATEGORY_REQUIRED_FIELDS: Record<
     { key: 'numero', label: 'Número do Pop' },
     { key: 'line', label: 'Linha / Universo' },
   ],
-  'mangas-hqs': [{ key: 'tituloObra', label: 'Título da obra' }],
+  'mangas-hqs': [
+    { key: 'tituloObra', label: 'Título da obra' },
+    // Prateleira da categoria.
+    { key: 'editora', label: 'Editora' },
+  ],
+  // A categoria inteira estava fora desta lista, então o portão nunca pediu
+  // nada dela. `tipo` é a prateleira, e os 5 acessórios ativos estavam com ela
+  // VAZIA: todos caíam em "Outros" e a navegação da categoria não existia na
+  // prática. O formulário já exigia os dois campos; era só aqui que faltava.
+  acessorios: [
+    { key: 'tipo', label: 'Tipo de acessório' },
+    { key: 'escalaCompativel', label: 'Escala compatível' },
+  ],
 };
 
 /** Chaves com coluna própria no listing; o resto vem do JSON `attributes`. */
@@ -142,7 +188,9 @@ export function listingPublishBlockers(
 
   const imageCount = countImages(listing.images);
   if (imageCount < MIN_IMAGES) {
-    missing.push(`Pelo menos ${MIN_IMAGES} fotos`);
+    missing.push(
+      MIN_IMAGES === 1 ? 'Pelo menos 1 foto' : `Pelo menos ${MIN_IMAGES} fotos`,
+    );
   } else if (imageCount > MAX_IMAGES) {
     missing.push(`No máximo ${MAX_IMAGES} fotos (o anúncio tem ${imageCount})`);
   }
