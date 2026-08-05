@@ -66,7 +66,11 @@ export class AdminService {
           shippingInCents: schema.orders.shippingInCents,
         })
         .from(schema.orders)
-        .where(eq(schema.orders.status, 'completed')),
+        // Receita conta desde que o pagamento foi confirmado, não só quando o
+        // pedido é finalizado. Com 'completed' apenas, o painel mostrava R$ 4,95
+        // de receita sobre R$ 657 transacionados: as vendas pagas e já enviadas
+        // (R$ 47 de comissão) ficavam de fora até o comprador confirmar entrega.
+        .where(inArray(schema.orders.status, AdminService.SALE_STATUSES)),
       this.db
         .select({ total: count() })
         .from(schema.disputes)
@@ -558,7 +562,7 @@ export class AdminService {
 
   // ── GET /api/admin/financial ─────────────────────────────────────────────
   async getFinancial() {
-    const [txRows, withdrawalsRows] = await Promise.all([
+    const [txRows, withdrawalsRows, bidRows] = await Promise.all([
       this.db
         .select({
           id: schema.orders.id,
@@ -605,6 +609,33 @@ export class AdminService {
         .from(schema.withdrawalRequests)
         .leftJoin(schema.users, eq(schema.withdrawalRequests.userId, schema.users.id))
         .orderBy(desc(schema.withdrawalRequests.createdAt)),
+      // ── Lances ──
+      // Lance NÃO é pedido: só vira pedido quando o leilão fecha e a pré-auth é
+      // capturada. Sem esta consulta, um lance dado agora não aparecia em lugar
+      // nenhum do painel, e a equipe não tinha como acompanhar o Modo Lance.
+      this.db
+        .select({
+          id: schema.bids.id,
+          createdAt: schema.bids.createdAt,
+          amount: schema.bids.amountInCents,
+          status: schema.bids.status,
+          bidderName: schema.users.name,
+          productTitle: schema.listings.title,
+          sellerName: AdminService.sellerAlias.name,
+          listingId: schema.auctions.listingId,
+          // Tem retenção no cartão? É o que diz se o lance está garantido.
+          chargeId: schema.bids.pagarmeChargeId,
+        })
+        .from(schema.bids)
+        .leftJoin(schema.users, eq(schema.bids.bidderId, schema.users.id))
+        .leftJoin(schema.auctions, eq(schema.bids.auctionId, schema.auctions.id))
+        .leftJoin(schema.listings, eq(schema.auctions.listingId, schema.listings.id))
+        .leftJoin(
+          AdminService.sellerAlias,
+          eq(schema.listings.sellerId, AdminService.sellerAlias.id),
+        )
+        .orderBy(desc(schema.bids.createdAt))
+        .limit(100),
     ]);
 
     // A lista agora traz TODO pedido (inclusive Pix gerado e cancelado), mas
@@ -615,13 +646,22 @@ export class AdminService {
 
     // Receita = comissão. O frete que passa por `platform_fee` não é receita:
     // entra e sai na compra da etiqueta. Somá-lo inflava este número em ~4x.
+    //
+    // Conta toda venda com pagamento confirmado, não só a finalizada: a venda
+    // paga e enviada já é dinheiro nosso, e esperar o comprador confirmar
+    // entrega fazia o painel mostrar R$ 4,95 sobre R$ 657 transacionados.
     const revenue = txRows
+      .filter((t) => ehVenda(t.status))
+      .reduce((s, t) => s + comissaoEmCentavos(t) / 100, 0);
+    // A parte já finalizada (entrega confirmada), para separar o que está
+    // liquidado do que ainda está em trânsito.
+    const revenueSettled = txRows
       .filter((t) => t.status === 'completed')
       .reduce((s, t) => s + comissaoEmCentavos(t) / 100, 0);
     // Frete que atravessou a plataforma, exibido à parte para o número anterior
     // não parecer uma queda inexplicável de receita.
     const shippingPassThrough = txRows
-      .filter((t) => t.status === 'completed')
+      .filter((t) => ehVenda(t.status))
       .reduce((s, t) => s + freteEmCentavos(t) / 100, 0);
     const volume = txRows
       .filter((t) => ehVenda(t.status))
@@ -673,9 +713,23 @@ export class AdminService {
         amount: (w.amount ?? 0) / 100,
       }));
 
+    const bids = bidRows.map((b) => ({
+      id: b.id,
+      date: b.createdAt,
+      bidder: b.bidderName ?? 'Participante',
+      seller: b.sellerName ?? 'Vendedor',
+      product: b.productTitle ?? null,
+      listingId: b.listingId ?? null,
+      amount: (b.amount ?? 0) / 100,
+      status: b.status,
+      /** Retenção no cartão criada? Lance sem isto não está garantido. */
+      hasPreAuth: b.chargeId != null,
+    }));
+
     return {
       summary: {
         revenue,
+        revenueSettled,
         shippingPassThrough,
         volume,
         payouts,
@@ -683,6 +737,7 @@ export class AdminService {
       },
       transactions,
       pendingWithdrawals,
+      bids,
     };
   }
 
