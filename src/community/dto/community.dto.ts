@@ -79,6 +79,17 @@ export class CreateCommentDto {
   @IsNotEmpty()
   @MaxLength(2000)
   body: string;
+
+  /**
+   * Anúncio mencionado, opcional.
+   *
+   * UM por comentário, de propósito: sem esse limite o campo viraria vitrine e
+   * a comunidade voltaria a ser lugar de divulgação, que é justamente o que a
+   * regra de link externo foi criada para impedir.
+   */
+  @IsString()
+  @IsOptional()
+  listingId?: string;
 }
 
 export class CreateReportDto {

@@ -316,9 +316,28 @@ export class CommunityService {
       throw new NotFoundException('Publicação não encontrada.');
     }
 
+    // Menção a anúncio: o par da regra de link externo. Tira o caminho de fora
+    // e abre o de dentro, dando ao vendedor um motivo legítimo de participar.
+    //
+    // Confere ANTES de gravar: id inventado deixaria um card fantasma no
+    // comentário, e anúncio fora do ar viraria propaganda de algo que ninguém
+    // pode comprar.
+    let listingId: string | null = null;
+    if (dto.listingId) {
+      const anuncio = await this.db.query.listings.findFirst({
+        where: eq(schema.listings.id, dto.listingId),
+      });
+      if (!anuncio || anuncio.status !== 'active') {
+        throw new BadRequestException(
+          'O anúncio mencionado não existe ou não está no ar.',
+        );
+      }
+      listingId = anuncio.id;
+    }
+
     const [comment] = await this.db
       .insert(schema.communityComments)
-      .values({ postId, authorId: userId, body: dto.body })
+      .values({ postId, authorId: userId, body: dto.body, listingId })
       .returning();
 
     await this.db
@@ -336,9 +355,20 @@ export class CommunityService {
         body: schema.communityComments.body,
         createdAt: schema.communityComments.createdAt,
         author: { id: schema.users.id, name: schema.users.name },
+        // Card do anúncio mencionado. `leftJoin` porque a menção é opcional:
+        // `innerJoin` sumiria com todo comentário que não menciona nada.
+        listing: {
+          id: schema.listings.id,
+          title: schema.listings.title,
+          priceInCents: schema.listings.priceInCents,
+          images: schema.listings.images,
+          type: schema.listings.type,
+          status: schema.listings.status,
+        },
       })
       .from(schema.communityComments)
       .innerJoin(schema.users, eq(schema.communityComments.authorId, schema.users.id))
+      .leftJoin(schema.listings, eq(schema.listings.id, schema.communityComments.listingId))
       .where(
         and(
           eq(schema.communityComments.postId, postId),

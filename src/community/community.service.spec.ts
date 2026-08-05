@@ -241,3 +241,78 @@ describe('CommunityService.setCommentStatus', () => {
     ).rejects.toThrow(/não encontrado/i);
   });
 });
+
+/**
+ * Menção a anúncio no comentário.
+ *
+ * É o par da regra que bloqueia link externo: tira o caminho de fora e abre o
+ * de dentro, dando ao vendedor um motivo legítimo de participar da comunidade.
+ */
+describe('CommunityService.addComment com menção', () => {
+  function montar(anuncio: any) {
+    const inseridos: any[] = [];
+    const db: any = {
+      query: {
+        communityPosts: { findFirst: jest.fn().mockResolvedValue({ id: 'p1', status: 'active' }) },
+        listings: { findFirst: jest.fn().mockResolvedValue(anuncio) },
+        communityBans: { findFirst: jest.fn().mockResolvedValue(null) },
+      },
+      insert: jest.fn(() => ({
+        values: jest.fn((v: any) => {
+          inseridos.push(v);
+          return { returning: jest.fn().mockResolvedValue([{ id: 'c1', ...v }]) };
+        }),
+      })),
+      update: jest.fn(() => ({
+        set: jest.fn(() => ({ where: jest.fn().mockResolvedValue(undefined) })),
+      })),
+    };
+    return { db, inseridos, service: new CommunityService(db) };
+  }
+
+  it('grava a menção quando o anúncio está no ar', async () => {
+    const { service, inseridos } = montar({ id: 'l1', status: 'active' });
+
+    await service.addComment('u1', 'p1', { body: 'olha essa peça', listingId: 'l1' } as any);
+
+    expect(inseridos[0].listingId).toBe('l1');
+  });
+
+  it('recusa anúncio que não está no ar', async () => {
+    // Card de anúncio pausado ou removido seria propaganda de algo que ninguém
+    // pode comprar.
+    const { service } = montar({ id: 'l1', status: 'paused' });
+
+    await expect(
+      service.addComment('u1', 'p1', { body: 'olha', listingId: 'l1' } as any),
+    ).rejects.toThrow(/não existe ou não está no ar/);
+  });
+
+  it('recusa id inventado, em vez de deixar card fantasma', async () => {
+    const { service } = montar(null);
+
+    await expect(
+      service.addComment('u1', 'p1', { body: 'olha', listingId: 'nao-existe' } as any),
+    ).rejects.toThrow(/não existe ou não está no ar/);
+  });
+
+  it('comentário sem menção grava listingId nulo', async () => {
+    const { service, inseridos } = montar(null);
+
+    await service.addComment('u1', 'p1', { body: 'que peça linda' } as any);
+
+    expect(inseridos[0].listingId).toBeNull();
+  });
+
+  it('link externo continua bloqueado mesmo com menção junto', async () => {
+    // A menção não pode virar porta dos fundos para o spam que a outra regra
+    // fechou.
+    const { service } = montar({ id: 'l1', status: 'active' });
+
+    await expect(
+      service.addComment('u1', 'p1', {
+        body: 'veja em raapcollection.com.br', listingId: 'l1',
+      } as any),
+    ).rejects.toThrow(/link para fora da Kolecta/);
+  });
+});

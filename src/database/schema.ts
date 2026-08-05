@@ -893,6 +893,18 @@ export const communityComments = sqliteTable('community_comments', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   body: text('body').notNull(),
+  // Anúncio mencionado no comentário, quando há um.
+  //
+  // Existe para dar ao vendedor um motivo legítimo de participar: mostrar a
+  // peça dele sem mandar ninguém para fora. É o par da regra que bloqueia link
+  // externo (ver community/link-externo.ts): tira o caminho de fora e abre o
+  // de dentro.
+  //
+  // `set null` e não `cascade`: anúncio apagado não deve levar o comentário
+  // junto, porque o texto continua fazendo sentido sem o card.
+  listingId: text('listing_id').references(() => listings.id, {
+    onDelete: 'set null',
+  }),
   // active | hidden | removed
   status: text('status').notNull().default('active'),
   ...timestamps,
