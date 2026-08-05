@@ -171,3 +171,73 @@ describe('CommunityService.createPost', () => {
     expect(valuesArg.listingId).toBeNull();
   });
 });
+
+/**
+ * Moderação de COMENTÁRIO.
+ *
+ * A coluna `status` existia em `community_comments` desde o começo e nunca teve
+ * como mexer nela: só post tinha endpoint. Descoberto em 05/08/2026 com três
+ * comentários no ar apontando para a loja de um concorrente, ou seja um terço
+ * de tudo que havia sido comentado na comunidade.
+ */
+describe('CommunityService.setCommentStatus', () => {
+  const comentario = { id: 'c1', postId: 'p1', status: 'active' };
+
+  function montar(atual = 'active') {
+    const updates: any[] = [];
+    const db: any = {
+      query: {
+        communityComments: {
+          findFirst: jest.fn().mockResolvedValue({ ...comentario, status: atual }),
+        },
+      },
+      update: jest.fn(() => ({
+        set: jest.fn((patch: any) => {
+          updates.push(patch);
+          return { where: jest.fn().mockResolvedValue(undefined) };
+        }),
+      })),
+    };
+    return { db, updates, service: new CommunityService(db) };
+  }
+
+  it('oculta o comentário e desconta do contador do post', async () => {
+    // Sem ajustar o contador, o post mostraria "9 comentários" numa lista com 6
+    // e alguém iria caçar o bug errado.
+    const { service, updates } = montar('active');
+
+    const r = await service.setCommentStatus('c1', 'hidden');
+
+    expect(r).toEqual({ success: true, status: 'hidden' });
+    expect(updates[0]).toMatchObject({ status: 'hidden' });
+    expect(updates[1]).toHaveProperty('commentCount');
+  });
+
+  it('restaurar soma de volta no contador', async () => {
+    const { service, updates } = montar('removed');
+
+    await service.setCommentStatus('c1', 'active');
+
+    expect(updates[0]).toMatchObject({ status: 'active' });
+    expect(updates[1]).toHaveProperty('commentCount');
+  });
+
+  it('repetir o mesmo status não mexe em nada', async () => {
+    // Ocultar duas vezes descontaria o contador duas vezes.
+    const { service, updates } = montar('hidden');
+
+    const r = await service.setCommentStatus('c1', 'hidden');
+
+    expect(r).toEqual({ success: true, status: 'hidden' });
+    expect(updates).toHaveLength(0);
+  });
+
+  it('comentário inexistente recusa em vez de fingir que deu certo', async () => {
+    const db: any = {
+      query: { communityComments: { findFirst: jest.fn().mockResolvedValue(null) } },
+    };
+    await expect(
+      new CommunityService(db).setCommentStatus('nao-existe', 'removed'),
+    ).rejects.toThrow(/não encontrado/i);
+  });
+});

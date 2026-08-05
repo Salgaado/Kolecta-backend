@@ -42,6 +42,38 @@ export class CommunityAdminController {
     return this.community.setPostStatus(id, 'active');
   }
 
+  // ── Comentários ────────────────────────────────────────────────────────────
+  //
+  // A coluna `status` existia em `community_comments` desde sempre, mas só post
+  // tinha endpoint. Descoberto com spam de concorrente em 3 dos 9 comentários
+  // da comunidade, sem nenhuma forma de tirar do ar.
+
+  @Patch('comments/:id/hide')
+  async hideComment(@Param('id') id: string) {
+    return this.community.setCommentStatus(id, 'hidden');
+  }
+
+  @Patch('comments/:id/remove')
+  async removeComment(@Param('id') id: string) {
+    return this.community.setCommentStatus(id, 'removed');
+  }
+
+  @Patch('comments/:id/restore')
+  async restoreComment(@Param('id') id: string) {
+    return this.community.setCommentStatus(id, 'active');
+  }
+
+  // ── Fila de moderação ──────────────────────────────────────────────────────
+  //
+  // Posts e comentários juntos, inclusive os já ocultos: a listagem pública
+  // esconde o que não está `active`, então sem isto não há como achar o que
+  // moderar nem desfazer o que foi ocultado.
+
+  @Get('conteudo')
+  async conteudo(@Query('status') status?: string) {
+    return { data: await this.community.listarParaModeracao(status) };
+  }
+
   @Post('ban')
   async ban(@Body() dto: BanUserDto, @Req() req: Request) {
     const adminId = (req as any).auth.userId as string;

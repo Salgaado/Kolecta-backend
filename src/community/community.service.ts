@@ -8,6 +8,7 @@ import {
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq, and, desc, sql, gte, isNotNull } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { motivoDeRecusa } from './link-externo';
 import * as schema from '../database/schema';
 import {
   CreatePostDto,
@@ -301,6 +302,13 @@ export class CommunityService {
 
   async addComment(userId: string, postId: string, dto: CreateCommentDto) {
     await this._assertNotBanned(userId);
+
+    // Bloqueia na ESCRITA, e não depois. Moderar link de concorrente é enxugar
+    // gelo: quem posta um posta outro, e alguém precisa estar olhando. Ver
+    // `link-externo.ts` para o caso que originou a regra.
+    const recusa = motivoDeRecusa(dto.body);
+    if (recusa) throw new BadRequestException(recusa);
+
     const post = await this.db.query.communityPosts.findFirst({
       where: eq(schema.communityPosts.id, postId),
     });
@@ -585,6 +593,111 @@ export class CommunityService {
 
     return { success: true, status };
   }
+
+
+  /**
+   * Oculta, remove ou restaura um COMENTÁRIO.
+   *
+   * A coluna `status` existia desde sempre em `community_comments`, e nunca
+   * houve como mexer nela: o admin só conseguia moderar posts. Descoberto com
+   * três comentários no ar apontando para a loja de um concorrente, ou seja,
+   * um terço de tudo que havia comentado na comunidade.
+   *
+   * `hidden` some da listagem e dá para desfazer; `removed` é o caso do spam,
+   * de quem não vai voltar. Nos dois casos o texto continua no banco, porque
+   * apagar de vez destrói a prova de por que o autor foi banido depois.
+   *
+   * O contador do post é ajustado junto, senão ele mostraria "9 comentários"
+   * numa lista com 6, e alguém iria caçar o bug errado.
+   */
+  async setCommentStatus(
+    commentId: string,
+    status: 'active' | 'hidden' | 'removed',
+  ) {
+    const comment = await this.db.query.communityComments.findFirst({
+      where: eq(schema.communityComments.id, commentId),
+    });
+    if (!comment) throw new NotFoundException('Comentário não encontrado.');
+    if (comment.status === status) return { success: true, status };
+
+    await this.db
+      .update(schema.communityComments)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(schema.communityComments.id, commentId));
+
+    // Sair de `active` desconta; voltar para `active` soma de novo.
+    const delta = status === 'active' ? 1 : -1;
+    await this.db
+      .update(schema.communityPosts)
+      .set({
+        commentCount: sql`MAX(0, ${schema.communityPosts.commentCount} + ${delta})`,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.communityPosts.id, comment.postId));
+
+    // Resolve denúncias abertas deste comentário, igual ao fluxo de post.
+    await this.db
+      .update(schema.communityReports)
+      .set({ status: 'reviewed', resolvedAt: new Date() })
+      .where(
+        and(
+          eq(schema.communityReports.targetType, 'comment'),
+          eq(schema.communityReports.targetId, commentId),
+          eq(schema.communityReports.status, 'open'),
+        ),
+      );
+
+    return { success: true, status };
+  }
+
+  /**
+   * Tudo da comunidade para a tela de moderação, inclusive o que já foi
+   * ocultado ou removido.
+   *
+   * A listagem pública esconde o que não está `active`, então sem isto o admin
+   * não teria como achar o que moderar nem como desfazer o que ocultou.
+   */
+  async listarParaModeracao(status?: string) {
+    const filtro = status && status !== 'todos' ? status : null;
+
+    const posts = await this.db
+      .select({
+        id: schema.communityPosts.id,
+        tipo: sql<string>`'post'`,
+        titulo: schema.communityPosts.title,
+        corpo: schema.communityPosts.body,
+        status: schema.communityPosts.status,
+        autorId: schema.communityPosts.authorId,
+        autor: schema.users.name,
+        postId: sql<string | null>`NULL`,
+        createdAt: schema.communityPosts.createdAt,
+      })
+      .from(schema.communityPosts)
+      .leftJoin(schema.users, eq(schema.users.id, schema.communityPosts.authorId))
+      .where(filtro ? eq(schema.communityPosts.status, filtro) : undefined);
+
+    const comentarios = await this.db
+      .select({
+        id: schema.communityComments.id,
+        tipo: sql<string>`'comentario'`,
+        titulo: sql<string | null>`NULL`,
+        corpo: schema.communityComments.body,
+        status: schema.communityComments.status,
+        autorId: schema.communityComments.authorId,
+        autor: schema.users.name,
+        postId: schema.communityComments.postId,
+        createdAt: schema.communityComments.createdAt,
+      })
+      .from(schema.communityComments)
+      .leftJoin(schema.users, eq(schema.users.id, schema.communityComments.authorId))
+      .where(filtro ? eq(schema.communityComments.status, filtro) : undefined);
+
+    return [...posts, ...comentarios].sort(
+      (a: any, b: any) => Number(b.createdAt ?? 0) - Number(a.createdAt ?? 0),
+    );
+  }
+
+  // ── Banimento ─────────────────────────────────────────────────────────────────
 
   async banUser(adminId: string, userId: string, reason?: string) {
     const existing = await this.db.query.communityBans.findFirst({
