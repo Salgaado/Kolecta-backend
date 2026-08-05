@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Delete,
+  Logger,
   Query,
   Req,
   Res,
@@ -15,6 +16,8 @@ import { AuthGuard } from '../auth/auth.guard';
 
 @Controller('api/bling')
 export class BlingController {
+  private readonly logger = new Logger(BlingController.name);
+
   constructor(private readonly blingService: BlingService) {}
 
   // ── GET /api/bling/status — status da conexão do seller ──────────────────────
@@ -26,14 +29,23 @@ export class BlingController {
     return { data: await this.blingService.getStatus(userId) };
   }
 
-  // ── GET /api/bling/connect — redireciona para OAuth do Bling ─────────────────
+  // ── GET /api/bling/authorize-url — URL de autorização do Bling ───────────────
+  //
+  // Devolve a URL em JSON, e NÃO redireciona. O endpoint anterior (`connect`)
+  // era um redirect protegido por AuthGuard, e o front mandava o navegador
+  // direto nele com `window.location.href`. Navegação de página não carrega
+  // cabeçalho `Authorization`, e o cookie de sessão do Clerk mora em
+  // kolecta.com.br, não no domínio do backend em onrender.com: o lojista
+  // clicava em "Conectar Bling" e recebia um 401 em JSON na cara. Verificado
+  // contra a produção em 05/08/2026.
+  //
+  // Agora o front busca a URL com o Bearer que ele já tem e só então navega.
 
-  @Get('connect')
+  @Get('authorize-url')
   @UseGuards(AuthGuard)
-  connect(@Req() req: Request, @Res() res: Response) {
+  authorizeUrl(@Req() req: Request) {
     const userId = (req as any).auth.userId as string;
-    const url = this.blingService.getAuthUrl(userId);
-    return res.redirect(url);
+    return { data: { url: this.blingService.getAuthUrl(userId) } };
   }
 
   // ── GET /api/bling/callback — recebe o code OAuth e troca por tokens ─────────
@@ -54,7 +66,12 @@ export class BlingController {
     try {
       await this.blingService.handleCallback(code, state);
       return res.redirect(`${frontendUrl}/painel/integracoes?bling=success`);
-    } catch {
+    } catch (err: any) {
+      // O motivo NÃO pode ir na URL: ela passa pelo navegador do lojista e pelo
+      // histórico. Fica no log do servidor, que é onde a gente investiga.
+      this.logger.error(
+        `Callback do Bling falhou: ${err?.message ?? err}`,
+      );
       return res.redirect(`${frontendUrl}/painel/integracoes?bling=error`);
     }
   }

@@ -5,6 +5,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
@@ -37,15 +38,73 @@ export class BlingService {
       response_type: 'code',
       client_id: clientId,
       redirect_uri: redirectUri,
-      state: userId,
+      state: this.assinarState(userId),
     });
 
     return `${BLING_AUTH_URL}?${params.toString()}`;
   }
 
+  /**
+   * `state` assinado, em vez do userId cru.
+   *
+   * O callback é público (o Bling redireciona o navegador para ele, sem token),
+   * então o `state` é a ÚNICA coisa que diz de quem é a conexão. Com o userId
+   * cru ali, bastava alguém montar a URL do callback com o `code` da própria
+   * conta Bling e o userId de outra pessoa para amarrar o Bling dele à conta
+   * dela. A partir daí, todo pedido daquele vendedor viraria pedido de venda no
+   * Bling do atacante, com nome e e-mail dos compradores junto.
+   *
+   * A chave é o próprio BLING_CLIENT_SECRET: já é segredo de servidor e existe
+   * exatamente onde este código roda, então não inventa mais uma variável de
+   * ambiente para alguém esquecer de configurar.
+   */
+  private assinarState(userId: string): string {
+    const emitidoEm = Date.now();
+    const corpo = `${userId}.${emitidoEm}`;
+    return `${corpo}.${this.hmac(corpo)}`;
+  }
+
+  /**
+   * Devolve o userId de um `state` que a gente mesmo assinou. Recusa assinatura
+   * inválida e state velho: o code do Bling é de uso único e curto, então uma
+   * janela de 10 minutos é folgada para o usuário autorizar.
+   */
+  private lerState(state: string): string {
+    const partes = String(state ?? '').split('.');
+    if (partes.length !== 3) {
+      throw new BadRequestException('Autorização do Bling inválida.');
+    }
+    const [userId, emitidoEm, assinatura] = partes;
+    const esperada = this.hmac(`${userId}.${emitidoEm}`);
+
+    // Comparação em tempo constante: comparar com === vaza, pelo tempo de
+    // resposta, quantos bytes da assinatura o atacante já acertou.
+    const a = Buffer.from(assinatura);
+    const b = Buffer.from(esperada);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new BadRequestException('Autorização do Bling inválida.');
+    }
+    if (Date.now() - Number(emitidoEm) > 10 * 60 * 1000) {
+      throw new BadRequestException(
+        'A autorização do Bling expirou. Tente conectar de novo.',
+      );
+    }
+    return userId;
+  }
+
+  private hmac(corpo: string): string {
+    const chave = process.env.BLING_CLIENT_SECRET;
+    if (!chave) {
+      throw new BadRequestException('Bling não configurado no servidor.');
+    }
+    return createHmac('sha256', chave).update(corpo).digest('hex');
+  }
+
   // ── OAuth: trocar code por tokens ────────────────────────────────────────────
 
-  async handleCallback(code: string, userId: string): Promise<void> {
+  /** `state` é o assinado por `getAuthUrl`, não um userId cru. Ver `lerState`. */
+  async handleCallback(code: string, state: string): Promise<void> {
+    const userId = this.lerState(state);
     const clientId = process.env.BLING_CLIENT_ID!;
     const clientSecret = process.env.BLING_CLIENT_SECRET!;
     const redirectUri = process.env.BLING_REDIRECT_URI!;
