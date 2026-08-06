@@ -168,19 +168,29 @@ export function dimensoesEmCm(detalhe: any): {
 /**
  * Descrição do anúncio.
  *
- * A complementar é a rica, mas vem com HTML do editor do Bling e colar tag no
- * anúncio ficaria horrível. A curta é limpa e quase sempre curta demais para os
- * 30 caracteres que a Kolecta exige, então uma completa a outra.
+ * Os DOIS campos precisam passar pela limpeza. O antigo confiava que a
+ * `descricaoCurta` já vinha limpa e só tratava a complementar, mas produto real
+ * provou o contrário: o lojista cola a descrição do WORD na curta, e ela chega
+ * cheia de `<p class="MsoNoSpacing">` e `<br />`. Sem limpar, o anúncio ia ao ar
+ * com as tags à mostra.
+ *
+ * Fica com a mais rica das duas (a mais longa depois de limpas), porque uma
+ * costuma ser o texto completo e a outra uma linha só ("Mini GT").
  */
 export function descricaoDoProduto(detalhe: any): string {
-  const curta = String(detalhe?.descricaoCurta ?? '').trim();
+  const curta = limparHtml(detalhe?.descricaoCurta);
   const complementar = limparHtml(detalhe?.descricaoComplementar);
-  if (complementar && complementar.length >= curta.length) return complementar;
-  return curta;
+  return complementar.length > curta.length ? complementar : curta;
 }
 
 function limparHtml(raw: unknown): string {
   return String(raw ?? '')
+    // Comentários, inclusive os condicionais do Word (`<!--[if ...]> ... <![endif]-->`),
+    // que carregam `>` no meio e enganariam o strip de tags abaixo.
+    .replace(/<!--[\s\S]*?-->/g, '')
+    // Bloco inteiro de <style>/<script> que o Word às vezes injeta: não é
+    // conteúdo, é folha de estilo que viraria lixo se só tirássemos as tags.
+    .replace(/<(style|script)\b[\s\S]*?<\/\1>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
     .replace(/<[^>]+>/g, '')
@@ -188,7 +198,12 @@ function limparHtml(raw: unknown): string {
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;|&rsquo;|&lsquo;/gi, "'")
+    .replace(/&(ndash|mdash);/gi, '-')
+    .replace(/&#\d+;/g, '') // qualquer entidade numérica que sobrou
     .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n') // não deixa espaço grudado na quebra
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

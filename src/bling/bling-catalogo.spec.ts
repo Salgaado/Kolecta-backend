@@ -136,6 +136,37 @@ describe('descricaoDoProduto', () => {
     expect(descricaoDoProduto({ descricaoCurta: 'texto bem mais longo aqui', descricaoComplementar: 'oi' }))
       .toBe('texto bem mais longo aqui');
   });
+
+  it('limpa o HTML do Word na descricaoCurta (caso real do print)', () => {
+    // Byte a byte do produto MGT01118A (Toleman/Senna). A curta vinha do Word,
+    // com `<p class="MsoNoSpacing">` e `<br />`, e ia crua para o anúncio porque
+    // era mais longa que a complementar limpa ("Mini GT").
+    const d = descricaoDoProduto({
+      descricaoCurta:
+        '<p class="MsoNoSpacing">Toleman TG184 #19 Ayrton Senna 1984 Monaco Grand Prix 2nd Place - Mini GT -1:64<br />Produto novo, lacrado na embalagem original<br />Miniatura em escala 1:64</p>',
+      descricaoComplementar: '<p>Mini GT</p>',
+    });
+    expect(d).not.toContain('<');
+    expect(d).not.toContain('MsoNoSpacing');
+    expect(d).toContain('Toleman TG184 #19 Ayrton Senna');
+    expect(d).toContain('lacrado na embalagem original');
+    // Cada <br /> virou quebra de linha de verdade.
+    expect(d.split('\n').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('remove comentário condicional e bloco de estilo do Word', () => {
+    const d = descricaoDoProduto({
+      descricaoCurta:
+        '<!--[if gte mso 9]><xml>lixo</xml><![endif]--><style>.x{color:red}</style><p>Peça <span style="font-weight:bold">rara</span> aqui</p>',
+      descricaoComplementar: '',
+    });
+    expect(d).toBe('Peça rara aqui');
+  });
+
+  it('descrição vazia nos dois campos não quebra', () => {
+    expect(descricaoDoProduto({})).toBe('');
+    expect(descricaoDoProduto({ descricaoCurta: null, descricaoComplementar: undefined })).toBe('');
+  });
 });
 
 describe('produtoParaLinha', () => {
