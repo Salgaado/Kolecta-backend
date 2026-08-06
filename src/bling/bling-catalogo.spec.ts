@@ -4,8 +4,46 @@ import {
   pesoEmGramas,
   dimensoesEmCm,
   descricaoDoProduto,
+  escalaNoTitulo,
   produtoParaLinha,
 } from './bling-catalogo';
+
+/**
+ * Escala deduzida do título.
+ *
+ * O Bling não tem esse campo, então antes ela vinha do padrão do lote, igual
+ * para todos. Isso quebra em catálogo misto: quem tem 1:64 e 1:18 no mesmo lote
+ * marcaria tudo errado.
+ *
+ * Os títulos abaixo são reais, das duas lojas conectadas em 06/08/2026.
+ */
+describe('escalaNoTitulo', () => {
+  it('acha nos títulos reais da Escala Miniaturas (76% deles têm)', () => {
+    expect(escalaNoTitulo('Miniatura - 1:64 - 2016 Chevrolet Camaro Ss')).toBe('1:64');
+    expect(escalaNoTitulo('Miniatura - 1:64 - 1973 Volkswagen Thing Type')).toBe('1:64');
+  });
+
+  it('aceita as grafias que aparecem no mundo real', () => {
+    expect(escalaNoTitulo('Ferrari F40 1/18 Bburago')).toBe('1:18');
+    expect(escalaNoTitulo('Porsche 911 escala 1-43')).toBe('1:43');
+    expect(escalaNoTitulo('Camaro 1 : 24 lacrado')).toBe('1:24');
+  });
+
+  it('devolve null quando o título não diz, como na MF Minis', () => {
+    // Lá só 2% dos títulos trazem escala; o padrão do lote é que cobre.
+    expect(escalaNoTitulo('[Pré-venda] - Tarmac Works - RWB 993 Carrera')).toBeNull();
+    expect(escalaNoTitulo('Hot Wheels 2020 Corvette STH')).toBeNull();
+  });
+
+  it('não inventa escala a partir de número solto', () => {
+    // "1:5" e "1:100" não são escala de miniatura. Aceitar qualquer número
+    // encheria o campo de lixo, que é pior do que deixar vazio.
+    expect(escalaNoTitulo('Kit 1:5 de reparo')).toBeNull();
+    expect(escalaNoTitulo('Mapa 1:100000')).toBeNull();
+    expect(escalaNoTitulo('')).toBeNull();
+    expect(escalaNoTitulo(null)).toBeNull();
+  });
+});
 
 /**
  * Contrato conferido contra a API v3 do Bling em 05/08/2026. Os nomes de campo
@@ -136,6 +174,36 @@ describe('produtoParaLinha', () => {
     const l = produtoParaLinha(detalhe, { categoria: 'miniaturas-diecast', condicao: 'novo-lacrado' });
     expect(l.scale).toBe('');
     expect(l.personagem).toBe('');
+  });
+
+  it('a escala do TÍTULO ganha do padrão do lote', () => {
+    // Catálogo misto é a razão de existir: com 1:64 e 1:18 no mesmo lote, um
+    // padrão único marcaria metade errado.
+    const l = produtoParaLinha(
+      { ...detalhe, nome: 'Bburago 1:18 Ferrari F40' },
+      { categoria: 'miniaturas-diecast', condicao: 'novo-lacrado', atributos: { scale: '1:64' } },
+    );
+    expect(l.scale).toBe('1:18');
+  });
+
+  it('o padrão do lote cobre quando o título não diz', () => {
+    const l = produtoParaLinha(detalhe, {
+      categoria: 'miniaturas-diecast',
+      condicao: 'novo-lacrado',
+      atributos: { scale: '1:64' },
+    });
+    expect(l.scale).toBe('1:64');
+  });
+
+  it('a marca do ERP ganha do padrão do lote', () => {
+    // Sobrescrever apagaria dado bom do Bling em nome de uma escolha feita para
+    // o lote inteiro.
+    const l = produtoParaLinha(detalhe, {
+      categoria: 'miniaturas-diecast',
+      condicao: 'novo-lacrado',
+      atributos: { brand: 'Outra Marca' },
+    });
+    expect(l.brand).toBe('Hot Wheels');
   });
 });
 

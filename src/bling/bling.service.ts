@@ -297,6 +297,17 @@ export class BlingService {
   async listarProdutos(userId: string, pagina = 1) {
     const token = await this.getValidToken(userId);
     const limite = 100; // teto da API
+    // `criterio=2` ordena por NOME e traz só os ativos. Conferido contra a API
+    // em 06/08/2026, no catálogo de uma loja real:
+    //
+    //   sem criterio / 1 -> 100 ativos, ordem do ERP
+    //   2                -> 100 ativos, ordem alfabética
+    //   3                -> só INATIVOS (14 itens naquele catálogo)
+    //   5                -> mistura ativo, inativo e EXCLUÍDO
+    //
+    // Alfabética porque o lojista está procurando um produto pelo nome, não
+    // navegando pela ordem em que cadastrou. E ativos só: produto desligado no
+    // ERP não deveria virar anúncio no ar.
     const url = `${BLING_API_URL}/produtos?pagina=${pagina}&limite=${limite}&criterio=2`;
 
     const res = await fetch(url, {

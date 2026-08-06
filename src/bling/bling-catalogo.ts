@@ -110,6 +110,32 @@ export function fotosDoProduto(detalhe: any): string[] {
 }
 
 /**
+ * Escala achada no título do produto.
+ *
+ * O Bling não tem campo de escala, então até agora ela vinha do padrão do lote,
+ * igual para todos. Isso quebra em catálogo misto: lojista com 1:64 e 1:18 no
+ * mesmo lote ou importa em dois lotes ou marca tudo errado.
+ *
+ * O título quase sempre diz. Medido em 06/08/2026 nos 100 primeiros produtos de
+ * cada loja conectada: 76% na Escala Miniaturas ("Miniatura - 1:64 - 2016
+ * Camaro") e 2% na MF Minis, que usa outro padrão de nome. Onde não achar, o
+ * padrão do lote continua valendo.
+ *
+ * Denominadores restritos à lista canônica de propósito: `1:5` num título não é
+ * escala de miniatura, e aceitar qualquer número encheria o campo de lixo.
+ */
+const DENOMINADORES = [12, 18, 24, 32, 41, 43, 64];
+
+export function escalaNoTitulo(titulo: string | null | undefined): string | null {
+  const texto = String(titulo ?? '');
+  // Aceita "1:64", "1/64", "1-64" e com espaço no meio, que aparecem no mundo real.
+  const achado = texto.match(/\b1\s*[:/-]\s*(\d{1,3})\b/);
+  if (!achado) return null;
+  const n = Number(achado[1]);
+  return DENOMINADORES.includes(n) ? `1:${n}` : null;
+}
+
+/**
  * Peso do pacote em gramas.
  *
  * Prefere o peso BRUTO: é o do produto embalado, que é o que os Correios pesam.
@@ -207,7 +233,10 @@ export function produtoParaLinha(
     price: preco === null ? '' : String(preco),
     images: fotosDoProduto(detalhe).join(','),
     brand: String(detalhe?.marca ?? '').trim(),
-    scale: '',
+    // Deduzida do título quando dá. O padrão do lote (mais abaixo) só preenche
+    // o que ficou vazio, então catálogo misto sai com a escala certa em cada
+    // produto em vez de tudo com a mesma.
+    scale: escalaNoTitulo(detalhe?.nome) ?? '',
     jogo: '',
     line: '',
     personagem: '',
