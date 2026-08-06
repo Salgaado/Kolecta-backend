@@ -36,6 +36,30 @@ export class BlingService {
       throw new BadRequestException('Bling não configurado no servidor.');
     }
 
+    // Endereço de volta apontando para a máquina de alguém é o erro mais fácil
+    // de cometer aqui e o mais difícil de perceber: o lojista clica, é levado
+    // ao Bling, autoriza, e o navegador DELE tenta voltar para um localhost que
+    // não existe. Do lado da Kolecta não chega nada, nenhum log, nenhuma linha
+    // no banco. O sintoma é "ninguém conectou", que é igualzinho a "ninguém
+    // tentou".
+    //
+    // Falhar aqui, alto e cedo, é melhor: o lojista vê que a integração está
+    // mal configurada em vez de sumir no meio do caminho.
+    if (
+      process.env.NODE_ENV === 'production' &&
+      /localhost|127\.0\.0\.1|:\d{4,5}\/|^http:/i.test(redirectUri)
+    ) {
+      this.logger.error(
+        `BLING_REDIRECT_URI inválido em produção: "${redirectUri}". ` +
+          'Deve ser a URL pública HTTPS do backend e bater exatamente com o ' +
+          'Link de redirecionamento cadastrado no app do Bling.',
+      );
+      throw new BadRequestException(
+        'A integração com o Bling está mal configurada no servidor. ' +
+          'Avise a equipe da Kolecta.',
+      );
+    }
+
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: clientId,

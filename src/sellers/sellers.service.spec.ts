@@ -36,6 +36,11 @@ describe('SellersService.getSellerListings', () => {
         return this;
       }),
       where: jest.fn().mockReturnThis(),
+      // A vitrine passou a ser ordenada pelo vendedor (coluna `position`) e a
+      // consulta ganhou um `.orderBy()`. O dublê não tinha o método, e os
+      // quatro testes morriam com "orderBy is not a function", que parece falha
+      // do recurso novo e era só o mock desatualizado.
+      orderBy: jest.fn().mockReturnThis(),
       offset: jest.fn().mockResolvedValue(rows),
       limit: jest.fn().mockReturnThis(),
       get: jest.fn().mockResolvedValue({ count: rows.length }),
