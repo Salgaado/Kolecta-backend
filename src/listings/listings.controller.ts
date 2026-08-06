@@ -25,6 +25,7 @@ import {
   ReorderListingsDto,
 } from './dto/listing.dto';
 import { ColocarEmLeilaoDto } from './dto/colocar-em-leilao.dto';
+import { CompletarEmLoteDto } from './dto/completar-em-lote.dto';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -207,6 +208,29 @@ export class ListingsController {
     const sellerId = (req as any).auth.userId as string;
     const listing = await this.listingsService.create(sellerId, dto);
     return { data: listing };
+  }
+
+  // ── PATCH /api/listings/completar — preencher campos em massa ──────────
+  //
+  // ANTES de `:id` de propósito: a rota com parâmetro casaria "completar" como
+  // se fosse um id de anúncio, e o vendedor levaria um 404 sem explicação.
+  //
+  // Nasceu da importação do Bling: o ERP entrega o suficiente para publicar,
+  // mas linha, ano e edição ficam vazios, e são eles que alimentam a busca.
+
+  @Patch('completar')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  async completar(@Req() req: Request, @Body() dto: CompletarEmLoteDto) {
+    const sellerId = (req as any).auth.userId as string;
+    return {
+      data: await this.listingsService.completarEmLote(
+        sellerId,
+        dto.ids,
+        dto.valores,
+        dto.sobrescrever ?? false,
+      ),
+    };
   }
 
   // ── PATCH /api/listings/:id — Editar anúncio ───────────────────────────

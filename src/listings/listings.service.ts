@@ -32,6 +32,7 @@ import {
   normalizarConfig,
   type ConfigLeilao,
 } from './colocar-em-leilao';
+import { montarPatch } from './completar-em-lote';
 import {
   isInstructionRow,
   validateImportRow,
@@ -473,6 +474,66 @@ export class ListingsService {
     return this.findById(id);
   }
 
+  // ── Completar em massa ─────────────────────────────────────────────────────
+
+  /**
+   * Preenche campos vazios de vários anúncios de uma vez.
+   *
+   * Nasceu da importação do Bling: o ERP entrega o suficiente para publicar,
+   * mas linha, ano e edição ficam vazios, e são eles que alimentam a busca e os
+   * filtros da vitrine. O anúncio entra no ar e some da navegação. Editar cem,
+   * um por um, não é opção para quem acabou de importar.
+   *
+   * Só mexe em anúncio DO VENDEDOR, e preenche o que está vazio sem sobrescrever
+   * (ver `completar-em-lote.ts`). Anúncio já completo não gasta UPDATE.
+   */
+  async completarEmLote(
+    sellerId: string,
+    ids: string[],
+    valores: Record<string, string>,
+    sobrescrever = false,
+  ) {
+    const unicos = [...new Set((ids ?? []).filter(Boolean))];
+    if (unicos.length === 0) {
+      throw new BadRequestException('Escolha pelo menos um anúncio.');
+    }
+    if (Object.values(valores ?? {}).every((v) => !String(v ?? '').trim())) {
+      throw new BadRequestException('Preencha ao menos um campo.');
+    }
+
+    const anuncios = await this.db
+      .select()
+      .from(schema.listings)
+      .where(
+        and(
+          eq(schema.listings.sellerId, sellerId),
+          inArray(schema.listings.id, unicos),
+        ),
+      );
+
+    let alterados = 0;
+    for (const anuncio of anuncios) {
+      const patch = montarPatch(anuncio as any, valores, sobrescrever);
+      if (!patch) continue;
+
+      await this.db
+        .update(schema.listings)
+        .set({
+          ...patch.colunas,
+          ...(patch.attributes ? { attributes: patch.attributes } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.listings.id, anuncio.id));
+      alterados++;
+    }
+
+    this.logger.log(
+      `[completarEmLote] ${alterados} de ${anuncios.length} anúncio(s) alterados (vendedor ${sellerId}).`,
+    );
+    // `encontrados` menor que `pedidos` significa que veio id que não é dele.
+    // A tela mostra a diferença em vez de fingir que tudo deu certo.
+    return { pedidos: unicos.length, encontrados: anuncios.length, alterados };
+  }
 
   // ── Colocar em leilão ──────────────────────────────────────────────────────
 
