@@ -8,6 +8,7 @@ import { produtoParaLinha } from './bling-catalogo';
 import {
   validateImportRow,
   mapImportRow,
+  parsePhotos,
   CATEGORY_SLUGS,
   CONDITION_VALUES,
 } from '../listings/import-rules';
@@ -33,12 +34,19 @@ export class BlingImportService {
   /**
    * Teto por chamada.
    *
-   * Cada produto custa uma requisição de detalhe ao Bling, e a API deles aceita
-   * 3 por segundo. 30 produtos levam uns 12 segundos, que cabe numa requisição
-   * HTTP sem estourar timeout. Lote maior precisaria de job em segundo plano,
-   * e a tela pagina de 30 em 30 sem que o lojista perceba.
+   * Era 30, calculado só sobre o custo de ler o detalhe no Bling (3 requisições
+   * por segundo). A conta ignorava a parte cara: importar TAMBÉM baixa cada
+   * foto da S3 do Bling e sobe para o nosso R2.
+   *
+   * Medido em produção com produto real de 5 fotos: 3,2s por produto com as
+   * cópias em paralelo (eram 8,3s em série). Trinta produtos dariam uns 96
+   * segundos e o Render corta requisição longa, deixando o lojista sem resposta
+   * e sem saber o que foi criado.
+   *
+   * 15 dá uns 48 segundos, que cabe. A tela pagina sem o lojista perceber, e
+   * lote maior de verdade pede job em segundo plano.
    */
-  static readonly MAX_POR_LOTE = 30;
+  static readonly MAX_POR_LOTE = 15;
 
   /** Intervalo entre chamadas ao Bling. 350ms deixa folga sob o teto de 3/s. */
   private static readonly INTERVALO_MS = 350;
@@ -126,11 +134,26 @@ export class BlingImportService {
       // descobriria pela vitrine. Então o arquivo é copiado para o nosso R2
       // AQUI, na hora de criar, e não na conferência: conferir 200 produtos não
       // pode significar baixar 200 imagens que talvez ninguém importe.
-      const fotosNossas: string[] = [];
-      for (const url of JSON.parse(item.linha.images || '[]') as string[]) {
-        const nossa = await this.media.copiarDeUrl(url, userId);
-        if (nossa) fotosNossas.push(nossa);
-      }
+      // `linha.images` é CSV, no formato da planilha. Quem transforma em JSON é
+      // o `mapImportRow`, mais abaixo. Eu já chamei `JSON.parse` aqui e o
+      // primeiro import de verdade morreu com 500: os 21 testes de unidade
+      // passavam porque nenhum exercitava este caminho com dado real.
+      //
+      // Em paralelo, e não uma de cada vez: uma medição real deu 8,3s para um
+      // produto de 5 fotos em série, o que daria 4 minutos num lote de 30 e
+      // estouraria o tempo da requisição. Aqui não há limite de taxa a
+      // respeitar (o Bling já entregou as URLs; o resto é a S3 deles e o nosso
+      // R2), diferente das chamadas à API deles, que continuam espaçadas.
+      //
+      // `filter(Boolean)` preserva a ORDEM: a primeira foto é a capa do
+      // anúncio, e embaralhar trocaria a capa por uma foto de detalhe.
+      const fotosNossas = (
+        await Promise.all(
+          parsePhotos(item.linha.images).map((url) =>
+            this.media.copiarDeUrl(url, userId),
+          ),
+        )
+      ).filter((u): u is string => !!u);
 
       if (fotosNossas.length === 0) {
         // Passou na conferência (o Bling dizia ter foto) e na hora de copiar
