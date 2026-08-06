@@ -35,20 +35,51 @@ export class BankAccountDto {
   @Matches(/^\d{3}$/, { message: 'bank deve ter 3 dígitos' })
   bank: string;
 
-  @IsString()
-  @IsNotEmpty()
+  // ── Conta e agência ────────────────────────────────────────────────────────
+  //
+  // Os limites abaixo foram MEDIDOS contra a API da Pagar.me em 06/08/2026, um
+  // campo por vez, e não deduzidos da documentação.
+  //
+  // Sem eles o valor torto atravessava a plataforma inteira e o vendedor levava
+  // o erro cru da Pagar.me, em inglês, citando um campo (`branch_check_digit`)
+  // que não existe na tela dele. Aconteceu: alguém digitou 9 caracteres no
+  // dígito da agência e recebeu "The field branch_check_digit must be a string
+  // with a maximum length of 8".
+  //
+  // Pior: entre 2 e 8 caracteres a Pagar.me nem devolve esse 422 — devolve um
+  // 412 "invalid_parameter | agencia_dv | Invalid format", igualmente opaco. Ou
+  // seja, o campo tinha DOIS jeitos diferentes de falhar sem explicar nada.
+  //
+  // Letra é aceita de propósito nos dígitos: o Banco do Brasil usa "X", e uma
+  // regex só de `\d` barraria esses vendedores. Confirmado que a Pagar.me
+  // aceita (recebedor criado, status active).
+
+  // Agência: até 4 dígitos. 5 já devolve "agencia | Value too long".
+  @Matches(/^\d{1,4}$/, {
+    message: 'A agência deve ter até 4 números, sem o dígito.',
+  })
   branchNumber: string;
 
+  // Dígito da agência: exatamente 1 caractere. É OPCIONAL, e vazio funciona —
+  // quem não tem dígito não precisa inventar nenhum.
   @IsOptional()
-  @IsString()
+  @Matches(/^[0-9A-Za-z]$/, {
+    message:
+      'O dígito da agência é um caractere só (ex.: 5 ou X). ' +
+      'Se a sua agência não tem dígito, deixe em branco.',
+  })
   branchCheckDigit?: string;
 
-  @IsString()
-  @IsNotEmpty()
+  // Conta: até 13 dígitos. 14 devolve "conta | Value too long".
+  @Matches(/^\d{1,13}$/, {
+    message: 'A conta deve ter até 13 números, sem o dígito.',
+  })
   accountNumber: string;
 
-  @IsString()
-  @IsNotEmpty()
+  // Dígito da conta: 1 ou 2 caracteres. 3 devolve "conta_dv | Value too long".
+  @Matches(/^[0-9A-Za-z]{1,2}$/, {
+    message: 'O dígito da conta tem 1 ou 2 caracteres (ex.: 6, 12 ou X).',
+  })
   accountCheckDigit: string;
 
   // Conta corrente ou poupança
