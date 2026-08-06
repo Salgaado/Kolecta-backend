@@ -11,6 +11,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AdminController } from '../src/admin/admin.controller';
 import { AdminService } from '../src/admin/admin.service';
+import { BroadcastService } from '../src/notifications/broadcast.service';
 import { AuthGuard } from '../src/auth/auth.guard';
 import { RolesGuard } from '../src/auth/roles.guard';
 
@@ -96,6 +97,21 @@ const mockAdminService = {
   updateListingStatus: jest.fn().mockResolvedValue({}),
 };
 
+// ── BroadcastService mock ─────────────────────────────────────────────────────
+//
+// Dispara e-mail para a base inteira (POST /api/admin/broadcast). Aqui é mock
+// por segurança, não só por isolamento: o serviço de verdade lê a audiência do
+// banco e chama o provedor de e-mail.
+const mockBroadcastService = {
+  enviar: jest.fn().mockResolvedValue({
+    campanha: 'teste',
+    ensaio: true,
+    total: 0,
+    enviados: 0,
+    falhas: 0,
+  }),
+};
+
 // ── Suite ─────────────────────────────────────────────────────────────────────
 
 describe('AdminController (e2e)', () => {
@@ -108,6 +124,7 @@ describe('AdminController (e2e)', () => {
       controllers: [AdminController],
       providers: [
         { provide: AdminService, useValue: mockAdminService },
+        { provide: BroadcastService, useValue: mockBroadcastService },
       ],
     })
       .overrideGuard(AuthGuard)

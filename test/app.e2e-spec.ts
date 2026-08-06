@@ -16,6 +16,13 @@ describe('AppController (e2e)', () => {
     await app.init();
   });
 
+  // Sem isto o Jest avisa que o worker não saiu sozinho e força a saída: o
+  // `init()` sobe o AppModule de verdade, e o ScheduleModule registra timers que
+  // seguram o processo. `close()` derruba os timers junto com o app.
+  afterEach(async () => {
+    if (app) await app.close();
+  });
+
   it('/ (GET)', () => {
     return request(app.getHttpServer())
       .get('/')
