@@ -15,6 +15,7 @@ import {
 import type { Request, Response } from 'express';
 import { BlingService } from './bling.service';
 import { BlingImportService } from './bling-import.service';
+import { BlingEstoqueService } from './bling-estoque.service';
 import { ImportarBlingDto } from './dto/bling.dto';
 import { AuthGuard } from '../auth/auth.guard';
 
@@ -25,6 +26,7 @@ export class BlingController {
   constructor(
     private readonly blingService: BlingService,
     private readonly importService: BlingImportService,
+    private readonly estoqueService: BlingEstoqueService,
   ) {}
 
   // ── GET /api/bling/status — status da conexão do seller ──────────────────────
@@ -125,6 +127,20 @@ export class BlingController {
         atributos: dto.atributos,
       }),
     };
+  }
+
+  // ── POST /api/bling/estoque/sincronizar: puxa o saldo do ERP agora ───────────
+  //
+  // O cron já roda de meia em meia hora. Este endpoint existe para o lojista que
+  // acabou de mexer no estoque e quer ver a vitrine acertada agora, sem esperar
+  // a próxima rodada e sem ficar na dúvida se a integração está viva.
+
+  @Post('estoque/sincronizar')
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async sincronizarEstoque(@Req() req: Request) {
+    const userId = (req as any).auth.userId as string;
+    return { data: await this.estoqueService.sincronizar(userId) };
   }
 
   // ── DELETE /api/bling/disconnect — remove a conexão ──────────────────────────

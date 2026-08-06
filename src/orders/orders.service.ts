@@ -1580,7 +1580,7 @@ export class OrdersService {
     if (restante <= 0) {
       await tx
         .update(schema.listings)
-        .set({ status: 'paused', updatedAt: new Date() })
+        .set({ status: 'paused', pausedByStock: true, updatedAt: new Date() })
         .where(eq(schema.listings.id, listingId));
       this.logger.log(
         `📦 Anúncio ${listingId} zerou o estoque — pausado até o vendedor repor.`,

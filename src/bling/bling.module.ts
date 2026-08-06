@@ -3,6 +3,7 @@ import { BlingService } from './bling.service';
 import { BlingImportService } from './bling-import.service';
 import { BlingController } from './bling.controller';
 import { BlingSyncService } from './bling-sync.service';
+import { BlingEstoqueService } from './bling-estoque.service';
 import { DatabaseModule } from '../database/database.module';
 import { AuthModule } from '../auth/auth.module';
 import { MediaModule } from '../media/media.module';
@@ -10,7 +11,12 @@ import { MediaModule } from '../media/media.module';
 @Module({
   imports: [DatabaseModule, AuthModule, MediaModule],
   controllers: [BlingController],
-  providers: [BlingService, BlingImportService, BlingSyncService],
+  providers: [
+    BlingService,
+    BlingImportService,
+    BlingSyncService,
+    BlingEstoqueService,
+  ],
   exports: [BlingService],
 })
 export class BlingModule {}

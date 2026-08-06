@@ -918,6 +918,13 @@ export class ListingsService {
           missing,
         });
       }
+      // Reativar na mão devolve a decisão ao vendedor: a marca de "foi o estoque
+      // que pausou" cai, senão a próxima rodada de sincronização com o Bling o
+      // pausaria de novo por conta de um saldo que ele já resolveu no ERP.
+      await this.db
+        .update(schema.listings)
+        .set({ pausedByStock: false })
+        .where(eq(schema.listings.id, id));
       return this.updateStatus(id, 'active');
     }
 
@@ -1017,9 +1024,13 @@ export class ListingsService {
 
     const newStatus = listing.status === 'paused' ? 'active' : 'paused';
 
+    // Pausar ou reativar na mão é o vendedor tomando a decisão de volta, então a
+    // marca de "quem pausou foi o estoque" cai nos dois sentidos. Sem isso,
+    // reativar um anúncio zerado deixaria a marca acesa e a rodada seguinte de
+    // sincronização o pausaria de novo, sem o vendedor entender por quê.
     await this.db
       .update(schema.listings)
-      .set({ status: newStatus, updatedAt: new Date() })
+      .set({ status: newStatus, pausedByStock: false, updatedAt: new Date() })
       .where(eq(schema.listings.id, id));
 
     this.logger.log(`[togglePause] Anúncio ${id}: ${listing.status} → ${newStatus}`);

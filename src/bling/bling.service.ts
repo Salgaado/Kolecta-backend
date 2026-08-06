@@ -7,7 +7,7 @@ import {
   BadGatewayException,
 } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { normalizarProduto } from './bling-catalogo';
@@ -210,10 +210,25 @@ export class BlingService {
       .from(schema.blingConnections)
       .where(eq(schema.blingConnections.userId, userId));
 
-    if (!conn) return { connected: false };
+    if (!conn) return { connected: false, anunciosVinculados: 0 };
 
     const expired = Math.floor(Date.now() / 1000) >= conn.expiresAt;
-    return { connected: true, expired };
+
+    // Quantos anúncios seguem o estoque deste Bling. É o número que responde a
+    // pergunta que o lojista faz olhando a tela: "conectado, tá, mas está
+    // fazendo alguma coisa?". Zero conectado significa que ele ainda não
+    // importou nada, que é bem diferente de integração quebrada.
+    const vinculados = await this.db
+      .select({ id: schema.listings.id })
+      .from(schema.listings)
+      .where(
+        and(
+          eq(schema.listings.sellerId, userId),
+          isNotNull(schema.listings.blingProductId),
+        ),
+      );
+
+    return { connected: true, expired, anunciosVinculados: vinculados.length };
   }
 
   // ── Desconectar ──────────────────────────────────────────────────────────────

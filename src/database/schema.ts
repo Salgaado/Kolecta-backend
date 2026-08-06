@@ -284,6 +284,13 @@ export const listings = sqliteTable('listings', {
   // backend descartava — o valor sumia e o estoque não aparecia em lugar
   // nenhum. null = não informado (o MVP vende 1 unidade por anúncio).
   stock: integer('stock'),
+  // Este anúncio foi pausado por FALTA DE ESTOQUE, e não pela mão do vendedor.
+  //
+  // Sem essa distinção não dá para repor: `paused` sozinho não diz se o anúncio
+  // saiu do ar porque zerou ou porque o vendedor tirou de propósito. Quem
+  // sincroniza com o Bling precisa saber, senão o ERP republicaria justamente o
+  // que ele decidiu esconder da vitrine.
+  pausedByStock: integer('paused_by_stock', { mode: 'boolean' }).default(false),
 
   // draft | pending_review | active | sold | cancelled | pending_payment
   status: text('status').notNull().default('draft'),
