@@ -1,0 +1,79 @@
+# CI + CD do backend.
+#
+# Existe porque em 06/08/2026 um modulo sem o import do AuthModule foi para
+# producao e derrubou a API inteira no boot. Nada verificava se o app sequer
+# inicia: o Render so roda `build`, e `build` compila TypeScript sem montar o
+# grafo de injecao do Nest. O teste que pega isso e o `src/app.module.spec.ts`,
+# e ele so vale se alguem rodar.
+#
+# O gate e `build` + `test:all` (unitarios + e2e). Lint FICA DE FORA de
+# proposito: hoje sao ~3900 erros acumulados, entao gatear nele deixaria o CI
+# vermelho para sempre e ensinaria todo mundo a ignorar o sinal. Quando a divida
+# for paga, e so acrescentar um passo aqui.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Push novo na mesma branch cancela a rodada anterior: o que importa e o estado
+# final, e cancelar libera runner em vez de enfileirar build obsoleto.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build + testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # `ci` e nao `install`: instala exatamente o package-lock e falha se ele
+      # estiver fora de sincronia com o package.json.
+      - run: npm ci
+
+      - run: npm run build
+
+      # Nao ha `.env` no runner, e e assim que tem que ser: nenhuma credencial
+      # real entra aqui. O `test/setup-env.ts` preenche chaves de facada para o
+      # e2e, e os unitarios ja nao dependiam de ambiente. Conferido rodando a
+      # suite local com o .env escondido: 547/547 e 23/23.
+      - run: npm run test:all
+
+  deploy:
+    name: deploy no Render
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      # O deploy so acontece com os testes verdes, que e o ponto de existir CD
+      # aqui: antes o Render escutava o push direto do GitHub e subia qualquer
+      # coisa. Para isto valer, o auto-deploy PRECISA estar desligado no painel
+      # do Render — se continuar ligado, ele deploya em paralelo e o gate vira
+      # enfeite. Ver .github/workflows/README.md.
+      - name: Dispara o deploy
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::warning::RENDER_DEPLOY_HOOK_URL nao configurado — deploy nao disparado."
+            echo "Configure o segredo e desligue o auto-deploy no Render."
+            echo "Passo a passo: .github/workflows/README.md"
+            exit 0
+          fi
+          codigo=$(curl -sS -X POST -o resposta.txt -w '%{http_code}' "$HOOK")
+          echo "Render respondeu HTTP $codigo"
+          cat resposta.txt
+          # 2xx = aceitou. Qualquer outra coisa e falha de verdade: sem isto, um
+          # hook revogado passaria despercebido e a main ficaria sem deploy.
+          case "$codigo" in
+            2*) echo "Deploy disparado." ;;
+            *) echo "::error::Render recusou o disparo (HTTP $codigo)."; exit 1 ;;
+          esac
