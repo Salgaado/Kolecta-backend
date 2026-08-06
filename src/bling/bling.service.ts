@@ -263,23 +263,81 @@ export class BlingService {
     const clientSecret = process.env.BLING_CLIENT_SECRET!;
     const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
-    const res = await fetch(BLING_TOKEN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: `Basic ${credentials}`,
-      },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-      }).toString(),
-    });
+    let res: Response;
+    try {
+      res = await fetch(BLING_TOKEN_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: `Basic ${credentials}`,
+        },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: refreshToken,
+        }).toString(),
+      });
+    } catch (err: any) {
+      // Falha de REDE é transitória por definição. Desconectar aqui obrigaria o
+      // lojista a reconectar por um soluço do Bling que já passou. Mantém a
+      // conexão e deixa o próximo ciclo tentar de novo.
+      this.logger.warn(
+        `Rede falhou ao renovar token Bling (userId=${userId}): ${err?.message ?? err}. Conexão mantida.`,
+      );
+      throw new BadGatewayException(
+        'Não foi possível falar com o Bling agora. Sua conexão foi mantida, tente de novo em instantes.',
+      );
+    }
 
     if (!res.ok) {
-      this.logger.error(`Falha ao renovar token Bling para userId=${userId}`);
-      // Remove a conexão inválida
+      const corpo: any = await res.json().catch(() => ({}));
+      const motivo = String(corpo?.error ?? corpo?.error_description ?? '');
+
+      // SÓ desconecta quando o refresh token foi de fato revogado ou já usado:
+      // o Bling responde 400 com `invalid_grant`. Aí reconectar é o unico
+      // caminho e insistir com o mesmo token nunca resolveria.
+      const definitivo = res.status === 400 && /invalid_grant/i.test(motivo);
+
+      if (!definitivo) {
+        // 5xx, 429, invalid_client e afins: problema do lado do Bling ou config
+        // do servidor. Em nenhum deles desconectar o lojista ajuda, ou o
+        // problema passa sozinho, ou quem precisa agir e a Kolecta.
+        this.logger.error(
+          `Falha transitória ao renovar token Bling (userId=${userId}, HTTP ${res.status}, ${motivo}). Conexão mantida.`,
+        );
+        throw new BadGatewayException(
+          'O Bling não respondeu agora. Sua conexão foi mantida, tente de novo em instantes.',
+        );
+      }
+
+      // Antes de desconectar, confere se OUTRO processo já renovou no meio do
+      // caminho. O refresh token do Bling e de uso único: se o cron renovou
+      // entre a nossa leitura e agora, o token que usamos ficou velho e este
+      // `invalid_grant` e falso alarme. Foi essa corrida (renovar sem que a
+      // outra ponta soubesse) que derrubou uma conexão real durante um teste.
+      const [atual] = await this.db
+        .select()
+        .from(schema.blingConnections)
+        .where(eq(schema.blingConnections.userId, userId));
+
+      if (atual && atual.refreshToken !== refreshToken) {
+        this.logger.log(
+          `Refresh do Bling ja renovado por outro processo (userId=${userId}); usando o token atual.`,
+        );
+        const agora = Math.floor(Date.now() / 1000);
+        if (agora < atual.expiresAt - 60) return atual.accessToken;
+        // O token novo tambem ja venceu: uma tentativa com ele. Se falhar de
+        // novo com invalid_grant, a comparacao acima nao muda e a proxima
+        // passada desconecta, sem laco infinito.
+        return this.refreshToken(userId, atual.refreshToken);
+      }
+
+      this.logger.warn(
+        `Refresh token do Bling invalido (userId=${userId}, ${motivo}). Desconectando.`,
+      );
       await this.disconnect(userId);
-      throw new BadRequestException('Token Bling expirado. Reconecte sua conta.');
+      throw new BadRequestException(
+        'Sua conexão com o Bling expirou. Reconecte sua conta.',
+      );
     }
 
     const data: any = await res.json();
