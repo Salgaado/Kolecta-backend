@@ -75,9 +75,25 @@ export function normalizarProduto(p: any): ProdutoBling {
  */
 export function fotosDoProduto(detalhe: any): string[] {
   const brutas = [
+    // `imagemURL` só existe na LISTAGEM, não no detalhe. Fica aqui porque quem
+    // chama pode repassá-lo, e porque ignorá-lo custou caro: eu lia fotos só do
+    // detalhe e o resultado era zero foto em produto que claramente tinha.
     detalhe?.imagemURL,
     ...(Array.isArray(detalhe?.midia?.imagens?.externas)
       ? detalhe.midia.imagens.externas.map((i: any) => i?.link)
+      : []),
+    // As INTERNAS são as fotos que o lojista subiu dentro do Bling, e nas duas
+    // lojas conectadas em 06/08/2026 elas eram as ÚNICAS: `externas` vinha
+    // vazio nos dois. Eu as descartava de propósito, achando que só havia
+    // miniatura, e com isso zerava as fotos de todo mundo.
+    //
+    // Uso `link` (a imagem cheia, ~1 MB) e não `linkMiniatura` (3 KB).
+    //
+    // ATENÇÃO: esta URL é ASSINADA e expira em 7 dias. Ela serve para CONTAR e
+    // para BAIXAR na hora da importação, nunca para guardar no anúncio. Quem
+    // importa copia o arquivo para o nosso R2 (ver MediaService.copiarDeUrl).
+    ...(Array.isArray(detalhe?.midia?.imagens?.internas)
+      ? detalhe.midia.imagens.internas.map((i: any) => i?.link)
       : []),
   ];
   const vistas = new Set<string>();
@@ -164,13 +180,26 @@ function limparHtml(raw: unknown): string {
  */
 export function produtoParaLinha(
   detalhe: any,
-  escolhas: { categoria: string; condicao: string },
+  escolhas: {
+    categoria: string;
+    condicao: string;
+    /**
+     * Campos que a categoria exige e o ERP não guarda, escolhidos pelo lojista
+     * para o lote inteiro. Escala é o caso que trava tudo: o Bling não tem esse
+     * conceito, e sem ela NENHUM produto de miniaturas passa na validação.
+     *
+     * Funciona como preenchimento, não como sobrescrita: o que veio do produto
+     * (marca, por exemplo) continua ganhando. Sobrescrever apagaria dado bom do
+     * ERP em nome de uma escolha feita para o lote.
+     */
+    atributos?: Record<string, string>;
+  },
 ): Record<string, string> {
   const dim = dimensoesEmCm(detalhe);
   const peso = pesoEmGramas(detalhe);
   const preco = numeroPositivo(detalhe?.preco);
 
-  return {
+  const linha: Record<string, string> = {
     title: String(detalhe?.nome ?? '').trim(),
     category: escolhas.categoria,
     condition: escolhas.condicao,
@@ -194,8 +223,19 @@ export function produtoParaLinha(
     // Fora do modelo da planilha: o EAN. A esteira de KPV da Kolecta casa por
     // GTIN, então produto que vem com ele entra identificado de verdade, e não
     // só por semelhança de nome.
+    //
+    // Nas duas lojas conectadas em 06/08/2026 este campo veio VAZIO em todos os
+    // produtos, então o ganho é real mas não é garantido.
     gtin: String(detalhe?.gtin ?? '').trim(),
   };
+
+  // Preenche o que o ERP não tem, sem apagar o que ele tem.
+  for (const [chave, valor] of Object.entries(escolhas.atributos ?? {})) {
+    const texto = String(valor ?? '').trim();
+    if (texto && !linha[chave]) linha[chave] = texto;
+  }
+
+  return linha;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

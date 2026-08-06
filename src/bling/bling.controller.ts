@@ -107,6 +107,7 @@ export class BlingController {
       data: await this.importService.conferir(userId, dto.ids, {
         categoria: dto.categoria,
         condicao: dto.condicao,
+        atributos: dto.atributos,
       }),
     };
   }
@@ -121,6 +122,7 @@ export class BlingController {
       data: await this.importService.importar(userId, dto.ids, {
         categoria: dto.categoria,
         condicao: dto.condicao,
+        atributos: dto.atributos,
       }),
     };
   }

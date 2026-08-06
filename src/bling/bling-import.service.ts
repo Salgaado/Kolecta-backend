@@ -3,6 +3,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { BlingService } from './bling.service';
+import { MediaService } from '../media/media.service';
 import { produtoParaLinha } from './bling-catalogo';
 import {
   validateImportRow,
@@ -44,6 +45,7 @@ export class BlingImportService {
 
   constructor(
     private readonly bling: BlingService,
+    private readonly media: MediaService,
     @Inject(DATABASE_CONNECTION) private readonly db: any,
   ) {}
 
@@ -57,7 +59,11 @@ export class BlingImportService {
   async conferir(
     userId: string,
     ids: number[],
-    escolhas: { categoria: string; condicao: string },
+    escolhas: {
+      categoria: string;
+      condicao: string;
+      atributos?: Record<string, string>;
+    },
   ) {
     const { itens } = await this.avaliar(userId, ids, escolhas);
     return {
@@ -86,7 +92,11 @@ export class BlingImportService {
   async importar(
     userId: string,
     ids: number[],
-    escolhas: { categoria: string; condicao: string },
+    escolhas: {
+      categoria: string;
+      condicao: string;
+      atributos?: Record<string, string>;
+    },
   ) {
     const { itens, categoriaId } = await this.avaliar(userId, ids, escolhas);
 
@@ -111,7 +121,30 @@ export class BlingImportService {
         continue;
       }
 
-      const m = mapImportRow(item.linha);
+      // As fotos do Bling vêm em URL ASSINADA que expira em 7 dias. Guardar o
+      // link faria toda foto importada morrer na semana seguinte, e o vendedor
+      // descobriria pela vitrine. Então o arquivo é copiado para o nosso R2
+      // AQUI, na hora de criar, e não na conferência: conferir 200 produtos não
+      // pode significar baixar 200 imagens que talvez ninguém importe.
+      const fotosNossas: string[] = [];
+      for (const url of JSON.parse(item.linha.images || '[]') as string[]) {
+        const nossa = await this.media.copiarDeUrl(url, userId);
+        if (nossa) fotosNossas.push(nossa);
+      }
+
+      if (fotosNossas.length === 0) {
+        // Passou na conferência (o Bling dizia ter foto) e na hora de copiar
+        // não veio nenhuma. Criar o anúncio sem foto seria pior: ele nasceria
+        // travado na análise e o vendedor não saberia por quê.
+        recusados.push({
+          blingProductId: item.blingProductId,
+          titulo: item.titulo,
+          motivos: ['Não consegui copiar as fotos do Bling. Tente de novo em instantes.'],
+        });
+        continue;
+      }
+
+      const m = { ...mapImportRow(item.linha), images: JSON.stringify(fotosNossas) };
       await this.db.insert(schema.listings).values({
         sellerId: userId,
         title: m.title,
@@ -169,7 +202,11 @@ export class BlingImportService {
   private async avaliar(
     userId: string,
     ids: number[],
-    escolhas: { categoria: string; condicao: string },
+    escolhas: {
+      categoria: string;
+      condicao: string;
+      atributos?: Record<string, string>;
+    },
   ) {
     const unicos = [...new Set((ids ?? []).map(Number).filter(Number.isFinite))];
     if (unicos.length === 0) {
