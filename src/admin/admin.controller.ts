@@ -42,6 +42,28 @@ export class AdminController {
     return { data: await this.adminService.getStats() };
   }
 
+  // ── GET /api/admin/orders — lista de pedidos (abrir a venda) ─────────────
+
+  @Get('orders')
+  async getOrders(
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.adminService.getOrders({
+      status: status?.trim() || undefined,
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+    });
+  }
+
+  // ── GET /api/admin/orders/:id — detalhe da venda (etiqueta/declaração) ───
+
+  @Get('orders/:id')
+  async getOrderDetail(@Param('id') id: string) {
+    return { data: await this.adminService.getOrderDetail(id) };
+  }
+
   // ── POST /api/admin/test-email ───────────────────────────────────────────
   // Valida a config de e-mail do ambiente sem esperar uma venda real.
   // Ex: { "to": "voce@exemplo.com" } → devolve sent | skipped | failed.

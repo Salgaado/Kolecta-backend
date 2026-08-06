@@ -860,4 +860,145 @@ export class AdminService {
   async grantFounder(userId: string, founderNumber: number) {
     return this.founderService.grantFounder(userId, founderNumber);
   }
+
+  // ── GET /api/admin/orders ────────────────────────────────────────────────
+  // Lista de pedidos para o admin abrir a venda como o vendedor abre. Traz TODO
+  // pedido (inclusive Pix gerado e não pago), com filtro opcional por status,
+  // para a equipe achar "os N pedidos" que o KPI conta sem caçar no banco.
+  async getOrders(opts: { status?: string; limit?: number; offset?: number }) {
+    const limit = Math.min(opts.limit ?? 50, 200);
+    const offset = opts.offset ?? 0;
+    const where = opts.status
+      ? eq(schema.orders.status, opts.status)
+      : undefined;
+
+    const rows = await this.db
+      .select({
+        id: schema.orders.id,
+        createdAt: schema.orders.createdAt,
+        total: schema.orders.totalInCents,
+        platformFeeInCents: schema.orders.platformFeeInCents,
+        shippingInCents: schema.orders.shippingInCents,
+        net: schema.orders.sellerNetInCents,
+        status: schema.orders.status,
+        paymentInstrument: schema.orders.paymentInstrument,
+        trackingCode: schema.orders.trackingCode,
+        shippingLabelStatus: schema.orders.shippingLabelStatus,
+        buyerName: schema.users.name,
+        sellerName: AdminService.sellerAlias.name,
+        productTitle: schema.listings.title,
+        listingId: schema.orders.listingId,
+      })
+      .from(schema.orders)
+      .leftJoin(schema.users, eq(schema.orders.buyerId, schema.users.id))
+      .leftJoin(
+        AdminService.sellerAlias,
+        eq(schema.orders.sellerId, AdminService.sellerAlias.id),
+      )
+      .leftJoin(schema.listings, eq(schema.orders.listingId, schema.listings.id))
+      .where(where)
+      .orderBy(desc(schema.orders.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const totalRow = await this.db
+      .select({ n: count() })
+      .from(schema.orders)
+      .where(where);
+    const total = Number(totalRow[0]?.n ?? 0);
+
+    return {
+      data: rows.map((r) => ({
+        id: r.id,
+        orderId: `#${r.id.slice(0, 8)}`,
+        date: r.createdAt,
+        buyer: r.buyerName ?? 'Comprador',
+        seller: r.sellerName ?? 'Vendedor',
+        product: r.productTitle ?? null,
+        listingId: r.listingId ?? null,
+        gross: (r.total ?? 0) / 100,
+        commission: comissaoEmCentavos(r) / 100,
+        net: r.net != null ? r.net / 100 : null,
+        status: r.status,
+        paymentInstrument: r.paymentInstrument ?? null,
+        trackingCode: r.trackingCode ?? null,
+        shippingLabelStatus: r.shippingLabelStatus ?? null,
+        // Já virou dinheiro? Separa venda de Pix gerado/abandonado.
+        isSale: (AdminService.SALE_STATUSES as readonly string[]).includes(r.status),
+      })),
+      total,
+      limit,
+      offset,
+    };
+  }
+
+  // ── GET /api/admin/orders/:id ────────────────────────────────────────────
+  // Detalhe da venda: comprador, vendedor, produto, endereço, valores separados
+  // (comissão vs frete), status, rastreio, e o status da etiqueta/declaração de
+  // conteúdo. Alimenta a tela em que o admin confere a venda sem depender do
+  // vendedor. A etiqueta em si baixa por /api/shipping/label/:id/pdf, que já
+  // aceita admin (exigirDonoOuAdmin).
+  async getOrderDetail(id: string) {
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, id))
+      .limit(1);
+    if (!order) throw new NotFoundException(`Pedido ${id} não encontrado.`);
+
+    const buscarUsuario = (uid: string | null) =>
+      uid
+        ? this.db
+            .select({
+              id: schema.users.id,
+              name: schema.users.name,
+              email: schema.users.email,
+            })
+            .from(schema.users)
+            .where(eq(schema.users.id, uid))
+            .limit(1)
+        : Promise.resolve([]);
+
+    const [buyerRows, sellerRows, listingRows, addressRows] = await Promise.all([
+      buscarUsuario(order.buyerId),
+      buscarUsuario(order.sellerId),
+      order.listingId
+        ? this.db
+            .select({
+              id: schema.listings.id,
+              title: schema.listings.title,
+              images: schema.listings.images,
+              type: schema.listings.type,
+            })
+            .from(schema.listings)
+            .where(eq(schema.listings.id, order.listingId))
+            .limit(1)
+        : Promise.resolve([]),
+      order.addressId
+        ? this.db
+            .select()
+            .from(schema.addresses)
+            .where(eq(schema.addresses.id, order.addressId))
+            .limit(1)
+        : Promise.resolve([]),
+    ]);
+
+    const listing = listingRows[0];
+    return {
+      ...order,
+      commissionInCents: comissaoEmCentavos(order),
+      freteInCents: freteEmCentavos(order),
+      buyer: buyerRows[0] ?? null,
+      seller: sellerRows[0] ?? null,
+      listing: listing
+        ? {
+            id: listing.id,
+            title: listing.title,
+            image: this.firstImage(listing.images ?? null),
+            type: listing.type,
+          }
+        : null,
+      address: addressRows[0] ?? null,
+    };
+  }
 }
