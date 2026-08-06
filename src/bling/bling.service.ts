@@ -16,7 +16,28 @@ type Database = any;
 
 const BLING_AUTH_URL = 'https://www.bling.com.br/Api/v3/oauth/authorize';
 const BLING_TOKEN_URL = 'https://www.bling.com.br/Api/v3/oauth/token';
-const BLING_API_URL = 'https://www.bling.com.br/Api/v3';
+/**
+ * Host dos DADOS. Diferente do host do OAuth acima, e não é detalhe.
+ *
+ * Era `www.bling.com.br/Api/v3` e o Bling respondia 403 em toda chamada:
+ *
+ *   "Tokens JWT só são permitidos quando a requisição passa pelo host
+ *    api.bling.com.br. Acesso direto não é permitido."
+ *
+ * O engano é fácil porque o OAuth (autorizar e trocar o code por token) fica
+ * mesmo em `www`, e funciona: duas lojas conectaram e apareceram como
+ * "Autenticado" no Bling e "Conectado" na Kolecta. Só que NENHUMA chamada de
+ * dado passava, então a integração parecia pronta e não fazia nada.
+ *
+ * Isso derrubava tudo que usa esta constante, e a sincronização de pedidos
+ * (contato + pedido de venda) engole o erro em log de propósito, para não
+ * derrubar uma venda já paga. Ou seja: ela também nunca funcionou, em silêncio,
+ * desde que foi escrita.
+ *
+ * Verificado com o token real de uma loja conectada em 06/08/2026: `www` e
+ * `bling.com.br` devolvem 403, `api.bling.com.br` devolve 200 com os produtos.
+ */
+const BLING_API_URL = 'https://api.bling.com.br/Api/v3';
 
 @Injectable()
 export class BlingService {

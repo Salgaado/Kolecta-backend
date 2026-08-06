@@ -25,11 +25,24 @@ export interface ProdutoBling {
   ativo: boolean;
 }
 
-/** Unidade de `dimensoes.unidadeMedida` no Bling. O padrão do cadastro é cm. */
+/**
+ * Fator de `dimensoes.unidadeMedida` para centímetros.
+ *
+ * Eu tinha mapeado `1` como METROS. Está errado, e o erro custava dinheiro: as
+ * medidas iam multiplicadas por 100 e o frete seria cotado sobre uma caixa cem
+ * vezes maior.
+ *
+ * O que os dados reais mostram (06/08/2026, duas lojas conectadas, 16 produtos
+ * conferidos): TODOS trazem `unidadeMedida: 1` com valores como 20x20x20 e
+ * 10x15x30 para miniatura 1:64. Em centímetros faz sentido para uma caixa de
+ * envio; em metros seria uma caixa de 20 metros.
+ *
+ * Só há evidência para o valor 1. Qualquer outro cai em centímetros também,
+ * que é o padrão do cadastro do Bling e o lado seguro: errar para menos numa
+ * unidade rara é melhor do que inflar cem vezes de novo.
+ */
 const UNIDADE_EM_CM: Readonly<Record<number, number>> = {
-  1: 100, // metros
-  2: 1, // centímetros
-  3: 0.1, // milímetros
+  1: 1, // centímetros (confirmado em produção)
 };
 
 export function normalizarProduto(p: any): ProdutoBling {

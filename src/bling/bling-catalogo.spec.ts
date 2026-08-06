@@ -63,15 +63,22 @@ describe('pesoEmGramas', () => {
 });
 
 describe('dimensoesEmCm', () => {
-  it('converte metros e milímetros para cm', () => {
-    expect(dimensoesEmCm({ dimensoes: { largura: 0.16, altura: 0.06, profundidade: 0.12, unidadeMedida: 1 } }))
-      .toEqual({ largura: 16, altura: 6, comprimento: 12 });
-    expect(dimensoesEmCm({ dimensoes: { largura: 160, altura: 60, profundidade: 120, unidadeMedida: 3 } }))
-      .toEqual({ largura: 16, altura: 6, comprimento: 12 });
+  it('unidadeMedida 1 é CENTÍMETRO, não metro', () => {
+    // Eu tinha mapeado 1 como metros, e o erro custava dinheiro: as medidas
+    // iriam multiplicadas por 100 e o frete seria cotado sobre uma caixa cem
+    // vezes maior. Os dados reais das duas lojas conectadas em 06/08/2026 são
+    // todos `unidadeMedida: 1`, com 20x20x20 e 10x15x30 para miniatura 1:64.
+    expect(dimensoesEmCm({ dimensoes: { largura: 20, altura: 20, profundidade: 20, unidadeMedida: 1 } }))
+      .toEqual({ largura: 20, altura: 20, comprimento: 20 });
+    expect(dimensoesEmCm({ dimensoes: { largura: 10, altura: 15, profundidade: 30, unidadeMedida: 1 } }))
+      .toEqual({ largura: 10, altura: 15, comprimento: 30 });
   });
 
-  it('unidade ausente é tratada como cm, que é o padrão do cadastro', () => {
+  it('unidade ausente ou desconhecida também é cm, que é o lado seguro', () => {
+    // Errar para menos numa unidade rara é melhor do que inflar cem vezes.
     expect(dimensoesEmCm({ dimensoes: { largura: 16, altura: 6, profundidade: 12 } }))
+      .toEqual({ largura: 16, altura: 6, comprimento: 12 });
+    expect(dimensoesEmCm({ dimensoes: { largura: 16, altura: 6, profundidade: 12, unidadeMedida: 9 } }))
       .toEqual({ largura: 16, altura: 6, comprimento: 12 });
   });
 });
