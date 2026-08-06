@@ -5,6 +5,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
+import { PDFDocument } from 'pdf-lib';
 import { ShippingService } from './shipping.service';
 import { GenerateLabelDto } from './dto/shipping.dto';
 
@@ -871,20 +872,47 @@ describe('ShippingService — telefone das pontas', () => {
 /**
  * Declaração de conteúdo (DC-e).
  *
- * O Melhor Envio SEMPRE devolveu os dois arquivos: `files["1"]` é a etiqueta e
- * `files.dace` é a declaração, com um `fullPdf` que traz as duas na mesma folha.
- * Conferido na produção em 05/08/2026 nos 5 envios reais, de Correios, JeT e
- * Loggi. A Kolecta entregava só a etiqueta, e o vendedor que postava nos
- * Correios sem nota fiscal descobria a falta no balcão, com a venda já paga.
+ * O Melhor Envio devolve `files["1"]` (a etiqueta) e `files.dace` (a
+ * declaração). NÃO existe arquivo com os dois: o `fullPdf` do `dace` se chama
+ * `complete-dace.pdf` e é a declaração COMPLETA, com a tabela de mercadorias,
+ * contra a `dace.pdf` que é a "DACE RESUMIDA" e omite os itens.
+ *
+ * Confundir esse `complete` com "etiqueta + declaração" custou uma regressão em
+ * 05/08/2026: o padrão passou a baixar um PDF chamado "etiqueta-e-declaracao"
+ * que só tinha a declaração, sem código de barras — impossível postar. Os testes
+ * de então só olhavam QUAL URL era buscada, nunca o PDF resultante; por isso
+ * aqui os arquivos são PDFs de verdade e a asserção é sobre as PÁGINAS.
+ *
+ * As duas páginas têm tamanhos diferentes na vida real (etiqueta 577×813pt,
+ * DACE em A4), e é isso que identifica cada uma no arquivo final.
  */
 describe('ShippingService — declaração de conteúdo', () => {
   const cartId = 'cart-9';
-  const pdfValido = Buffer.from('%PDF-1.4\nconteudo');
+  const ETIQUETA: [number, number] = [577.5, 813];
+  const DACE: [number, number] = [595.28, 841.89];
 
-  function servico(files: any) {
+  /** PDF de 1 página no tamanho pedido — dá para reconhecer depois da junção. */
+  async function pdfDe(tamanho: [number, number]): Promise<Buffer> {
+    const doc = await PDFDocument.create();
+    doc.addPage(tamanho);
+    return Buffer.from(await doc.save());
+  }
+
+  /** Tamanho de cada página do PDF montado, arredondado. */
+  async function paginasDe(arquivo: Buffer): Promise<Array<[number, number]>> {
+    const doc = await PDFDocument.load(arquivo);
+    return doc.getPages().map((p) => {
+      const { width, height } = p.getSize();
+      return [Math.round(width), Math.round(height)];
+    });
+  }
+
+  const arredonda = ([l, a]: [number, number]) => [Math.round(l), Math.round(a)];
+
+  function servico(files: any, corpos: Record<string, Buffer> = {}) {
     const httpGet = jest.fn((url: string) => {
       if (url.includes('/orders/')) return of({ data: { files } });
-      return of({ data: pdfValido });
+      return of({ data: corpos[url] ?? Buffer.from('%PDF-1.4\nvazio') });
     });
     const db = {
       query: {
@@ -896,56 +924,98 @@ describe('ShippingService — declaração de conteúdo', () => {
         },
       },
     };
-    const service = new ShippingService(
-      { get: httpGet } as any,
-      db as any,
-    );
+    const service = new ShippingService({ get: httpGet } as any, db as any);
     return { service, httpGet };
   }
 
   const completos = {
     '1': { pdf: 'https://s3/etiqueta.pdf' },
-    dace: { pdf: 'https://s3/dace.pdf', fullPdf: 'https://s3/completo.pdf' },
+    dace: { pdf: 'https://s3/resumida.pdf', fullPdf: 'https://s3/completa.pdf' },
   };
 
-  it('entrega etiqueta e declaração na mesma folha por padrão', async () => {
-    const { service, httpGet } = servico(completos);
+  async function corpos() {
+    return {
+      'https://s3/etiqueta.pdf': await pdfDe(ETIQUETA),
+      'https://s3/completa.pdf': await pdfDe(DACE),
+      'https://s3/resumida.pdf': await pdfDe(DACE),
+    };
+  }
+
+  it('junta etiqueta e declaração num PDF de duas páginas', async () => {
+    const { service, httpGet } = servico(completos, await corpos());
 
     const r = await service.obterPdfDaEtiqueta('ord-1');
 
     expect(r.contem).toBe('completo');
     expect(r.nome).toBe('etiqueta-e-declaracao-ord-1.pdf');
-    // O `complete-dace` do Melhor Envio, não a etiqueta sozinha.
-    expect(httpGet.mock.calls[1][0]).toBe('https://s3/completo.pdf');
+    // Os DOIS arquivos são baixados: nenhum deles sozinho tem o outro.
+    expect(httpGet.mock.calls[1][0]).toBe('https://s3/etiqueta.pdf');
+    expect(httpGet.mock.calls[2][0]).toBe('https://s3/completa.pdf');
+    // E os dois chegam ao vendedor, a etiqueta primeiro.
+    expect(await paginasDe(r.arquivo)).toEqual([
+      arredonda(ETIQUETA),
+      arredonda(DACE),
+    ]);
+  });
+
+  it('a etiqueta nunca sai do PDF completo', async () => {
+    // A regressão de 05/08 em uma asserção: entregar só a declaração é pior que
+    // o problema original, porque sem código de barras não se posta nada.
+    const { service } = servico(completos, await corpos());
+
+    const r = await service.obterPdfDaEtiqueta('ord-1');
+
+    expect(await paginasDe(r.arquivo)).toContainEqual(arredonda(ETIQUETA));
   });
 
   it('cai na etiqueta sozinha quando a DC-e ainda não saiu, e diz que caiu', async () => {
     // A DC-e é assíncrona: pode não existir no instante em que a etiqueta sai.
     // Travar a postagem esperando por ela seria pior que entregar a etiqueta,
     // desde que quem chama saiba o que veio — é o que `contem` resolve.
-    const { service } = servico({ '1': { pdf: 'https://s3/etiqueta.pdf' } });
+    const { service } = servico(
+      { '1': { pdf: 'https://s3/etiqueta.pdf' } },
+      await corpos(),
+    );
 
     const r = await service.obterPdfDaEtiqueta('ord-1');
 
     expect(r.contem).toBe('etiqueta');
     expect(r.nome).toBe('etiqueta-ord-1.pdf');
+    expect(await paginasDe(r.arquivo)).toEqual([arredonda(ETIQUETA)]);
   });
 
-  it('entrega só a declaração quando pedida', async () => {
-    const { service, httpGet } = servico(completos);
+  it('a declaração avulsa é a COMPLETA, com os itens, e não a resumida', async () => {
+    // A resumida omite a tabela de mercadorias, que é justamente o que o
+    // atendente confere no balcão.
+    const { service, httpGet } = servico(completos, await corpos());
 
     const r = await service.obterPdfDaEtiqueta('ord-1', 'declaracao');
 
     expect(r.contem).toBe('declaracao');
     expect(r.nome).toBe('declaracao-de-conteudo-ord-1.pdf');
-    expect(httpGet.mock.calls[1][0]).toBe('https://s3/dace.pdf');
+    expect(httpGet.mock.calls[1][0]).toBe('https://s3/completa.pdf');
+  });
+
+  it('cai na DACE resumida só quando a completa não existe', async () => {
+    const { service, httpGet } = servico(
+      { '1': { pdf: 'https://s3/etiqueta.pdf' }, dace: { pdf: 'https://s3/resumida.pdf' } },
+      await corpos(),
+    );
+
+    const r = await service.obterPdfDaEtiqueta('ord-1', 'declaracao');
+
+    expect(r.contem).toBe('declaracao');
+    expect(httpGet.mock.calls[1][0]).toBe('https://s3/resumida.pdf');
   });
 
   it('pedir só a declaração NÃO cai na etiqueta por engano', async () => {
     // Entregar a etiqueta a quem pediu a declaração é pior que devolver erro: o
     // vendedor imprime, vai ao balcão e leva a recusa achando que está com o
     // documento certo.
-    const { service } = servico({ '1': { pdf: 'https://s3/etiqueta.pdf' } });
+    const { service } = servico(
+      { '1': { pdf: 'https://s3/etiqueta.pdf' } },
+      await corpos(),
+    );
 
     await expect(
       service.obterPdfDaEtiqueta('ord-1', 'declaracao'),
@@ -953,12 +1023,13 @@ describe('ShippingService — declaração de conteúdo', () => {
   });
 
   it('só a etiqueta quando pedida, mesmo com a declaração disponível', async () => {
-    const { service, httpGet } = servico(completos);
+    const { service, httpGet } = servico(completos, await corpos());
 
     const r = await service.obterPdfDaEtiqueta('ord-1', 'etiqueta');
 
     expect(r.contem).toBe('etiqueta');
     expect(httpGet.mock.calls[1][0]).toBe('https://s3/etiqueta.pdf');
+    expect(httpGet).toHaveBeenCalledTimes(2);
   });
 });
 

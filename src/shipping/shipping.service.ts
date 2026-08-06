@@ -11,6 +11,7 @@ import {
 import { HttpService } from '@nestjs/axios';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { firstValueFrom } from 'rxjs';
+import { PDFDocument } from 'pdf-lib';
 import { eq } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -24,16 +25,24 @@ import {
 } from './servicos';
 
 /**
- * Arquivos que o Melhor Envio disponibiliza por envio.
+ * Arquivos que o vendedor pode baixar de um envio.
  *
- * - `etiqueta`   → `files["1"].pdf`, só a etiqueta.
- * - `declaracao` → `files.dace.pdf`, só a declaração de conteúdo (DC-e).
- * - `completo`   → `files.dace.fullPdf`, os dois na mesma folha.
+ * - `etiqueta`   → só a etiqueta, `files["1"].pdf`.
+ * - `declaracao` → só a declaração de conteúdo (DC-e), `files.dace.fullPdf`.
+ * - `completo`   → as duas, num PDF de duas páginas montado AQUI.
  *
- * Sim, os três já existiam desde sempre. A Kolecta entregava só o primeiro, e o
- * vendedor que despachava pelos Correios apanhava no balcão porque a declaração
- * de conteúdo é obrigatória em envio sem nota fiscal — que é todo envio daqui,
- * já que mandamos `non_commercial: true`.
+ * O Melhor Envio NÃO tem um arquivo com os dois documentos. `files.dace.fullPdf`
+ * se chama `complete-dace.pdf` e o "complete" qualifica a DACE, não o conjunto:
+ * é a declaração completa (com a tabela de mercadorias), contra a `dace.pdf`,
+ * que é a "DACE RESUMIDA" e omite os itens. Nenhuma das duas traz a etiqueta.
+ *
+ * Isso custou uma regressão em 05/08/2026: o padrão virou `completo` lendo esse
+ * `fullPdf`, e o vendedor passou a baixar um PDF chamado "etiqueta-e-declaracao"
+ * que só tinha a declaração — sem código de barras, ou seja, sem como postar.
+ * Conferido abrindo os PDFs de 8 envios reais, em Correios PAC/SEDEX e JeT.
+ *
+ * A declaração importa porque todo envio daqui vai com `non_commercial: true`,
+ * sem nota fiscal, e os Correios cobram o documento no balcão.
  */
 export type TipoArquivoEnvio = 'etiqueta' | 'declaracao' | 'completo';
 
@@ -737,8 +746,22 @@ export class ShippingService {
       );
     }
 
+    const partes: Buffer[] = [];
+    for (const url of escolhido.urls) partes.push(await this.baixarPdf(url));
+    const arquivo =
+      partes.length > 1 ? await this.juntarPdfs(partes) : partes[0];
+
+    return {
+      arquivo,
+      nome: `${NOME_DO_ARQUIVO[escolhido.contem]}-${orderId.slice(0, 8)}.pdf`,
+      contem: escolhido.contem,
+    };
+  }
+
+  /** Baixa uma URL assinada da S3 e recusa o que não for PDF. */
+  private async baixarPdf(url: string): Promise<Buffer> {
     const resposta = await firstValueFrom(
-      this.httpService.get(escolhido.url, {
+      this.httpService.get(url, {
         responseType: 'arraybuffer',
         timeout: 30000,
       }),
@@ -750,34 +773,57 @@ export class ShippingService {
         HttpStatus.BAD_GATEWAY,
       );
     }
-    return {
-      arquivo,
-      nome: `${NOME_DO_ARQUIVO[escolhido.contem]}-${orderId.slice(0, 8)}.pdf`,
-      contem: escolhido.contem,
-    };
+    return arquivo;
   }
 
   /**
-   * URL assinada do PDF pedido, dentro de `files`.
+   * Concatena os PDFs preservando o tamanho de cada página.
    *
-   * `files` vem assim (conferido em produção, 05/08/2026, em envios de Correios,
-   * JeT e Loggi):
+   * Etiqueta e declaração vêm em papéis diferentes (577×813pt e A4), e cada uma
+   * é uma imagem só. `copyPages` mantém o MediaBox original, então nada é
+   * esticado nem cortado — o vendedor imprime as duas em "tamanho real" e a
+   * etiqueta continua com o código de barras na escala que o leitor exige.
+   */
+  private async juntarPdfs(partes: Buffer[]): Promise<Buffer> {
+    const destino = await PDFDocument.create();
+    for (const parte of partes) {
+      const origem = await PDFDocument.load(parte);
+      const paginas = await destino.copyPages(origem, origem.getPageIndices());
+      for (const pagina of paginas) destino.addPage(pagina);
+    }
+    return Buffer.from(await destino.save());
+  }
+
+  /**
+   * URLs assinadas que compõem o arquivo pedido, dentro de `files`.
+   *
+   * `files` vem assim (conferido em produção, 06/08/2026, abrindo os PDFs de 8
+   * envios reais de Correios PAC/SEDEX e JeT):
    *
    *     { "1":    { pdf, jpeg, zpl },
    *       "dace": { pdf, jpeg, zpl, fullPdf } }
    *
-   * A chave "1" é a etiqueta. "dace" é o Documento Auxiliar da Declaração de
-   * Conteúdo, e o `fullPdf` dele (`complete-dace.pdf`) traz etiqueta e
-   * declaração na MESMA folha — uma impressão só, que é o que o vendedor quer.
+   * - `files["1"].pdf`      → a etiqueta, com o código de barras.
+   * - `files.dace.fullPdf`  → `complete-dace.pdf`, a declaração COMPLETA, com a
+   *                           tabela de mercadorias. Só a declaração.
+   * - `files.dace.pdf`      → a "DACE RESUMIDA", a mesma declaração SEM os itens.
    *
-   * O `completo` degrada em cascata: sem `fullPdf`, tenta a etiqueta sozinha. É o
-   * caso da DC-e que ainda não ficou pronta, e é melhor entregar a etiqueta do
-   * que travar a postagem esperando.
+   * Nenhum dos três traz os dois documentos: quem junta é `juntarPdfs`. Vale
+   * insistir porque o nome engana e já enganou — `complete` qualifica a DACE, e
+   * não o conjunto etiqueta+declaração.
+   *
+   * A declaração usa o `fullPdf` e cai na resumida só se ele faltar: é a versão
+   * com os itens que os Correios querem ver no balcão.
+   *
+   * `completo` degrada para a etiqueta sozinha quando a DC-e ainda não saiu (ela
+   * é assíncrona) — melhor despachar do que travar a postagem esperando. Nunca o
+   * contrário: declaração sem etiqueta não posta nada, e era exatamente o que a
+   * pessoa recebia antes desta correção.
    */
   private async urlDoPdfNoMelhorEnvio(
     cartId: string,
     tipo: TipoArquivoEnvio,
-  ): Promise<{ url: string; contem: TipoArquivoEnvio } | null> {
+  ): Promise<{ urls: string[]; contem: TipoArquivoEnvio } | null> {
     const resposta = await firstValueFrom(
       this.httpService.get(`${this.baseUrl}/orders/${cartId}`, {
         headers: this.authHeaders(),
@@ -786,21 +832,22 @@ export class ShippingService {
     );
     const files = (resposta.data as any)?.files ?? {};
     const etiqueta = files['1']?.pdf;
-    const declaracao = files?.dace?.pdf;
-    const completo = files?.dace?.fullPdf;
+    const declaracao = files?.dace?.fullPdf ?? files?.dace?.pdf;
 
-    const preferencia: Array<[TipoArquivoEnvio, unknown]> =
+    const preferencia: Array<[TipoArquivoEnvio, unknown[]]> =
       tipo === 'etiqueta'
-        ? [['etiqueta', etiqueta]]
+        ? [['etiqueta', [etiqueta]]]
         : tipo === 'declaracao'
-          ? [['declaracao', declaracao]]
+          ? [['declaracao', [declaracao]]]
           : [
-              ['completo', completo],
-              ['etiqueta', etiqueta],
+              ['completo', [etiqueta, declaracao]],
+              ['etiqueta', [etiqueta]],
             ];
 
-    for (const [contem, url] of preferencia) {
-      if (url) return { url: String(url), contem };
+    for (const [contem, urls] of preferencia) {
+      if (urls.every(Boolean)) {
+        return { urls: urls.map((u) => String(u)), contem };
+      }
     }
     return null;
   }

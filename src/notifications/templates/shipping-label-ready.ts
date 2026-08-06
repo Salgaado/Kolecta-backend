@@ -35,7 +35,7 @@ export interface ShippingLabelReadyData {
   /** true quando o anexo não pôde ser baixado e só resta o link. */
   semAnexo?: boolean;
   /**
-   * true quando o anexo traz etiqueta E declaração de conteúdo na mesma folha.
+   * true quando o anexo traz etiqueta E declaração de conteúdo (2 páginas).
    *
    * A declaração é obrigatória para postar sem nota fiscal, que é o caso de todo
    * envio da Kolecta. Ela sempre existiu no Melhor Envio; o e-mail é que anexava
@@ -57,7 +57,7 @@ const paragraphs = (data: ShippingLabelReadyData) => [
   data.semAnexo
     ? 'Baixe a etiqueta pelo botão abaixo, imprima e cole na embalagem.'
     : data.comDeclaracao
-      ? 'O PDF <strong>anexado neste e-mail</strong> traz a etiqueta e a declaração de conteúdo na mesma folha. Imprima, recorte, cole a etiqueta na caixa e leve a declaração junto.'
+      ? 'O PDF <strong>anexado neste e-mail</strong> tem duas páginas: a etiqueta e a declaração de conteúdo. Imprima as duas, cole a etiqueta na caixa e leve a declaração junto.'
       : 'A etiqueta está <strong>anexada neste e-mail</strong> em PDF. A declaração de conteúdo ainda estava sendo emitida: baixe-a no painel antes de postar.',
 ];
 
@@ -94,7 +94,7 @@ export function html(data: ShippingLabelReadyData): string {
           // balcão de quem posta sem nota fiscal. Sem ela na mão, o atendente
           // recusa a postagem e o vendedor volta para casa.
           data.comDeclaracao
-            ? 'Leve a declaração de conteúdo junto: é a segunda parte da folha, e os Correios pedem no balcão.'
+            ? 'Leve a declaração de conteúdo junto: é a segunda página do PDF, e os Correios pedem no balcão.'
             : 'Baixe a declaração de conteúdo no painel e leve junto: os Correios pedem no balcão.',
           'Poste em até 2 dias úteis. O comprador acompanha o prazo.',
           'Marque o pedido como enviado no painel para liberar o rastreio ao comprador.',
@@ -116,7 +116,7 @@ export function text(data: ShippingLabelReadyData): string {
       data.semAnexo
         ? 'Baixe a etiqueta pelo link abaixo, imprima e poste.'
         : data.comDeclaracao
-          ? 'O PDF anexado traz a etiqueta e a declaração de conteúdo na mesma folha. Imprima, cole a etiqueta na caixa e leve a declaração junto.'
+          ? 'O PDF anexado tem duas páginas: a etiqueta e a declaração de conteúdo. Imprima as duas, cole a etiqueta na caixa e leve a declaração junto.'
           : 'A etiqueta está anexada neste e-mail em PDF. A declaração de conteúdo ainda estava sendo emitida: baixe no painel antes de postar.',
     ],
     lines: [

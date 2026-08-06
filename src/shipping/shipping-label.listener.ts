@@ -141,7 +141,7 @@ export class ShippingLabelListener {
     // O PDF vem do arquivo da S3 (via ShippingService), não da URL do print —
     // aquela é página de painel e chegava como HTML.
     //
-    // Pede o `completo`: etiqueta E declaração de conteúdo na mesma folha. A
+    // Pede o `completo`: etiqueta E declaração de conteúdo, uma em cada página. A
     // declaração é obrigatória em envio sem nota fiscal, e todo envio daqui é
     // assim. Ela sempre esteve disponível na API; o e-mail simplesmente anexava
     // só a etiqueta, e o vendedor descobria a falta no balcão dos Correios.

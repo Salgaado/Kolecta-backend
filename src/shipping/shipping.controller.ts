@@ -69,11 +69,11 @@ export class ShippingController {
    * Kolecta. Agora o arquivo passa por aqui e ele nunca precisa saber que
    * existe um Melhor Envio no meio.
    *
-   * `?tipo=` escolhe o arquivo. O padrão é `completo` (etiqueta + declaração de
-   * conteúdo na mesma folha), porque envio sem nota fiscal exige a declaração e
-   * o vendedor não tem por que saber disso nem imprimir duas vezes. `etiqueta` e
-   * `declaracao` existem para quem imprime a etiqueta em térmica e a declaração
-   * em A4.
+   * `?tipo=` escolhe o arquivo. O padrão é `completo`: um PDF de duas páginas
+   * com a etiqueta e a declaração de conteúdo, porque envio sem nota fiscal
+   * exige a declaração e o vendedor não tem por que saber disso nem baixar dois
+   * arquivos. `etiqueta` e `declaracao` existem para quem imprime a etiqueta em
+   * térmica e a declaração em A4.
    */
   @Get('label/:orderId/pdf')
   @UseGuards(AuthGuard)
