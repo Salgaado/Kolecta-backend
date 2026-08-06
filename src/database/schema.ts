@@ -1085,3 +1085,36 @@ export const recipientStatusHistory = sqliteTable(
     ),
   }),
 );
+
+// ─── Analytics de trafego (funil proprio) ────────────────────────────────────
+// Evento de comportamento do visitante, para o funil interno do painel: quantos
+// viram, puseram no carrinho, iniciaram checkout, compraram, e quanto tempo
+// ficaram. Sessao anonima gerada no cliente (sem cookie nem PII). NAO substitui
+// o Google Analytics (que mede SEO/ads a parte); e o funil de conversao proprio.
+export const analyticsEvents = sqliteTable(
+  'analytics_events',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    // Sessao anonima do visitante (id gerado no cliente). Sem cookie nem PII.
+    sessionId: text('session_id').notNull(),
+    // Usuario logado, quando houver. null para visitante anonimo.
+    userId: text('user_id'),
+    // page_view | view_product | add_to_cart | checkout_start | purchase_complete | ...
+    event: text('event').notNull(),
+    path: text('path'),
+    listingId: text('listing_id'),
+    meta: text('meta'), // JSON stringificado
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => ({
+    byCreated: index('analytics_events_created_idx').on(t.createdAt),
+    bySessionEvent: index('analytics_events_session_event_idx').on(
+      t.sessionId,
+      t.event,
+    ),
+  }),
+);

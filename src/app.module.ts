@@ -27,6 +27,7 @@ import { CategoriesModule } from './categories/categories.module';
 import { CommunityModule } from './community/community.module';
 import { MediaModule } from './media/media.module';
 import { AdminModule } from './admin/admin.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { BlingModule } from './bling/bling.module';
 import { PagarmeModule } from './pagarme/pagarme.module';
 import { RecipientsModule } from './recipients/recipients.module';
@@ -68,6 +69,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     CommunityModule,
     MediaModule,
     AdminModule,
+    AnalyticsModule,
     BlingModule,
     NotificationsModule,
     FounderModule,
