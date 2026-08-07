@@ -1755,6 +1755,56 @@ export class OrdersService {
     return updated;
   }
 
+  // ── Rastreio acusou entrega → avança o pedido ─────────────────────────────
+  //
+  // Emitido por ShippingService.rastrearPedido quando o Melhor Envio passa a
+  // reportar `delivered_at`. Faz o mesmo que o vendedor faria na retirada em
+  // mãos: status 'delivered' + janela de 48h para o comprador confirmar, senão
+  // o cron de auto-release libera (e esse cron JÁ tem o gate de disputa, então
+  // entrega confirmada com disputa aberta não solta dinheiro).
+  //
+  // Idempotente e conservador: só age em pedido 'shipped'. Se o comprador já
+  // confirmou (delivered/completed) ou o pedido está cancelado/em disputa de
+  // status, não mexe. A transição do rastreio nunca REGRIDE um pedido.
+  @OnEvent('order.rastreio.entregue')
+  async aoEntregarPeloRastreio(payload: { orderId: string; entregueEm: Date }) {
+    try {
+      const [order] = await this.db
+        .select()
+        .from(schema.orders)
+        .where(eq(schema.orders.id, payload.orderId));
+      if (!order) return;
+
+      if (order.status !== 'shipped') {
+        // Já confirmado pelo comprador, retirada, cancelado: nada a fazer.
+        return;
+      }
+
+      const entregueEm = payload.entregueEm ?? new Date();
+      const autoReleaseAt = new Date(entregueEm.getTime() + 48 * 60 * 60 * 1000);
+
+      await this.db
+        .update(schema.orders)
+        .set({ status: 'delivered', deliveredAt: entregueEm, autoReleaseAt })
+        .where(
+          and(
+            eq(schema.orders.id, payload.orderId),
+            // Trava contra corrida: só vira 'delivered' se AINDA estiver
+            // 'shipped'. Se o comprador confirmou no meio, o update não pega.
+            eq(schema.orders.status, 'shipped'),
+          ),
+        );
+
+      this.logger.log(
+        `📬 Pedido ${payload.orderId} entregue pelo rastreio. Auto-release em ${autoReleaseAt.toISOString()}.`,
+      );
+    } catch (err: any) {
+      this.logger.error(
+        `Falha ao avançar pedido ${payload.orderId} pela entrega do rastreio: ${err?.message ?? err}`,
+      );
+    }
+  }
+
   // ── Comprador confirma recebimento → libera saldo do vendedor ─────────────
 
   async confirmDelivery(buyerId: string, orderId: string) {

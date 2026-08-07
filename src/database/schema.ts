@@ -536,6 +536,18 @@ export const orders = sqliteTable('orders', {
   shippingLabelError: text('shipping_label_error'),
   shippingLabelAt: integer('shipping_label_at', { mode: 'timestamp' }),
 
+  // ── Rastreio do envio (Melhor Envio) ────────────────────────────────────────
+  // Os marcos do /me/shipment/tracking, guardados para a tela ler rápido e para
+  // o cron detectar a entrega sem repuxar o ME a cada acesso.
+  // Status cru do Melhor Envio: posted | delivered | canceled...
+  trackingStatus: text('tracking_status'),
+  // Quando o objeto entrou na transportadora, e quando foi entregue.
+  shippingPostedAt: integer('shipping_posted_at', { mode: 'timestamp' }),
+  shippingDeliveredAt: integer('shipping_delivered_at', { mode: 'timestamp' }),
+  // Última vez que consultamos o ME. O cron pula quem foi checado há pouco, para
+  // respeitar o limite da API e não varrer o mesmo envio de minuto em minuto.
+  trackingCheckedAt: integer('tracking_checked_at', { mode: 'timestamp' }),
+
   // ── Controle Financeiro ──
   // Valor líquido que o vendedor recebe (após taxas)
   sellerNetInCents: integer('seller_net_in_cents'),

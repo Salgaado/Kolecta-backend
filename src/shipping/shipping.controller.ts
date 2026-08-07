@@ -100,6 +100,24 @@ export class ShippingController {
     res.end(arquivo);
   }
 
+  /**
+   * Rastreio do envio de um pedido.
+   *
+   * Diferente da etiqueta, o COMPRADOR também vê: é o pedido dele chegando. Por
+   * isso a autorização aqui é mais larga (comprador, vendedor ou admin), não a
+   * `exigirDonoOuAdmin` da etiqueta.
+   *
+   * Devolve `{ rastreavel: false }` quando não há envio (retirada em mãos, ou
+   * etiqueta ainda não emitida): a tela mostra o estado certo em vez de um erro.
+   */
+  @Get('rastreio/:orderId')
+  @UseGuards(AuthGuard)
+  async rastreio(@Req() req: any, @Param('orderId') orderId: string) {
+    await this.exigirParteDoPedido(req.auth.userId, orderId);
+    const rastreio = await this.shippingService.rastrearPedido(orderId);
+    return { data: rastreio ? { rastreavel: true, ...rastreio } : { rastreavel: false } };
+  }
+
   /** Query string é entrada de usuário: valor estranho vira o padrão. */
   private tipoValido(tipo: string | undefined): TipoArquivoEnvio {
     return tipo === 'etiqueta' || tipo === 'declaracao' ? tipo : 'completo';
@@ -120,6 +138,30 @@ export class ShippingController {
     if (order.sellerId !== userId && user?.role !== 'admin') {
       throw new ForbiddenException(
         'Você não tem permissão para acessar a etiqueta deste pedido.',
+      );
+    }
+    return order;
+  }
+
+  /** Comprador, vendedor ou admin do pedido: quem pode acompanhar a entrega. */
+  private async exigirParteDoPedido(userId: string, orderId: string) {
+    const order = await this.db.query.orders.findFirst({
+      where: eq(schema.orders.id, orderId),
+    });
+    if (!order) throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
+
+    const [user] = await this.db
+      .select({ role: schema.users.role })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+
+    if (
+      order.buyerId !== userId &&
+      order.sellerId !== userId &&
+      user?.role !== 'admin'
+    ) {
+      throw new ForbiddenException(
+        'Você não tem permissão para acompanhar este pedido.',
       );
     }
     return order;

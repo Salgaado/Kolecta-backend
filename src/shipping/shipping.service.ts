@@ -23,6 +23,12 @@ import {
   servicosDaPlataforma,
   servicosDoVendedor,
 } from './servicos';
+import {
+  interpretarRastreio,
+  dataMEParaDate,
+  type Rastreio,
+  type RespostaRastreioME,
+} from './rastreio';
 
 /**
  * Arquivos que o vendedor pode baixar de um envio.
@@ -916,14 +922,72 @@ export class ShippingService {
    */
   private async buscarRastreio(cartId: string): Promise<string | null> {
     try {
-      const data = await this.postEnvio('/shipment/tracking', {
-        orders: [cartId],
-      });
-      const item = data?.[cartId] ?? Object.values(data ?? {})[0];
-      return (item as any)?.tracking ?? null;
+      return (await this.rastrearEnvio(cartId)).codigo;
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Rastreio completo de UM envio, direto do Melhor Envio. Marcos, não eventos
+   * cidade a cidade (ver `rastreio.ts`). Lança se o ME falhar: quem chama decide
+   * se engole (a emissão) ou propaga (a tela).
+   */
+  async rastrearEnvio(cartId: string): Promise<Rastreio> {
+    const data = await this.postEnvio('/shipment/tracking', {
+      orders: [cartId],
+    });
+    const item = data?.[cartId] ?? Object.values(data ?? {})[0];
+    return interpretarRastreio(item as RespostaRastreioME);
+  }
+
+  /**
+   * Rastreio de um PEDIDO: consulta o ME, guarda os marcos e devolve para a
+   * tela. Quando detecta uma entrega NOVA (o pedido ainda não constava entregue)
+   * emite `order.rastreio.entregue`, e o domínio de pedidos decide o resto
+   * (status, janela de liberação), com o gate de disputa que já existe. O
+   * rastreio não mexe em dinheiro; só avisa.
+   *
+   * Devolve `null` quando o pedido não tem envio no Melhor Envio (retirada em
+   * mãos, ou etiqueta ainda não emitida): não há o que rastrear.
+   */
+  async rastrearPedido(orderId: string): Promise<Rastreio | null> {
+    const order = await this.db.query.orders.findFirst({
+      where: eq(schema.orders.id, orderId),
+    });
+    if (!order) throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
+    if (!order.shippingCartId) return null;
+
+    const rastreio = await this.rastrearEnvio(order.shippingCartId);
+
+    const entregueAgora =
+      dataMEParaDate(rastreio.entregueEm) ?? null;
+    const jaConstavaEntregue = !!order.shippingDeliveredAt;
+
+    await this.db
+      .update(schema.orders)
+      .set({
+        trackingStatus: rastreio.status,
+        trackingCode: order.trackingCode ?? rastreio.codigo,
+        shippingPostedAt: dataMEParaDate(rastreio.postadoEm) ?? order.shippingPostedAt,
+        shippingDeliveredAt: entregueAgora ?? order.shippingDeliveredAt,
+        trackingCheckedAt: new Date(),
+      })
+      .where(eq(schema.orders.id, orderId));
+
+    // Entrega NOVA: avisa uma vez só. A transição de status e a liberação de
+    // saldo são decisão do domínio de pedidos, não do rastreio.
+    if (entregueAgora && !jaConstavaEntregue) {
+      this.logger.log(
+        `📬 Rastreio acusou entrega do pedido ${orderId} em ${entregueAgora.toISOString()}.`,
+      );
+      this.eventEmitter?.emit('order.rastreio.entregue', {
+        orderId,
+        entregueEm: entregueAgora,
+      });
+    }
+
+    return rastreio;
   }
 
   private async postEnvio(path: string, body: unknown): Promise<any> {
