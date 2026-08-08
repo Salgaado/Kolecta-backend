@@ -329,10 +329,13 @@ export class OrdersService {
       const createdOrders = [];
 
       for (const listing of existingListings) {
-        await tx
-          .update(schema.listings)
-          .set({ status: 'pending_payment' })
-          .where(eq(schema.listings.id, listing.id));
+        // Reserva só a peça única; item com estoque segue active (ver helper).
+        if (OrdersService.reservaListingNoCheckout(listing)) {
+          await tx
+            .update(schema.listings)
+            .set({ status: 'pending_payment' })
+            .where(eq(schema.listings.id, listing.id));
+        }
 
         const price: number = listing.priceInCents ?? 0;
 
@@ -543,12 +546,15 @@ export class OrdersService {
     // deixaria lixo no cadastro do comprador.
     const enderecoEntrega = await this.resolverEnderecoDeEntrega(buyerId, dto);
 
-    // Transação atômica: bloqueia o listing + cria o pedido
+    // Transação atômica: cria o pedido (e reserva o listing quando é peça única)
     const order = await this.db.transaction(async (tx) => {
-      await tx
-        .update(schema.listings)
-        .set({ status: 'pending_payment' })
-        .where(eq(schema.listings.id, listing.id));
+      // Reserva só a peça única; item com estoque segue active (ver helper).
+      if (OrdersService.reservaListingNoCheckout(listing)) {
+        await tx
+          .update(schema.listings)
+          .set({ status: 'pending_payment' })
+          .where(eq(schema.listings.id, listing.id));
+      }
 
       const [newOrder] = await tx
         .insert(schema.orders)
@@ -894,10 +900,19 @@ export class OrdersService {
           .update(schema.orders)
           .set({ status: 'cancelled' })
           .where(eq(schema.orders.id, order.id));
+        // Só desfaz a reserva de PEÇA ÚNICA: reverte para active apenas o que
+        // ESTAVA em pending_payment. Item com estoque seguiu active e não deve
+        // ser tocado; item que zerou estoque ficou paused e não pode voltar ao
+        // ar com 0 unidade por causa de um checkout que falhou.
         await t
           .update(schema.listings)
           .set({ status: 'active' })
-          .where(eq(schema.listings.id, listing.id));
+          .where(
+            and(
+              eq(schema.listings.id, listing.id),
+              eq(schema.listings.status, 'pending_payment'),
+            ),
+          );
       });
       if (walletDeducted > 0) {
         const wallet = await this.walletService.getOrCreateWallet(buyerId);
@@ -1320,10 +1335,17 @@ export class OrdersService {
       return false;
     }
 
+    // Só reverte a reserva de peça única (pending_payment). Item com estoque
+    // seguiu active; item que zerou ficou paused e não pode reabrir com 0.
     await this.db
       .update(schema.listings)
       .set({ status: 'active' })
-      .where(eq(schema.listings.id, order.listingId));
+      .where(
+        and(
+          eq(schema.listings.id, order.listingId),
+          eq(schema.listings.status, 'pending_payment'),
+        ),
+      );
 
     const walletRefund = order.walletAmountInCents ?? 0;
     if (walletRefund > 0) {
@@ -1532,6 +1554,20 @@ export class OrdersService {
   }
 
   // ── Estoque ───────────────────────────────────────────────────────────────
+
+  /**
+   * Reservar o anúncio no checkout (pending_payment) é para PEÇA ÚNICA só.
+   *
+   * Peça única = `stock` nulo (regra do MVP: 1 anúncio, 1 peça): aí o anúncio
+   * inteiro sai do ar durante o checkout porque não há outra. Item COM estoque
+   * NÃO é reservado — segue `active`, e o estoque é o controle, baixando só no
+   * pagamento (`baixarEstoque`). Sem esta distinção a primeira compra tirava do
+   * ar um anúncio com estoque de sobra: a Mystery Bag de 99 unidades sumiu logo
+   * depois da primeira venda.
+   */
+  static reservaListingNoCheckout(listing: { stock: number | null }): boolean {
+    return listing.stock == null;
+  }
 
   /**
    * Baixa uma unidade do anúncio, no momento em que o PAGAMENTO é confirmado.
