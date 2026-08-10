@@ -286,7 +286,10 @@ export class ShippingService {
     // o comprador já ter pago.
     const [sellerProfile] = order.sellerId
       ? await this.db
-          .select({ documentNumber: schema.sellerProfiles.documentNumber })
+          .select({
+            documentNumber: schema.sellerProfiles.documentNumber,
+            legalName: schema.sellerProfiles.legalName,
+          })
           .from(schema.sellerProfiles)
           .where(eq(schema.sellerProfiles.userId, order.sellerId))
       : [];
@@ -294,10 +297,19 @@ export class ShippingService {
     // Falha cedo e por escrito: sem documento o Melhor Envio recusa o carrinho
     // com um erro que não diz o que fazer, e o vendedor só via "Falha ao gerar
     // etiqueta".
+    //
+    // O CADASTRO DE RECEBEDOR vem PRIMEIRO, e a ordem importa. `users.cpf` só é
+    // preenchido no checkout, ou seja, quando a pessoa COMPRA — num vendedor PJ
+    // que também compra na plataforma, aquilo é o CPF PESSOAL do dono. A ordem
+    // antiga (users.cpf antes do perfil) mandava esse CPF como remetente de um
+    // envio da empresa: aceito pelo Melhor Envio, e errado. Passava despercebido
+    // porque só falha alto em quem NUNCA comprou — foi o caso da Rock Wheels em
+    // 09/08/2026, com R$600 já pagos pelo comprador. Quem manda no envio é o
+    // documento de quem vende e recebe o dinheiro.
     const fromDoc =
       this.buildPartyDocument(dto.from_document) ??
-      this.buildPartyDocument(seller?.cpf) ??
-      this.buildPartyDocument(sellerProfile?.documentNumber);
+      this.buildPartyDocument(sellerProfile?.documentNumber) ??
+      this.buildPartyDocument(seller?.cpf);
     const toDoc =
       this.buildPartyDocument(dto.to_document) ??
       this.buildPartyDocument(buyer?.cpf);
@@ -305,8 +317,8 @@ export class ShippingService {
     if (!fromDoc || !toDoc) {
       const quem = !fromDoc ? 'do vendedor' : 'do comprador';
       throw new BadRequestException(
-        `CPF ${quem} não encontrado — o Melhor Envio exige documento nas duas ` +
-          `pontas para emitir a etiqueta.`,
+        `CPF/CNPJ ${quem} não encontrado — o Melhor Envio exige documento nas ` +
+          `duas pontas para emitir a etiqueta.`,
       );
     }
 
@@ -318,7 +330,13 @@ export class ShippingService {
       // checkout (exigência da Pagar.me) e o do vendedor no cadastro.
       from: this.buildParty(fromAddress, {
         email: seller?.email,
-        name: fromAddress.recipientName || seller?.name,
+        // Razão social antes do nome pessoal: num envio de PJ, remetente
+        // "Marcos Oliveira" com CNPJ da "JULIANA GUELERE BUENO LTDA" é nome e
+        // documento discordando na mesma declaração. O que o vendedor escreveu
+        // no endereço de origem continua ganhando de tudo — ali ele foi
+        // explícito.
+        name:
+          fromAddress.recipientName || sellerProfile?.legalName || seller?.name,
         document: fromDoc,
         phone: seller?.phone,
       }),
@@ -1107,11 +1125,26 @@ export class ShippingService {
     };
   }
 
-  /** Monta um lado (from/to) do envio a partir de uma linha de `addresses`. */
-  /** CPF/CNPJ só com dígitos; vazio vira undefined (o ME recusa string vazia). */
-  private buildPartyDocument(raw?: string | null): string | undefined {
+  /**
+   * Documento da ponta, NO CAMPO CERTO do Melhor Envio.
+   *
+   * `document` é validado como CPF. Mandar CNPJ ali devolve
+   * "O campo from.document deve ter um CPF válido" e recusa o carrinho inteiro
+   * — com a venda já paga. CNPJ tem campo próprio: `company_document`.
+   *
+   * O `>= 11` de antes era o bug: aceitava qualquer coisa com 11 dígitos ou
+   * mais e empurrava tudo para `document`. Agora é exato — 11 é CPF, 14 é
+   * CNPJ, e o que não for nenhum dos dois não vira documento nenhum (vale mais
+   * a mensagem clara de "documento não encontrado" do que um 422 genérico do
+   * Melhor Envio depois do pagamento).
+   */
+  private buildPartyDocument(
+    raw?: string | null,
+  ): { document: string } | { company_document: string } | null {
     const digits = String(raw ?? '').replace(/\D/g, '');
-    return digits.length >= 11 ? digits : undefined;
+    if (digits.length === 11) return { document: digits };
+    if (digits.length === 14) return { company_document: digits };
+    return null;
   }
 
   /**
@@ -1134,12 +1167,14 @@ export class ShippingService {
     return fallback.length >= 10 ? fallback : '';
   }
 
+  /** Monta um lado (from/to) do envio a partir de uma linha de `addresses`. */
   private buildParty(
     addr: typeof schema.addresses.$inferSelect,
     extra: {
       email?: string | null;
       name?: string | null;
-      document?: string;
+      /** `{ document }` para CPF, `{ company_document }` para CNPJ. */
+      document?: { document: string } | { company_document: string } | null;
       phone?: string | null;
     },
   ) {
@@ -1147,7 +1182,9 @@ export class ShippingService {
       name: extra.name || addr.recipientName,
       email: extra.email || undefined,
       phone: this.buildPartyPhone(extra.phone),
-      document: extra.document || undefined,
+      // Espalha a chave que vier: mandar as duas (uma vazia) faz o validador do
+      // Melhor Envio reclamar do campo em branco.
+      ...(extra.document ?? {}),
       address: addr.street,
       complement: addr.complement || undefined,
       number: addr.number,
