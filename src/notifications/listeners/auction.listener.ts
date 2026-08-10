@@ -25,6 +25,8 @@ interface AuctionWonEvent {
   listingTitle: string;
   finalAmountInCents: number;
   needsPayment: boolean;
+  /** Falta escolher frete/retirada — caminho normal desde o fecho sem captura. */
+  needsShippingChoice?: boolean;
   paymentDeadlineHours?: number;
 }
 
@@ -132,6 +134,7 @@ export class AuctionListener {
         listingTitle: event.listingTitle,
         finalAmountInCents: event.finalAmountInCents,
         needsPayment: event.needsPayment,
+        needsShippingChoice: event.needsShippingChoice,
         paymentDeadlineHours: event.paymentDeadlineHours,
       },
     });

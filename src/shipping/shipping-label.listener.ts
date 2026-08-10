@@ -18,13 +18,17 @@ interface OrderPaidEvent {
   listingTitle: string;
 }
 
-/** Payload de `auction.won` — emitido em auctions.service.ts. */
-interface AuctionWonEvent {
+/**
+ * Payload de `auction.paid` — emitido em auctions.service.ts quando o vencedor
+ * paga o arremate (lance + frete que ele escolheu).
+ */
+interface AuctionPaidEvent {
   orderId: string;
-  winnerId: string;
-  listingTitle: string;
-  /** true = a captura falhou e o vencedor ainda precisa pagar. */
-  needsPayment?: boolean;
+  buyerId: string;
+  sellerId: string;
+  totalInCents: number;
+  shippingInCents: number;
+  deliveryMethod: string;
 }
 
 /**
@@ -59,11 +63,16 @@ export class ShippingLabelListener {
     await this.emitir(event.orderId, 'compra direta');
   }
 
-  @OnEvent('auction.won')
-  async aoArrematar(event: AuctionWonEvent): Promise<void> {
-    // Arremate ainda não pago (captura falhou) não gera etiqueta: o pedido está
-    // 'pending_payment' e a peça pode voltar ao vendedor.
-    if (event.needsPayment) return;
+  /**
+   * Arremate pago. NÃO escuta `auction.won`: aquele evento sai no fecho do
+   * leilão, quando o vencedor ainda nem escolheu o frete e nada foi cobrado —
+   * comprar etiqueta ali seria gastar antes de receber, e com um serviço que o
+   * comprador não escolheu. A etiqueta só faz sentido depois do pagamento.
+   */
+  @OnEvent('auction.paid')
+  async aoArrematar(event: AuctionPaidEvent): Promise<void> {
+    // Retirada em mãos não tem etiqueta a emitir.
+    if (event.deliveryMethod === 'pickup') return;
     await this.emitir(event.orderId, 'arremate de leilão');
   }
 

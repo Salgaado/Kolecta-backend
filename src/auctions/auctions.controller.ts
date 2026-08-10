@@ -11,7 +11,11 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { AuctionsService } from './auctions.service';
-import { CreateAuctionDto, PlaceBidDto } from './dto/auction.dto';
+import {
+  CreateAuctionDto,
+  PlaceBidDto,
+  ChooseAuctionShippingDto,
+} from './dto/auction.dto';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -80,9 +84,49 @@ export class AuctionsController {
     return { data: result };
   }
 
-  // ── POST /api/auctions/orders/:orderId/pay — Vencedor paga arremate pendente ──
-  // Arremate cuja captura da pré-auth falhou no fecho (pedido pending_payment);
-  // o vencedor paga no cartão salvo dentro do prazo (Fase 4).
+  // ── GET /api/auctions/orders/:orderId/shipping — Opções de entrega do vencedor ──
+  // Leilão não tem checkout: o vencedor escolhe o frete AQUI, depois do fecho.
+  // Devolve as opções cotadas para o endereço dele, já com o total (lance +
+  // frete) de cada uma.
+
+  @Get('orders/:orderId/shipping')
+  @UseGuards(AuthGuard)
+  async auctionShippingOptions(
+    @Req() req: Request,
+    @Param('orderId') orderId: string,
+  ) {
+    const buyerId = (req as any).auth.userId as string;
+    const data = await this.auctionsService.getAuctionShippingOptions(
+      buyerId,
+      orderId,
+    );
+    return { data };
+  }
+
+  // ── POST /api/auctions/orders/:orderId/shipping — Vencedor escolhe a entrega ──
+  // Grava a escolha e soma o frete ao total do arremate. O preço vem da
+  // recotagem no servidor, não do corpo do request.
+
+  @Post('orders/:orderId/shipping')
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async chooseAuctionShipping(
+    @Req() req: Request,
+    @Param('orderId') orderId: string,
+    @Body() dto: ChooseAuctionShippingDto,
+  ) {
+    const buyerId = (req as any).auth.userId as string;
+    const data = await this.auctionsService.chooseShipping(
+      buyerId,
+      orderId,
+      dto,
+    );
+    return { data };
+  }
+
+  // ── POST /api/auctions/orders/:orderId/pay — Vencedor paga o arremate ──
+  // Cobra `lance + frete` no cartão salvo, dentro do prazo. Exige que a entrega
+  // já tenha sido escolhida.
 
   @Post('orders/:orderId/pay')
   @UseGuards(AuthGuard)
