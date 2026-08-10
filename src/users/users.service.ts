@@ -1,4 +1,10 @@
-import { Injectable, Inject, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { eq } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -125,8 +131,21 @@ export class UsersService {
 
     // Defense-in-depth: monta o set apenas com campos permitidos no self-service.
     // `role` NUNCA é alterável por aqui (privesc) — usar /api/admin/users/:id/role.
-    const allowed: { name?: string; updatedAt: Date } = { updatedAt: new Date() };
+    const allowed: { name?: string; phone?: string; updatedAt: Date } = {
+      updatedAt: new Date(),
+    };
     if (dto.name !== undefined) allowed.name = dto.name;
+    // Telefone: guarda só dígitos e exige DDD + número (10 ou 11). Número curto
+    // é erro de digitação, não "limpar o campo" — recusa em vez de gravar lixo.
+    if (dto.phone !== undefined) {
+      const digits = String(dto.phone).replace(/[^0-9]/g, '');
+      if (digits.length < 10 || digits.length > 11) {
+        throw new BadRequestException(
+          'Telefone inválido: informe DDD + número (10 ou 11 dígitos).',
+        );
+      }
+      allowed.phone = digits;
+    }
 
     await this.db
       .update(schema.users)
