@@ -32,7 +32,12 @@ import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
-import { CreateAuctionDto, PlaceBidDto } from './dto/auction.dto';
+import { ShippingService } from '../shipping/shipping.service';
+import {
+  CreateAuctionDto,
+  PlaceBidDto,
+  ChooseAuctionShippingDto,
+} from './dto/auction.dto';
 
 /**
  * Recebedor da plataforma na Pagar.me (destino da comissão no split do arremate).
@@ -120,6 +125,7 @@ export class AuctionsService {
     private readonly founderService: FounderService,
     private readonly cardsService: CardsService,
     private readonly pagarme: PagarmeService,
+    private readonly shipping: ShippingService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -732,22 +738,14 @@ export class AuctionsService {
     }
   }
 
-  /** Captura uma pré-autorização no valor informado. Lança se não ficar `paid`. */
-  private async _captureCharge(
-    chargeId: string,
-    amountInCents: number,
-  ): Promise<void> {
-    const captured = await this.pagarme.post(
-      `/charges/${chargeId}/capture`,
-      { amount: amountInCents },
-      `bid-capture-${chargeId}`,
-    );
-    if (captured?.status !== 'paid') {
-      throw new Error(
-        `Captura da pré-auth ${chargeId} não confirmada (status: ${captured?.status}).`,
-      );
-    }
-  }
+  // Não existe mais captura de pré-auth aqui, e é de propósito.
+  //
+  // O fecho do leilão capturava a retenção no valor do lance. Com o frete
+  // escolhido DEPOIS do fecho, o total cresce — e não se captura acima do valor
+  // autorizado. Capturar o lance aqui obrigaria a uma segunda cobrança só do
+  // frete. A pré-auth virou garantia: segura o cartão até o vencedor pagar o
+  // total (`payAuctionOrder`, cobrança nova) ou até o prazo vencer
+  // (`_expirePendingPayment`), e nos dois casos termina em `_voidPreAuth`.
 
   // ── Fase 3: re-autorização das pré-autorizações a expirar ────────────────
 
@@ -985,14 +983,17 @@ export class AuctionsService {
 
   // ── Fase 4: pagamento do arremate pendente + expiração do prazo ──────────
 
+  // ── Frete do arremate (escolhido pelo vencedor, depois do fecho) ─────────
+
   /**
-   * Vencedor paga um arremate cuja captura falhou no fecho (pedido
-   * `pending_payment`), via cartão salvo, dentro do prazo. Cobrança à vista com
-   * captura imediata (não é pré-auth) e split nativo. Aprovado → pedido `paid`,
-   * anúncio `sold`, líquido retido na wallet do vendedor. Recusado →
-   * BadRequest (o pedido segue `pending_payment` até o prazo).
+   * Carrega um pedido de arremate que ainda está esperando o vencedor agir, já
+   * validando dono, status e prazo. Compartilhado pela cotação, pela escolha do
+   * frete e pelo pagamento — as três só fazem sentido na mesma janela.
    */
-  async payAuctionOrder(buyerId: string, orderId: string) {
+  private async _loadPendingAuctionOrder(
+    buyerId: string,
+    orderId: string,
+  ): Promise<typeof schema.orders.$inferSelect> {
     const [order] = await this.db
       .select()
       .from(schema.orders)
@@ -1010,6 +1011,252 @@ export class AuctionsService {
     if (order.paymentDeadlineAt && order.paymentDeadlineAt < new Date()) {
       throw new BadRequestException(
         'O prazo para pagamento expirou. O item pode ter sido oferecido a outro participante.',
+      );
+    }
+    return order;
+  }
+
+  /** Valor do lance, separado do frete já escolhido (se houve escolha). */
+  private _bidPartOf(order: typeof schema.orders.$inferSelect): number {
+    return order.totalInCents - (order.shippingInCents ?? 0);
+  }
+
+  /**
+   * Opções de entrega para o VENCEDOR de um leilão escolher.
+   *
+   * Cota com o endereço de entrega do pedido (o padrão do vencedor, gravado no
+   * fecho) contra a origem do vendedor, e devolve junto o valor do lance para o
+   * front conseguir mostrar o total de cada opção sem fazer conta própria.
+   */
+  async getAuctionShippingOptions(buyerId: string, orderId: string) {
+    const order = await this._loadPendingAuctionOrder(buyerId, orderId);
+    const bidInCents = this._bidPartOf(order);
+
+    const endereco = order.addressId
+      ? await this.db.query.addresses.findFirst({
+          where: eq(schema.addresses.id, order.addressId),
+        })
+      : null;
+
+    // Sem endereço não há o que cotar. Não é erro: o vencedor cadastra um e
+    // volta, e o front precisa saber disso para mandá-lo ao lugar certo.
+    if (!endereco) {
+      return {
+        bidInCents,
+        address: null,
+        needsAddress: true,
+        pickup: false,
+        options: [] as any[],
+      };
+    }
+
+    const cotacao = await this.shipping.quoteShipping({
+      to_cep: String(endereco.zip),
+      listing_id: order.listingId ?? undefined,
+    } as any);
+
+    // Só o que dá para cobrar de verdade. Opção sem `raw.id` é o mock que o
+    // ShippingService devolve quando o Melhor Envio não responde — mostrar
+    // aquilo aqui viraria cobrança de um preço que não corresponde a serviço
+    // nenhum, e a etiqueta sairia por outro valor.
+    const options = (cotacao?.options ?? [])
+      .filter((o: any) => o?.raw?.id && Number.isFinite(o.price))
+      .map((o: any) => {
+        const shippingInCents = Math.round(o.price * 100);
+        return {
+          serviceId: Number(o.raw.id),
+          carrier: o.carrier,
+          service: o.service,
+          name: `${o.carrier} ${o.service}`,
+          shippingInCents,
+          deliveryTimeDays: o.delivery_time_days ?? null,
+          totalInCents: bidInCents + shippingInCents,
+        };
+      })
+      .sort((a: any, b: any) => a.shippingInCents - b.shippingInCents);
+
+    return {
+      bidInCents,
+      address: {
+        id: endereco.id,
+        city: endereco.city,
+        state: endereco.state,
+        zip: endereco.zip,
+      },
+      needsAddress: false,
+      pickup: !!cotacao?.pickup,
+      options,
+    };
+  }
+
+  /**
+   * O vencedor escolhe como receber, e o frete entra no total do arremate.
+   *
+   * O PREÇO é sempre o do servidor: recotamos aqui e casamos pelo id do
+   * serviço. O corpo do request não carrega valor — se carregasse, o comprador
+   * escolheria quanto paga de frete.
+   *
+   * Idempotente: escolher de novo recalcula a partir do lance (`_bidPartOf`),
+   * então trocar SEDEX por PAC não acumula frete em cima de frete.
+   */
+  async chooseShipping(
+    buyerId: string,
+    orderId: string,
+    dto: ChooseAuctionShippingDto,
+  ) {
+    const order = await this._loadPendingAuctionOrder(buyerId, orderId);
+    const bidInCents = this._bidPartOf(order);
+    // Comissão travada no fecho do leilão (a taxa de fundador pode mudar entre
+    // o fecho e a escolha; quem arrematou merece a que valia na hora).
+    const comissaoInCents =
+      (order.platformFeeInCents ?? 0) - (order.shippingInCents ?? 0);
+
+    // Endereço: o do corpo tem prioridade, e precisa ser do próprio comprador.
+    let addressId = order.addressId;
+    if (dto.addressId) {
+      const escolhido = await this.db.query.addresses.findFirst({
+        where: eq(schema.addresses.id, dto.addressId),
+      });
+      if (!escolhido || escolhido.userId !== buyerId) {
+        throw new BadRequestException(
+          'Endereço de entrega inválido ou de outro usuário.',
+        );
+      }
+      addressId = escolhido.id;
+    }
+
+    let shippingInCents = 0;
+    let shippingServiceId: number | null = null;
+    let shippingServiceName: string | null = null;
+
+    if (dto.deliveryMethod === 'pickup') {
+      // Mesma regra do checkout de venda direta: o vendedor pode ter desligado
+      // a entrega em mãos, e isso se confere no SERVIDOR.
+      const [sellerProfile] = await this.db
+        .select({ acceptsPickup: schema.sellerProfiles.acceptsPickup })
+        .from(schema.sellerProfiles)
+        .where(eq(schema.sellerProfiles.userId, order.sellerId));
+      if (sellerProfile?.acceptsPickup === false) {
+        throw new BadRequestException(
+          'Este vendedor não faz entrega em mãos. Escolha uma opção de frete.',
+        );
+      }
+    } else {
+      if (!dto.shippingServiceId) {
+        throw new BadRequestException(
+          'Escolha uma opção de frete para continuar.',
+        );
+      }
+      if (!addressId) {
+        throw new BadRequestException(
+          'Cadastre um endereço de entrega antes de escolher o frete.',
+        );
+      }
+      const endereco = await this.db.query.addresses.findFirst({
+        where: eq(schema.addresses.id, addressId),
+      });
+      if (!endereco) {
+        throw new BadRequestException('Endereço de entrega não encontrado.');
+      }
+
+      const cotacao = await this.shipping.quoteShipping({
+        to_cep: String(endereco.zip),
+        listing_id: order.listingId ?? undefined,
+      } as any);
+
+      const escolhida = (cotacao?.options ?? []).find(
+        (o: any) =>
+          o?.raw?.id &&
+          Number(o.raw.id) === Number(dto.shippingServiceId) &&
+          Number.isFinite(o.price),
+      );
+      if (!escolhida) {
+        throw new BadRequestException(
+          'Esta opção de frete não está mais disponível para o seu endereço. ' +
+            'Atualize a página e escolha de novo.',
+        );
+      }
+
+      shippingInCents = Math.round(escolhida.price * 100);
+      shippingServiceId = Number(escolhida.raw.id);
+      shippingServiceName = `${escolhida.carrier} ${escolhida.service}`;
+    }
+
+    // O frete vai INTEIRO para a Kolecta, que compra a etiqueta — mesma regra
+    // da venda direta (`orders.service.ts`). A comissão continua incidindo só
+    // sobre o item. O líquido do vendedor, portanto, não muda com o frete.
+    const totalInCents = bidInCents + shippingInCents;
+    const platformFeeInCents = comissaoInCents + shippingInCents;
+
+    const gravado = await this.db
+      .update(schema.orders)
+      .set({
+        addressId,
+        deliveryMethod: dto.deliveryMethod,
+        shippingInCents,
+        shippingServiceId,
+        shippingServiceName,
+        totalInCents,
+        externalAmountInCents: totalInCents,
+        platformFeeInCents,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.orders.id, order.id),
+          // Guarda contra corrida com a expiração do prazo: se o cron cancelou
+          // no meio, a escolha não ressuscita o pedido.
+          eq(schema.orders.status, 'pending_payment'),
+        ),
+      )
+      .returning();
+
+    // Zero linhas = o cron cancelou entre a leitura e a escrita. Devolver
+    // sucesso aqui faria o front seguir direto para a cobrança de um pedido que
+    // não existe mais, e o erro apareceria como "cartão recusado".
+    if (gravado.length === 0) {
+      throw new BadRequestException(
+        'O prazo deste arremate venceu enquanto você escolhia. O item pode ter sido oferecido a outro participante.',
+      );
+    }
+
+    this.logger.log(
+      `Arremate ${order.id}: entrega ${dto.deliveryMethod}` +
+        (shippingServiceName ? ` (${shippingServiceName})` : '') +
+        ` — lance R$${(bidInCents / 100).toFixed(2)} + frete ` +
+        `R$${(shippingInCents / 100).toFixed(2)} = R$${(totalInCents / 100).toFixed(2)}.`,
+    );
+
+    return {
+      orderId: order.id,
+      deliveryMethod: dto.deliveryMethod,
+      bidInCents,
+      shippingInCents,
+      shippingServiceName,
+      totalInCents,
+    };
+  }
+
+  /**
+   * Vencedor paga o arremate (pedido `pending_payment`) via cartão salvo,
+   * dentro do prazo. Cobrança à vista com captura imediata (não é pré-auth) e
+   * split nativo, no total já com frete. Aprovado → pedido `paid`, anúncio
+   * `sold`, líquido retido na wallet do vendedor e pré-auth do lance liberada.
+   * Recusado → BadRequest (o pedido segue `pending_payment` até o prazo, e a
+   * pré-auth continua de pé como garantia).
+   */
+  async payAuctionOrder(buyerId: string, orderId: string) {
+    const order = await this._loadPendingAuctionOrder(buyerId, orderId);
+
+    // Sem escolha de entrega não há total fechado — cobrar aqui cobraria só o
+    // lance e deixaria a Kolecta pagando a etiqueta, que é exatamente o buraco
+    // que este fluxo fecha. `deliveryMethod` só vira 'pickup' por escolha
+    // explícita, e no envio o serviço fica gravado; um dos dois basta.
+    const escolheuEntrega =
+      order.deliveryMethod === 'pickup' || !!order.shippingServiceId;
+    if (!escolheuEntrega) {
+      throw new BadRequestException(
+        'Escolha como quer receber o item (frete ou retirada) antes de pagar.',
       );
     }
 
@@ -1089,9 +1336,47 @@ export class AuctionsService {
       pagarmeOrder.id,
       charge?.id ?? null,
     );
+
+    // A cobrança do total passou — só agora a retenção do lance pode cair. A
+    // ordem importa: liberar antes de cobrar deixaria o vencedor sem garantia
+    // nenhuma no intervalo, e uma recusa aí custaria o item a ele.
+    //
+    // Best-effort: se o void falhar, o dinheiro do comprador segue retido até a
+    // adquirente expirar a auth sozinha (~5 dias). Ruim, mas não desfaz a venda
+    // — por isso fica em log e não derruba a resposta.
+    const [auctionDoPedido] = await this.db
+      .select({ id: schema.auctions.id })
+      .from(schema.auctions)
+      .where(eq(schema.auctions.listingId, order.listingId));
+    if (auctionDoPedido) {
+      const auth = await this._getActiveBidAuth(auctionDoPedido.id, buyerId);
+      if (auth?.chargeId && auth.chargeId !== charge?.id) {
+        await this._voidPreAuth(auth.chargeId);
+        this.logger.log(
+          `Pré-auth ${auth.chargeId} do lance liberada após o pagamento do arremate ${order.id}.`,
+        );
+      }
+    }
+
     this.logger.log(
-      `💳 Arremate ${order.id} pago pelo vencedor (retry no cartão): pagarme ${pagarmeOrder.id}.`,
+      `💳 Arremate ${order.id} pago pelo vencedor: pagarme ${pagarmeOrder.id} ` +
+        `(total R$${(order.totalInCents / 100).toFixed(2)}, frete ` +
+        `R$${((order.shippingInCents ?? 0) / 100).toFixed(2)}).`,
     );
+
+    // Dispara a etiqueta. Evento próprio, e não `auction.won` de novo: aquele
+    // já saiu no fecho pedindo a escolha do frete, e reemitir só para acionar a
+    // etiqueta dependeria da deduplicação do MailService para não mandar um
+    // segundo e-mail contraditório.
+    this.eventEmitter.emit('auction.paid', {
+      orderId: order.id,
+      buyerId,
+      sellerId: order.sellerId,
+      totalInCents: order.totalInCents,
+      shippingInCents: order.shippingInCents ?? 0,
+      deliveryMethod: order.deliveryMethod ?? 'shipping',
+    });
+
     return { orderId: order.id, paid: true };
   }
 
@@ -1233,8 +1518,23 @@ export class AuctionsService {
       .from(schema.auctions)
       .where(eq(schema.auctions.listingId, order.listingId));
 
-    // O lance do vencedor faltoso vira 'lost' (sai da fila do 2º colocado).
     if (auction) {
+      // LIBERA a retenção do faltoso antes de qualquer outra coisa.
+      //
+      // Virou obrigatório quando o fecho parou de capturar: agora todo arremate
+      // nasce `pending_payment` com uma pré-auth VIVA segurando o cartão. Sem
+      // este void, quem simplesmente desistiu ficaria com o limite preso até a
+      // adquirente expirar a auth sozinha (~5 dias) — e o valor some da fatura
+      // sem nunca ter virado compra, que é o pior tipo de cobrança fantasma.
+      const auth = await this._getActiveBidAuth(auction.id, order.buyerId);
+      if (auth?.chargeId) {
+        await this._voidPreAuth(auth.chargeId);
+        this.logger.log(
+          `Pré-auth ${auth.chargeId} liberada — arremate ${order.id} expirou sem pagamento.`,
+        );
+      }
+
+      // O lance do vencedor faltoso vira 'lost' (sai da fila do 2º colocado).
       await this.db
         .update(schema.bids)
         .set({ status: 'lost' })
@@ -1260,40 +1560,66 @@ export class AuctionsService {
       const enderecoRunnerUp = await this._getDefaultAddressId(
         runnerUp.bidderId,
       );
-      await this.db.transaction(async (tx: any) => {
-        await tx.insert(schema.orders).values({
-          buyerId: runnerUp.bidderId,
-          sellerId: order.sellerId,
-          listingId: order.listingId,
-          addressId: enderecoRunnerUp,
-          totalInCents: runnerUp.amountInCents,
-          sellerNetInCents,
-          platformFeeInCents,
-          gatewayFeeInCents: 0,
-          status: 'pending_payment',
-          paymentMethod: 'external',
-          paymentInstrument: 'credit_card',
-          externalAmountInCents: runnerUp.amountInCents,
-          walletAmountInCents: 0,
-          paymentDeadlineAt: new Date(
-            Date.now() + PAYMENT_DEADLINE_HOURS * 60 * 60 * 1000,
-          ),
-        });
-        // Promove o lance do 2º colocado (vira o vencedor a pagar).
-        await tx
-          .update(schema.bids)
-          .set({ status: 'won' })
-          .where(eq(schema.bids.id, runnerUp.bidId));
-        // Anúncio segue reservado (pending_payment) para o 2º colocado.
-        await tx
-          .update(schema.listings)
-          .set({ status: 'pending_payment' })
-          .where(eq(schema.listings.id, order.listingId));
-      });
+      const novoPedidoId: string = await this.db.transaction(
+        async (tx: any) => {
+          const [novo] = await tx
+            .insert(schema.orders)
+            .values({
+              buyerId: runnerUp.bidderId,
+              sellerId: order.sellerId,
+              listingId: order.listingId,
+              addressId: enderecoRunnerUp,
+              // Sem frete: o 2º colocado escolhe o dele, com o CEP dele.
+              totalInCents: runnerUp.amountInCents,
+              shippingInCents: 0,
+              sellerNetInCents,
+              platformFeeInCents,
+              gatewayFeeInCents: 0,
+              status: 'pending_payment',
+              paymentMethod: 'external',
+              paymentInstrument: 'credit_card',
+              externalAmountInCents: runnerUp.amountInCents,
+              walletAmountInCents: 0,
+              paymentDeadlineAt: new Date(
+                Date.now() + PAYMENT_DEADLINE_HOURS * 60 * 60 * 1000,
+              ),
+            })
+            .returning();
+          // Promove o lance do 2º colocado (vira o vencedor a pagar).
+          await tx
+            .update(schema.bids)
+            .set({ status: 'won' })
+            .where(eq(schema.bids.id, runnerUp.bidId));
+          // Anúncio segue reservado (pending_payment) para o 2º colocado.
+          await tx
+            .update(schema.listings)
+            .set({ status: 'pending_payment' })
+            .where(eq(schema.listings.id, order.listingId));
+          return novo.id as string;
+        },
+      );
       this.logger.warn(
         `⏱️ Arremate ${order.id} expirado. Oferecido ao 2º colocado ${runnerUp.bidderId} ` +
-          `(R$${(runnerUp.amountInCents / 100).toFixed(2)}).`,
+          `(R$${(runnerUp.amountInCents / 100).toFixed(2)}) — pedido ${novoPedidoId}.`,
       );
+
+      // O promovido tem um prazo correndo e precisa escolher o frete. Sem este
+      // aviso ele era promovido no silêncio, e agora que a escolha de entrega é
+      // obrigatória o silêncio garantiria que o prazo vencesse de novo.
+      const [anuncio] = await this.db
+        .select({ title: schema.listings.title })
+        .from(schema.listings)
+        .where(eq(schema.listings.id, order.listingId));
+      this.eventEmitter.emit('auction.won', {
+        orderId: novoPedidoId,
+        winnerId: runnerUp.bidderId,
+        listingTitle: anuncio?.title ?? 'Item Kolecta',
+        finalAmountInCents: runnerUp.amountInCents,
+        needsPayment: true,
+        needsShippingChoice: true,
+        paymentDeadlineHours: PAYMENT_DEADLINE_HOURS,
+      });
+
       return 'offered';
     }
 
@@ -1357,6 +1683,11 @@ export class AuctionsService {
         auctionId: schema.bids.auctionId,
         amountInCents: schema.bids.amountInCents,
         createdAt: schema.bids.createdAt,
+        // O status do LANCE distingue arremate já pago ('won') de arremate
+        // esperando o vencedor ('active' num leilão encerrado). Sem ele a tela
+        // deduzia tudo de `auctionStatus` e mostrava "aguardando pagamento"
+        // para quem já tinha pago.
+        status: schema.bids.status,
         auctionStatus: schema.auctions.status,
         auctionEndsAt: schema.auctions.endsAt,
         currentBidInCents: schema.auctions.currentBidInCents,
@@ -1505,89 +1836,29 @@ export class AuctionsService {
       return;
     }
 
-    // ── Venda: CAPTURA a pré-auth do vencedor (arremate por cartão) ──
-    const totalInCents = auction.currentBidInCents!;
+    // ── Venda: o vencedor ainda precisa ESCOLHER O FRETE ──
+    //
+    // Nada é capturado aqui, de propósito. O leilão não tem checkout, então o
+    // lance cobre só a peça — o frete é escolhido pelo vencedor depois do fecho
+    // e entra no MESMO total. Como não dá para capturar acima do valor
+    // autorizado, capturar o lance agora obrigaria a uma segunda cobrança só do
+    // frete (duas linhas na fatura, e o risco de item pago sem envio pago).
+    //
+    // A pré-autorização do lance NÃO é cancelada: ela segue segurando o cartão
+    // como garantia enquanto o vencedor decide. Some só quando a cobrança do
+    // total passa (`payAuctionOrder`) ou quando o prazo vence
+    // (`_expirePendingPayment`).
+    const bidInCents = auction.currentBidInCents!;
     const platformFeeInCents = Math.round(
-      (totalInCents * platformFeePercent) / 100,
+      (bidInCents * platformFeePercent) / 100,
     );
-    // Líquido do vendedor ANTES da taxa do gateway. Serve ao pedido
-    // `pending_payment`: nada foi cobrado ainda, então não há taxa a descontar
-    // — ela entra quando o vencedor efetivamente paga (`_settlePaidAuctionOrder`).
-    const sellerNetInCents = totalInCents - platformFeeInCents;
+    // Líquido do vendedor = lance − comissão. Não muda quando o frete entra: o
+    // frete é somado ao total E à parte da plataforma, então a fatia do
+    // vendedor é a mesma (mesma regra da venda direta, `orders.service.ts`).
+    // A taxa do gateway é descontada só na hora do pagamento, em
+    // `_settlePaidAuctionOrder`, porque aqui ainda não houve cobrança.
+    const sellerNetInCents = bidInCents - platformFeeInCents;
 
-    // Já no caminho PAGO a taxa é real: a Pagar.me a desconta do vendedor via
-    // `charge_processing_fee` no split, então o espelho da carteira precisa
-    // descontá-la também. Sem isto o vendedor via saldo maior do que existe no
-    // recebedor dele, e o saque falhava por saldo insuficiente.
-    const gatewayFeeInCents = calcGatewayFeeInCents(
-      totalInCents,
-      'credit_card',
-    );
-    const sellerNetPagoInCents = sellerNetInCents - gatewayFeeInCents;
-
-    // Captura a retenção no cartão. Falha (auth expirada/recusada) → Fase 4:
-    // pedido/anúncio ficam 'pending_payment' para o vencedor pagar no prazo.
-    try {
-      if (!winnerAuth?.chargeId) {
-        throw new Error('sem pré-auth vigente para capturar');
-      }
-      await this._captureCharge(winnerAuth.chargeId, totalInCents);
-    } catch (err: any) {
-      const enderecoVencedor = await this._getDefaultAddressId(
-        auction.currentWinnerId!,
-      );
-      const orderId: string = await this.db.transaction(async (tx: any) => {
-        await tx
-          .update(schema.auctions)
-          .set({ status: 'ended', updatedAt: new Date() })
-          .where(eq(schema.auctions.id, auction.id));
-        const [order] = await tx
-          .insert(schema.orders)
-          .values({
-            buyerId: auction.currentWinnerId!,
-            sellerId: listing!.sellerId,
-            listingId: auction.listingId,
-            addressId: enderecoVencedor,
-            totalInCents,
-            sellerNetInCents,
-            platformFeeInCents,
-            gatewayFeeInCents: 0,
-            status: 'pending_payment',
-            paymentMethod: 'external',
-            paymentInstrument: 'credit_card',
-            externalAmountInCents: totalInCents,
-            walletAmountInCents: 0,
-            // Prazo para o vencedor pagar (retry no cartão) antes de expirar.
-            paymentDeadlineAt: new Date(
-              Date.now() + PAYMENT_DEADLINE_HOURS * 60 * 60 * 1000,
-            ),
-          })
-          .returning();
-        await tx
-          .update(schema.listings)
-          .set({ status: 'pending_payment' })
-          .where(eq(schema.listings.id, auction.listingId));
-        return order.id as string;
-      });
-      this.logger.error(
-        `⚠️ Leilão ${auction.id}: captura da pré-auth falhou (${err?.message}). ` +
-          `Pedido ${orderId} → 'pending_payment' (aguardando pagamento do vencedor — Fase 4).`,
-      );
-
-      // Arremate COM pendência de pagamento: o vencedor precisa agir dentro do
-      // prazo, senão a peça volta ao vendedor. É o caso mais urgente dos dois.
-      this.eventEmitter.emit('auction.won', {
-        orderId,
-        winnerId: auction.currentWinnerId!,
-        listingTitle: listing!.title,
-        finalAmountInCents: totalInCents,
-        needsPayment: true,
-        paymentDeadlineHours: PAYMENT_DEADLINE_HOURS,
-      });
-      return;
-    }
-
-    // Captura OK → cria pedido pago e retém o líquido do vendedor (espelho).
     const enderecoVencedor = await this._getDefaultAddressId(
       auction.currentWinnerId!,
     );
@@ -1604,70 +1875,49 @@ export class AuctionsService {
           sellerId: listing!.sellerId,
           listingId: auction.listingId,
           addressId: enderecoVencedor,
-          totalInCents,
-          sellerNetInCents: sellerNetPagoInCents,
+          // Sem frete ainda: `chooseShipping` soma e regrava o total.
+          totalInCents: bidInCents,
+          shippingInCents: 0,
+          sellerNetInCents,
           platformFeeInCents,
-          gatewayFeeInCents,
-          status: 'paid',
+          gatewayFeeInCents: 0,
+          status: 'pending_payment',
           paymentMethod: 'external',
           paymentInstrument: 'credit_card',
-          pagarmeOrderId: winnerAuth.orderId,
-          pagarmeChargeId: winnerAuth.chargeId,
+          externalAmountInCents: bidInCents,
           walletAmountInCents: 0,
-          externalAmountInCents: totalInCents,
+          // Prazo para escolher o frete e pagar, antes de expirar.
+          paymentDeadlineAt: new Date(
+            Date.now() + PAYMENT_DEADLINE_HOURS * 60 * 60 * 1000,
+          ),
         })
         .returning();
 
       await tx
         .update(schema.listings)
-        .set({ status: 'sold' })
+        .set({ status: 'pending_payment' })
         .where(eq(schema.listings.id, auction.listingId));
-
-      await tx
-        .update(schema.bids)
-        .set({ status: 'won' })
-        .where(
-          and(
-            eq(schema.bids.auctionId, auction.id),
-            eq(schema.bids.bidderId, auction.currentWinnerId!),
-            eq(schema.bids.status, 'active'),
-          ),
-        );
 
       return order.id as string;
     });
 
-    // Arremate PAGO: a captura passou, então é só aviso — o pedido já nasce
-    // 'paid' e segue o fluxo normal de envio.
+    this.logger.log(
+      `Leilão ${auction.id} arrematado por ${auction.currentWinnerId} — ` +
+        `R$${(bidInCents / 100).toFixed(2)}. Pedido ${orderId} aguardando ` +
+        `escolha de frete e pagamento (prazo ${PAYMENT_DEADLINE_HOURS}h).` +
+        (winnerAuth?.chargeId
+          ? ` Pré-auth ${winnerAuth.chargeId} mantida como garantia.`
+          : ` ⚠️ Sem pré-auth vigente — a cobrança dependerá do cartão salvo.`),
+    );
+
     this.eventEmitter.emit('auction.won', {
       orderId,
       winnerId: auction.currentWinnerId!,
       listingTitle: listing!.title,
-      finalAmountInCents: totalInCents,
-      needsPayment: false,
+      finalAmountInCents: bidInCents,
+      needsPayment: true,
+      needsShippingChoice: true,
+      paymentDeadlineHours: PAYMENT_DEADLINE_HOURS,
     });
-
-    // Espelha o líquido do vendedor como retido na wallet (buyer protection).
-    // Se o split nativo colocou o líquido no recebedor do vendedor, este é o
-    // espelho contábil; o release/saque segue o fluxo das Fases 4/5.
-    try {
-      const sellerWallet = await this.walletService.getOrCreateWallet(
-        listing!.sellerId,
-      );
-      await this.walletService.hold(
-        sellerWallet.id,
-        sellerNetPagoInCents,
-        `Venda por leilão #${orderId.slice(0, 8)} — líquido retido`,
-        orderId,
-      );
-    } catch (err: any) {
-      this.logger.error(
-        `⚠️ Leilão ${auction.id}: pedido ${orderId} pago, mas falhou o espelho do líquido do vendedor (${err?.message}).`,
-      );
-    }
-
-    this.logger.log(
-      `Leilão ${auction.id} arrematado por cartão: ${auction.currentWinnerId} — R$${(totalInCents / 100).toFixed(2)} (líquido ${sellerNetPagoInCents / 100}, taxa gateway ${gatewayFeeInCents / 100}).`,
-    );
   }
 }

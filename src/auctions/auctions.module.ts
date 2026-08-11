@@ -8,8 +8,11 @@ import { WalletModule } from '../wallet/wallet.module';
 import { FounderModule } from '../founder/founder.module';
 import { CardsModule } from '../cards/cards.module';
 import { PagarmeModule } from '../pagarme/pagarme.module';
+import { ShippingModule } from '../shipping/shipping.module';
 
 @Module({
+  // ShippingModule entra pelo ShippingService: o vencedor do leilão escolhe o
+  // frete depois do fecho, e a cotação dessa escolha sai daqui.
   imports: [
     DatabaseModule,
     AuthModule,
@@ -17,6 +20,7 @@ import { PagarmeModule } from '../pagarme/pagarme.module';
     FounderModule,
     CardsModule,
     PagarmeModule,
+    ShippingModule,
   ],
   controllers: [AuctionsController],
   providers: [AuctionsService, CloseAuctionsCron],

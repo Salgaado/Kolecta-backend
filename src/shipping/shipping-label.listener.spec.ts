@@ -99,3 +99,71 @@ describe('e-mail da etiqueta — o link nunca aponta para o Melhor Envio', () =>
     expect(attachments).toBeUndefined();
   });
 });
+
+/**
+ * Quando a Kolecta gasta com etiqueta num arremate.
+ *
+ * Comprar etiqueta é gastar dinheiro da carteira do Melhor Envio, e num leilão
+ * o frete só existe depois que o vencedor escolhe e paga. O listener escutava
+ * `auction.won` — evento do FECHO, quando nada foi cobrado e o comprador nem
+ * escolheu o serviço. Nessa forma a Kolecta comprava o frete de uma venda que
+ * podia nem se concretizar, e num serviço escolhido por ela mesma.
+ */
+describe('etiqueta do arremate — só depois do pagamento', () => {
+  const orderId = 'ord-leilao-1';
+  let shipping: any;
+  let listener: any;
+
+  beforeEach(() => {
+    shipping = { emitirEtiquetaDoPedido: jest.fn().mockResolvedValue({}) };
+    listener = new ShippingLabelListener(
+      shipping,
+      { send: jest.fn() } as any,
+      { get: jest.fn() } as any,
+      {} as any,
+    );
+  });
+
+  it('emite a etiqueta quando o arremate é pago', async () => {
+    await listener.aoArrematar({
+      orderId,
+      buyerId: 'b1',
+      sellerId: 's1',
+      totalInCents: 7550,
+      shippingInCents: 1550,
+      deliveryMethod: 'shipping',
+    });
+
+    expect(shipping.emitirEtiquetaDoPedido).toHaveBeenCalledWith(orderId);
+  });
+
+  it('NÃO emite etiqueta em retirada em mãos', async () => {
+    await listener.aoArrematar({
+      orderId,
+      buyerId: 'b1',
+      sellerId: 's1',
+      totalInCents: 6000,
+      shippingInCents: 0,
+      deliveryMethod: 'pickup',
+    });
+
+    expect(shipping.emitirEtiquetaDoPedido).not.toHaveBeenCalled();
+  });
+
+  it('etiqueta que falha não derruba a venda já paga', async () => {
+    shipping.emitirEtiquetaDoPedido.mockRejectedValue(
+      new Error('saldo insuficiente na carteira do Melhor Envio'),
+    );
+
+    await expect(
+      listener.aoArrematar({
+        orderId,
+        buyerId: 'b1',
+        sellerId: 's1',
+        totalInCents: 7550,
+        shippingInCents: 1550,
+        deliveryMethod: 'shipping',
+      }),
+    ).resolves.toBeUndefined();
+  });
+});

@@ -19,10 +19,39 @@ import { WalletService } from '../wallet/wallet.service';
 import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
+import { ShippingService } from '../shipping/shipping.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // Emissor de eventos: só precisamos observar o que foi emitido.
 const mockEventEmitter = { emit: jest.fn() };
+
+/**
+ * Cotação de frete. `raw.id` é o que identifica o serviço no Melhor Envio — e é
+ * por ele que `chooseShipping` casa a escolha do comprador com o preço do
+ * servidor. Opção sem `raw.id` é o mock que o ShippingService devolve quando a
+ * API está fora, e o serviço tem que recusar.
+ */
+const mockShippingService = {
+  quoteShipping: jest.fn().mockResolvedValue({
+    pickup: true,
+    options: [
+      {
+        carrier: 'Correios',
+        service: 'PAC',
+        price: 15.5,
+        delivery_time_days: 7,
+        raw: { id: 1 },
+      },
+      {
+        carrier: 'Correios',
+        service: 'SEDEX',
+        price: 32.9,
+        delivery_time_days: 2,
+        raw: { id: 2 },
+      },
+    ],
+  }),
+};
 import {
   NotFoundException,
   BadRequestException,
@@ -184,6 +213,7 @@ describe('AuctionsService', () => {
         { provide: FounderService, useValue: mockFounderService },
         { provide: CardsService, useValue: mockCardsService },
         { provide: PagarmeService, useValue: mockPagarmeService },
+        { provide: ShippingService, useValue: mockShippingService },
         { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
@@ -205,6 +235,26 @@ describe('AuctionsService', () => {
       .mockResolvedValue({ customerId: 'cus_1', cardId: 'card_1' });
     mockPagarmeService.post.mockReset().mockResolvedValue(authorizedOrder);
     mockPagarmeService.delete.mockReset().mockResolvedValue({});
+    mockShippingService.quoteShipping.mockReset().mockResolvedValue({
+      pickup: true,
+      options: [
+        {
+          carrier: 'Correios',
+          service: 'PAC',
+          price: 15.5,
+          delivery_time_days: 7,
+          raw: { id: 1 },
+        },
+        {
+          carrier: 'Correios',
+          service: 'SEDEX',
+          price: 32.9,
+          delivery_time_days: 2,
+          raw: { id: 2 },
+        },
+      ],
+    });
+    mockEventEmitter.emit.mockReset();
   });
 
   // ── findById ─────────────────────────────────────────────────────────────
@@ -538,7 +588,15 @@ describe('AuctionsService', () => {
       expect(mockDb.update).toHaveBeenCalled();
     });
 
-    it('deve CAPTURAR a pré-auth do vencedor e reter o líquido do vendedor', async () => {
+    /**
+     * O fecho NÃO cobra mais nada.
+     *
+     * O lance cobre só a peça; o frete é escolhido pelo vencedor depois e entra
+     * no MESMO total. Como não se captura acima do valor autorizado, capturar
+     * aqui obrigaria a uma segunda cobrança só do frete. O pedido nasce
+     * `pending_payment` e a pré-auth vira garantia.
+     */
+    const fecharComVencedor = async () => {
       const winnerAuction = {
         ...mockAuction,
         currentWinnerId: bidderId,
@@ -551,52 +609,50 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([{ id: sellerId, role: 'user' }]) // requester = seller
         .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }]) // _getActiveBidAuth
         .mockResolvedValueOnce([{ id: 'end_1', isDefault: true }]); // endereço do vencedor
-      // Captura da pré-auth confirmada.
-      mockPagarmeService.post.mockReset().mockResolvedValue({ status: 'paid' });
       service = await buildModule();
-
       await service.endAuction(mockAuctionId, sellerId);
-
-      // Capturou a charge autorizada.
-      expect(mockPagarmeService.post).toHaveBeenCalledWith(
-        '/charges/ch_1/capture',
-        { amount: 6000 },
-        expect.any(String),
-      );
-      // Espelhou o líquido do vendedor como retido na wallet.
-      expect(mockWalletService.hold).toHaveBeenCalled();
-      // O pedido nasce COM endereço: sem ele a etiqueta do Melhor Envio nem
-      // chega a ser pedida, e o leilão não tem checkout para escolher um.
-      const pedido = mockDb.txs
+      return mockDb.txs
         .flatMap((tx: any) => tx.values.mock.calls)
         .map((c: any[]) => c[0])
         .find((v: any) => v?.buyerId === bidderId);
+    };
+
+    it('NÃO captura a pré-auth no fecho: pedido nasce pending_payment sem frete', async () => {
+      const pedido = await fecharComVencedor();
+
+      // Nada de captura — o total ainda vai crescer com o frete.
+      expect(mockPagarmeService.post).not.toHaveBeenCalledWith(
+        expect.stringContaining('/capture'),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(pedido?.status).toBe('pending_payment');
+      expect(pedido?.totalInCents).toBe(6000);
+      expect(pedido?.shippingInCents).toBe(0);
+      // O pedido nasce COM endereço: é dele que sai a cotação do frete.
       expect(pedido?.addressId).toBe('end_1');
+      // Sem cobrança não há líquido a reter ainda.
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
     });
 
-    it('deve deixar o pedido pending_payment se a captura falhar (Fase 4)', async () => {
-      const winnerAuction = {
-        ...mockAuction,
-        currentWinnerId: bidderId,
-        currentBidInCents: 6000,
-      };
-      mockDb = makeDrizzleMock();
-      mockDb.where
-        .mockResolvedValueOnce([winnerAuction])
-        .mockResolvedValueOnce([mockListing])
-        .mockResolvedValueOnce([{ id: sellerId, role: 'user' }])
-        .mockResolvedValueOnce([{ chargeId: 'ch_1', orderId: 'or_1' }])
-        .mockResolvedValueOnce([{ id: 'end_1', isDefault: true }]); // endereço do vencedor
-      // Captura NÃO confirmada → _captureCharge lança → ramo pending_payment.
-      mockPagarmeService.post
-        .mockReset()
-        .mockResolvedValue({ status: 'failed' });
-      service = await buildModule();
+    it('mantém a pré-auth de pé no fecho (é a garantia enquanto ele escolhe)', async () => {
+      await fecharComVencedor();
 
-      await service.endAuction(mockAuctionId, sellerId);
+      // Cancelar aqui deixaria o arremate sem garantia nenhuma até o pagamento.
+      expect(mockPagarmeService.delete).not.toHaveBeenCalled();
+    });
 
-      // Sem captura confirmada, o líquido do vendedor NÃO é retido.
-      expect(mockWalletService.hold).not.toHaveBeenCalled();
+    it('avisa o vencedor que falta escolher o frete', async () => {
+      await fecharComVencedor();
+
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'auction.won',
+        expect.objectContaining({
+          winnerId: bidderId,
+          needsPayment: true,
+          needsShippingChoice: true,
+        }),
+      );
     });
   });
 
@@ -904,17 +960,293 @@ describe('AuctionsService', () => {
     });
   });
 
+  // ── Frete do arremate (escolhido pelo vencedor, depois do fecho) ─────────
+
+  describe('getAuctionShippingOptions / chooseShipping', () => {
+    // Arremate recém-fechado: total = só o lance, sem frete, sem escolha.
+    const arremate = {
+      id: 'order_1',
+      buyerId: bidderId,
+      sellerId,
+      listingId: mockListingId,
+      addressId: 'addr_1',
+      totalInCents: 6000,
+      shippingInCents: 0,
+      shippingServiceId: null,
+      shippingServiceName: null,
+      deliveryMethod: 'shipping',
+      sellerNetInCents: 5340,
+      platformFeeInCents: 660,
+      status: 'pending_payment',
+      paymentDeadlineAt: new Date(Date.now() + 12 * 60 * 60 * 1000),
+    };
+
+    // `db.query.addresses.findFirst` é caminho separado do chain de select.
+    const stubQuery = (endereco: any = mockEndereco) => {
+      mockDb.query = {
+        addresses: { findFirst: jest.fn().mockResolvedValue(endereco) },
+      };
+    };
+
+    it('lista as opções com o total (lance + frete) de cada uma', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([arremate]);
+      stubQuery();
+      service = await buildModule();
+
+      const r = await service.getAuctionShippingOptions(bidderId, 'order_1');
+
+      expect(r.bidInCents).toBe(6000);
+      expect(r.needsAddress).toBe(false);
+      // Ordenadas da mais barata para a mais cara.
+      expect(r.options.map((o: any) => o.serviceId)).toEqual([1, 2]);
+      expect(r.options[0]).toMatchObject({
+        name: 'Correios PAC',
+        shippingInCents: 1550,
+        totalInCents: 7550,
+      });
+    });
+
+    it('descarta opção sem raw.id (mock do ShippingService com o ME fora)', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([arremate]);
+      stubQuery();
+      mockShippingService.quoteShipping.mockResolvedValueOnce({
+        pickup: true,
+        options: [
+          { carrier: 'Correios', service: 'PAC', price: 25.9, raw: {} },
+        ],
+      });
+      service = await buildModule();
+
+      const r = await service.getAuctionShippingOptions(bidderId, 'order_1');
+
+      // Cobrar um preço que não corresponde a serviço nenhum faria a etiqueta
+      // sair por outro valor — melhor não oferecer.
+      expect(r.options).toEqual([]);
+    });
+
+    it('sinaliza needsAddress quando o vencedor não tem endereço', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([{ ...arremate, addressId: null }]);
+      stubQuery(null);
+      service = await buildModule();
+
+      const r = await service.getAuctionShippingOptions(bidderId, 'order_1');
+
+      expect(r.needsAddress).toBe(true);
+      expect(r.options).toEqual([]);
+      expect(mockShippingService.quoteShipping).not.toHaveBeenCalled();
+    });
+
+    it('soma o frete ao total e manda o frete INTEIRO para a plataforma', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([arremate]);
+      stubQuery();
+      service = await buildModule();
+
+      const r = await service.chooseShipping(bidderId, 'order_1', {
+        deliveryMethod: 'shipping',
+        shippingServiceId: 1,
+      });
+
+      expect(r).toMatchObject({
+        bidInCents: 6000,
+        shippingInCents: 1550,
+        totalInCents: 7550,
+        shippingServiceName: 'Correios PAC',
+      });
+      const gravado = mockDb.set.mock.calls[0][0];
+      expect(gravado.totalInCents).toBe(7550);
+      expect(gravado.externalAmountInCents).toBe(7550);
+      // Comissão (660, sobre o item) + frete inteiro (1550). O líquido do
+      // vendedor não muda com o frete.
+      expect(gravado.platformFeeInCents).toBe(2210);
+      expect(gravado.shippingServiceId).toBe(1);
+    });
+
+    it('IGNORA preço vindo do cliente: usa o da recotagem no servidor', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([arremate]);
+      stubQuery();
+      service = await buildModule();
+
+      // O corpo não tem campo de preço; mesmo assim vale conferir que o valor
+      // gravado veio da cotação, e não de nada que o comprador controle.
+      const r = await service.chooseShipping(bidderId, 'order_1', {
+        deliveryMethod: 'shipping',
+        shippingServiceId: 2,
+      } as any);
+
+      expect(r.shippingInCents).toBe(3290); // SEDEX da cotação, não 0
+      expect(r.totalInCents).toBe(9290);
+    });
+
+    it('recusa serviço que não está mais na cotação do endereço', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([arremate]);
+      stubQuery();
+      service = await buildModule();
+
+      await expect(
+        service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'shipping',
+          shippingServiceId: 999,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('é idempotente: trocar de opção não acumula frete sobre frete', async () => {
+      // Pedido que JÁ tem SEDEX escolhido; agora ele troca para PAC.
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([
+        {
+          ...arremate,
+          totalInCents: 9290, // 6000 + 3290
+          shippingInCents: 3290,
+          shippingServiceId: 2,
+          shippingServiceName: 'Correios SEDEX',
+          platformFeeInCents: 3950, // 660 + 3290
+        },
+      ]);
+      stubQuery();
+      service = await buildModule();
+
+      const r = await service.chooseShipping(bidderId, 'order_1', {
+        deliveryMethod: 'shipping',
+        shippingServiceId: 1,
+      });
+
+      // Volta a partir do LANCE, não do total anterior.
+      expect(r.bidInCents).toBe(6000);
+      expect(r.totalInCents).toBe(7550);
+      expect(mockDb.set.mock.calls[0][0].platformFeeInCents).toBe(2210);
+    });
+
+    it('retirada em mãos zera o frete e mantém o total no valor do lance', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([arremate])
+        .mockResolvedValueOnce([{ acceptsPickup: true }]);
+      stubQuery();
+      service = await buildModule();
+
+      const r = await service.chooseShipping(bidderId, 'order_1', {
+        deliveryMethod: 'pickup',
+      });
+
+      expect(r).toMatchObject({
+        deliveryMethod: 'pickup',
+        shippingInCents: 0,
+        totalInCents: 6000,
+      });
+      expect(mockDb.set.mock.calls[0][0].shippingServiceId).toBeNull();
+    });
+
+    it('recusa retirada em mãos quando o vendedor não aceita', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([arremate])
+        .mockResolvedValueOnce([{ acceptsPickup: false }]);
+      stubQuery();
+      service = await buildModule();
+
+      await expect(
+        service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'pickup',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('recusa escolha de frete de outro comprador', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([{ ...arremate, buyerId: 'outro' }]);
+      stubQuery();
+      service = await buildModule();
+
+      await expect(
+        service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'shipping',
+          shippingServiceId: 1,
+        }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('recusa escolha depois do prazo vencido', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([
+        { ...arremate, paymentDeadlineAt: new Date(Date.now() - 1000) },
+      ]);
+      stubQuery();
+      service = await buildModule();
+
+      await expect(
+        service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'shipping',
+          shippingServiceId: 1,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    /**
+     * O cron de expiração pode cancelar o pedido entre a leitura e a escrita.
+     * Sem esta guarda o front seguia direto para a cobrança de um pedido morto,
+     * e o vencedor via "cartão recusado" em vez do motivo real.
+     */
+    it('avisa quando o prazo vence no meio da escolha (update pega 0 linhas)', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([arremate]);
+      stubQuery();
+      // update().set().where().returning() → nenhuma linha afetada.
+      mockDb.set = jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnValue({
+          returning: jest.fn().mockResolvedValue([]),
+        }),
+      });
+      service = await buildModule();
+
+      await expect(
+        service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'shipping',
+          shippingServiceId: 1,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('recusa endereço que não pertence ao comprador', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([arremate]);
+      stubQuery({ ...mockEndereco, id: 'addr_9', userId: 'outro_user' });
+      service = await buildModule();
+
+      await expect(
+        service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'shipping',
+          shippingServiceId: 1,
+          addressId: 'addr_9',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
   // ── payAuctionOrder (Fase 4) ─────────────────────────────────────────────
 
   describe('payAuctionOrder', () => {
+    // Pedido com a entrega JÁ escolhida — é o único estado em que pagar é
+    // legal. Lance 6000 + frete 1550: o total é o que vai ao cartão, e a parte
+    // da plataforma leva o frete inteiro (660 de comissão + 1550).
     const pendingOrder = {
       id: 'order_1',
       buyerId: bidderId,
       sellerId,
       listingId: mockListingId,
-      totalInCents: 6000,
+      totalInCents: 7550,
+      shippingInCents: 1550,
+      shippingServiceId: 1,
+      shippingServiceName: 'Correios PAC',
+      deliveryMethod: 'shipping',
       sellerNetInCents: 5340,
-      platformFeeInCents: 660,
+      platformFeeInCents: 2210,
       status: 'pending_payment',
       paymentDeadlineAt: new Date(Date.now() + 12 * 60 * 60 * 1000),
     };
@@ -993,22 +1325,78 @@ describe('AuctionsService', () => {
       expect(mockWalletService.hold).not.toHaveBeenCalled();
     });
 
-    it('paga com sucesso: cobra o cartão (à vista) e retém o líquido do vendedor', async () => {
+    /**
+     * Sem escolha de entrega o total ainda é só o lance. Cobrar aí deixaria a
+     * Kolecta pagando a etiqueta — que é exatamente o buraco que este fluxo
+     * fecha.
+     */
+    it('RECUSA pagar enquanto o vencedor não escolheu a entrega', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([
+        {
+          ...pendingOrder,
+          totalInCents: 6000,
+          shippingInCents: 0,
+          shippingServiceId: null,
+          shippingServiceName: null,
+          deliveryMethod: 'shipping', // default do schema, não é escolha
+        },
+      ]);
+      service = await buildModule();
+
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+    });
+
+    it('aceita pagar quando a escolha foi RETIRADA em mãos (sem serviço de frete)', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([
+          {
+            ...pendingOrder,
+            totalInCents: 6000,
+            shippingInCents: 0,
+            shippingServiceId: null,
+            shippingServiceName: null,
+            deliveryMethod: 'pickup',
+          },
+        ])
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // _settle
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // void: auction por listingId
+        .mockResolvedValueOnce([]); // _getActiveBidAuth: sem auth
+      mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
+      service = await buildModule();
+
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).resolves.toEqual({ orderId: 'order_1', paid: true });
+    });
+
+    it('paga com sucesso: cobra lance + frete, retém o líquido e LIBERA a pré-auth', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([pendingOrder]) // order
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
-        .mockResolvedValueOnce([{ id: 'auction_1' }]); // auction por listingId (_settle)
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId (_settle)
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId (void)
+        .mockResolvedValueOnce([{ chargeId: 'ch_bid', orderId: 'or_bid' }]); // pré-auth do lance
       mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
       service = await buildModule();
 
       const result = await service.payAuctionOrder(bidderId, 'order_1');
 
       expect(result).toEqual({ orderId: 'order_1', paid: true });
-      // Cobrança com captura imediata (capture:true), não pré-auth.
+      // Cobrança com captura imediata (capture:true), não pré-auth, e no TOTAL
+      // com frete — não no valor do lance.
       expect(mockPagarmeService.post).toHaveBeenCalledWith(
         '/orders',
         expect.objectContaining({
+          items: expect.arrayContaining([
+            expect.objectContaining({ amount: 7550 }),
+          ]),
           payments: expect.arrayContaining([
             expect.objectContaining({
               credit_card: expect.objectContaining({ capture: true }),
@@ -1019,6 +1407,15 @@ describe('AuctionsService', () => {
       );
       // Líquido do vendedor retido na wallet.
       expect(mockWalletService.hold).toHaveBeenCalled();
+      // A retenção do lance cai só DEPOIS da cobrança passar.
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith(
+        '/charges/ch_bid',
+      );
+      // Etiqueta só é acionada agora, com o frete pago.
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'auction.paid',
+        expect.objectContaining({ orderId: 'order_1', shippingInCents: 1550 }),
+      );
     });
   });
 
@@ -1061,7 +1458,8 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([overdueOrder]) // vencidos
         .mockResolvedValueOnce([
           { id: 'auction_1', reservePriceInCents: null },
-        ]); // auction por listingId
+        ]) // auction por listingId
+        .mockResolvedValueOnce([]); // _getActiveBidAuth: sem pré-auth de pé
       stubUpdatesWithCancel([overdueOrder]); // cancelou o pedido
       // _findRunnerUp: só há lances do próprio vencedor faltoso → sem elegível.
       mockDb.orderBy.mockResolvedValue([
@@ -1076,15 +1474,43 @@ describe('AuctionsService', () => {
       expect(result.offered).toEqual([]);
     });
 
+    /**
+     * Virou obrigatório quando o fecho parou de capturar: todo arremate nasce
+     * com uma pré-auth VIVA segurando o cartão. Quem desiste não pode ficar com
+     * o limite preso até a adquirente expirar sozinha (~5 dias).
+     */
+    it('LIBERA a retenção do cartão do faltoso ao expirar o prazo', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([overdueOrder])
+        .mockResolvedValueOnce([{ id: 'auction_1', reservePriceInCents: null }])
+        .mockResolvedValueOnce([
+          { chargeId: 'ch_faltoso', orderId: 'or_faltoso' },
+        ]); // pré-auth de pé
+      stubUpdatesWithCancel([overdueOrder]);
+      mockDb.orderBy.mockResolvedValue([
+        { bidId: 'b1', bidderId, amountInCents: 6000, status: 'lost' },
+      ]);
+      service = await buildModule();
+
+      await service.expireOverduePendingPayments();
+
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith(
+        '/charges/ch_faltoso',
+      );
+    });
+
     it('OFERECE ao 2º colocado quando existe lance elegível acima da reserva', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([overdueOrder]) // vencidos
         .mockResolvedValueOnce([{ id: 'auction_1', reservePriceInCents: 3000 }]) // auction
+        .mockResolvedValueOnce([]) // _getActiveBidAuth: sem pré-auth de pé
         // _findRunnerUp segue a cadeia até orderBy — precisa do chain, não de
-        // um array; só depois dele vem a consulta do endereço.
+        // um array; só depois dele vêm o endereço e o título do anúncio.
         .mockReturnValueOnce(mockDb)
-        .mockResolvedValueOnce([{ id: 'end_2', isDefault: true }]); // endereço do 2º
+        .mockResolvedValueOnce([{ id: 'end_2', isDefault: true }]) // endereço do 2º
+        .mockResolvedValueOnce([{ title: 'Item de teste' }]); // título p/ o e-mail
       stubUpdatesWithCancel([overdueOrder]);
       // Vencedor faltoso (buyer_001) + 2º colocado (buyer_002) com lance válido.
       mockDb.orderBy.mockResolvedValue([
@@ -1103,6 +1529,15 @@ describe('AuctionsService', () => {
       expect(result.expired).toContain('order_ov');
       expect(result.offered).toContain('order_ov');
       expect(result.reopened).toEqual([]);
+      // O promovido tem prazo correndo e precisa escolher o frete — antes era
+      // promovido no silêncio, o que garantia que o prazo vencesse de novo.
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'auction.won',
+        expect.objectContaining({
+          winnerId: 'buyer_002',
+          needsShippingChoice: true,
+        }),
+      );
     });
 
     it('não conta como expirado se o cancelamento perde a corrida (já pago)', async () => {

@@ -28,9 +28,12 @@ function makeDb() {
     },
     select: jest.fn(() => selectChain),
     /** Documento no cadastro de recebedor do vendedor (ou nenhum). */
-    __comDocumentoDoRecebedor(documentNumber: string | null) {
+    __comDocumentoDoRecebedor(
+      documentNumber: string | null,
+      legalName: string | null = null,
+    ) {
       selectChain.where.mockResolvedValue(
-        documentNumber ? [{ documentNumber }] : [],
+        documentNumber ? [{ documentNumber, legalName }] : [],
       );
     },
   };
@@ -198,10 +201,136 @@ describe('ShippingService — geração de etiqueta (POST /me/cart)', () => {
     const service = new ShippingService(http, db as any);
 
     await expect((service as any).createCart(dto)).rejects.toThrow(
-      /CPF do vendedor não encontrado/,
+      /CPF\/CNPJ do vendedor não encontrado/,
     );
     // Nada de carrinho meio criado no Melhor Envio.
     expect(httpPost).not.toHaveBeenCalled();
+  });
+
+  // ── Vendedor PJ (CNPJ) ───────────────────────────────────────────────────
+  //
+  // `document` é validado como CPF pelo Melhor Envio. CNPJ ali devolve
+  // "O campo from.document deve ter um CPF válido" e recusa o carrinho inteiro
+  // — aconteceu em 09/08/2026 com a Rock Wheels, R$600 já pagos pelo comprador.
+  // Em produção, 16 dos 43 vendedores com documento são PJ.
+
+  /** Vendedor sem `users.cpf` (só vende) e com CNPJ no cadastro de recebedor. */
+  const seedVendedorPJ = (legalName: string | null = null) => {
+    seedHappyPath();
+    db.query.users.findFirst
+      .mockReset()
+      .mockResolvedValueOnce({
+        email: 'b@x.com',
+        name: 'Comprador',
+        cpf: '52998224725',
+      })
+      .mockResolvedValueOnce({ email: 's@x.com', name: 'Vendedor', cpf: null });
+    db.__comDocumentoDoRecebedor('41769344000147', legalName);
+  };
+
+  it('CNPJ do vendedor vai em company_document, nunca em document', async () => {
+    seedVendedorPJ();
+    const service = new ShippingService(http, db as any);
+
+    await (service as any).createCart(dto);
+
+    const payload = httpPost.mock.calls[0][1];
+    expect(payload.from.company_document).toBe('41769344000147');
+    // O campo de CPF não pode nem existir: mandar vazio faz o validador
+    // reclamar do campo em branco.
+    expect(payload.from).not.toHaveProperty('document');
+  });
+
+  /**
+   * O bug que falhava CALADO. Vendedor PJ que também COMPRA na plataforma tem
+   * `users.cpf` preenchido pelo checkout — e a ordem antiga usava esse CPF
+   * pessoal como remetente do envio da empresa. O Melhor Envio aceitava, e
+   * desde 06/04/2026 a DC-e vai para a SEFAZ: remetente errado virou dado
+   * fiscal declarado.
+   */
+  it('vendedor PJ que também compra: usa o CNPJ da empresa, não o CPF pessoal', async () => {
+    seedHappyPath();
+    db.query.users.findFirst
+      .mockReset()
+      .mockResolvedValueOnce({
+        email: 'b@x.com',
+        name: 'Comprador',
+        cpf: '52998224725',
+      })
+      // O dono comprou algo um dia → CPF pessoal preenchido.
+      .mockResolvedValueOnce({
+        email: 's@x.com',
+        name: 'Dono da Loja',
+        cpf: '11144477735',
+      });
+    db.__comDocumentoDoRecebedor('41769344000147');
+    const service = new ShippingService(http, db as any);
+
+    await (service as any).createCart(dto);
+
+    const payload = httpPost.mock.calls[0][1];
+    expect(payload.from.company_document).toBe('41769344000147');
+    expect(payload.from).not.toHaveProperty('document');
+  });
+
+  it('CNPJ do comprador também vai em company_document', async () => {
+    seedHappyPath();
+    db.query.users.findFirst
+      .mockReset()
+      .mockResolvedValueOnce({
+        email: 'b@x.com',
+        name: 'Comprador PJ',
+        cpf: '41769344000147',
+      })
+      .mockResolvedValueOnce({
+        email: 's@x.com',
+        name: 'Vendedor',
+        cpf: '11144477735',
+      });
+    const service = new ShippingService(http, db as any);
+
+    await (service as any).createCart(dto);
+
+    const payload = httpPost.mock.calls[0][1];
+    expect(payload.to.company_document).toBe('41769344000147');
+    expect(payload.to).not.toHaveProperty('document');
+  });
+
+  it('documento com tamanho inválido não vira campo nenhum', async () => {
+    seedHappyPath();
+    db.query.users.findFirst
+      .mockReset()
+      .mockResolvedValueOnce({
+        email: 'b@x.com',
+        name: 'Comprador',
+        cpf: '52998224725',
+      })
+      .mockResolvedValueOnce({ email: 's@x.com', name: 'Vendedor', cpf: null });
+    // 12 dígitos: o `>= 11` antigo deixava passar e o ME devolvia 422 genérico
+    // DEPOIS de a venda estar paga. Melhor recusar aqui, com nome e sobrenome.
+    db.__comDocumentoDoRecebedor('123456789012');
+    const service = new ShippingService(http, db as any);
+
+    await expect((service as any).createCart(dto)).rejects.toThrow(
+      /CPF\/CNPJ do vendedor não encontrado/,
+    );
+    expect(httpPost).not.toHaveBeenCalled();
+  });
+
+  it('usa a razão social como remetente do PJ quando o endereço não tem nome', async () => {
+    seedVendedorPJ('Rock Wheels Colecionáveis LTDA');
+    // Endereço de origem sem `recipientName`: sem isto o remetente sairia com
+    // o nome pessoal ao lado do CNPJ da empresa.
+    db.query.addresses.findFirst
+      .mockReset()
+      .mockResolvedValueOnce({ ...toAddress })
+      .mockResolvedValueOnce({ ...fromAddress, recipientName: null });
+    const service = new ShippingService(http, db as any);
+
+    await (service as any).createCart(dto);
+
+    const payload = httpPost.mock.calls[0][1];
+    expect(payload.from.name).toBe('Rock Wheels Colecionáveis LTDA');
   });
 
   it('respeita declared_value do request quando informado', async () => {
