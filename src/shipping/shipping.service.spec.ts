@@ -1,4 +1,4 @@
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { HttpService } from '@nestjs/axios';
 import {
   HttpException,
@@ -1309,5 +1309,137 @@ describe('ShippingService — escolha de transportadora do vendedor', () => {
     const service = new ShippingService({ post: httpPost } as any, db as any);
 
     expect(await cotar(service)).toEqual([1]);
+  });
+});
+
+/**
+ * O `/shipment/tracking` e o `/orders/{id}` descrevem o mesmo envio, mas não em
+ * sincronia. Medido em produção em 11/08/2026 no envio `a27aa929` (Correios
+ * PAC), com as duas chamadas no mesmo minuto:
+ *
+ *   GET  /orders/{id}       → tracking: "AP340313552BR", generated_at: "19:38:00"
+ *   POST /shipment/tracking → tracking: null,            generated_at: null
+ *
+ * O pedido ficou sem código de rastreio no banco, e o `RastreioCron` rodou logo
+ * depois sem consertar: `order.trackingCode ?? rastreio.codigo` é `null ?? null`
+ * em toda rodada. Além do comprador não conseguir rastrear, `posted_at` e
+ * `delivered_at` saem do MESMO endpoint atrasado — e são eles que fazem o pedido
+ * virar `shipped`/`delivered` e liberam o saldo retido do vendedor.
+ */
+describe('ShippingService — rastreio atrasado no /shipment/tracking', () => {
+  const URL = 'https://www.melhorenvio.com.br/api/v2/me';
+  const CART = 'a27aa929';
+
+  function fazerService(respostaTracking: any, respostaOrders?: any) {
+    process.env.MELHOR_ENVIO_API_URL = URL;
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+    const httpPost = jest.fn(() => of({ data: { [CART]: respostaTracking } }));
+    const httpGet = jest.fn(() =>
+      respostaOrders instanceof Error
+        ? throwError(() => respostaOrders)
+        : of({ data: respostaOrders ?? {} }),
+    );
+    const service = new ShippingService(
+      { post: httpPost, get: httpGet } as any,
+      {} as any,
+    );
+    return { service, httpPost, httpGet };
+  }
+
+  it('completa o código pelo /orders quando o tracking vem nulo', async () => {
+    const { service, httpGet } = fazerService(
+      { status: 'released', tracking: null, generated_at: null },
+      {
+        status: 'released',
+        tracking: 'AP340313552BR',
+        generated_at: '2026-08-11 19:38:00',
+      },
+    );
+
+    const r = await service.rastrearEnvio(CART);
+
+    expect(httpGet).toHaveBeenCalledWith(
+      `${URL}/orders/${CART}`,
+      expect.anything(),
+    );
+    expect(r.codigo).toBe('AP340313552BR');
+    // O marco veio junto: sem ele a linha do tempo mostraria "pendente" num
+    // envio já emitido.
+    expect(r.etapaAtual).toBe('emitida');
+  });
+
+  it('não gasta a chamada extra quando o tracking já traz o código', async () => {
+    const { service, httpGet } = fazerService({
+      status: 'posted',
+      tracking: 'AP340313552BR',
+      posted_at: '2026-08-12 09:00:00',
+    });
+
+    const r = await service.rastrearEnvio(CART);
+
+    expect(httpGet).not.toHaveBeenCalled();
+    expect(r.codigo).toBe('AP340313552BR');
+    expect(r.etapaAtual).toBe('postado');
+  });
+
+  /**
+   * O complemento é remendo do atraso, não uma segunda fonte da verdade: se o
+   * /orders estiver ATRÁS (entrega ainda não registrada lá), o que o
+   * /shipment/tracking afirmou tem que continuar valendo — senão uma entrega já
+   * detectada sumiria e o saldo do vendedor voltaria a ficar preso.
+   */
+  it('não sobrescreve o que o /shipment/tracking já afirmou', async () => {
+    const { service } = fazerService(
+      {
+        status: 'delivered',
+        tracking: null,
+        delivered_at: '2026-08-20 10:00:00',
+      },
+      { status: 'posted', tracking: 'AP340313552BR', delivered_at: null },
+    );
+
+    const r = await service.rastrearEnvio(CART);
+
+    expect(r.codigo).toBe('AP340313552BR');
+    expect(r.entregueEm).toBe('2026-08-20 10:00:00');
+    expect(r.etapaAtual).toBe('entregue');
+  });
+
+  it('devolve o rastreio parcial quando o /orders falha, sem estourar', async () => {
+    const { service } = fazerService(
+      {
+        status: 'released',
+        tracking: null,
+        generated_at: '2026-08-11 19:38:00',
+      },
+      new Error('502 Bad Gateway'),
+    );
+
+    const r = await service.rastrearEnvio(CART);
+
+    expect(r.codigo).toBeNull();
+    expect(r.etapaAtual).toBe('emitida');
+  });
+
+  /**
+   * A data-zero do Melhor Envio é "não aconteceu" disfarçado de valor. Se o
+   * `??` olhasse só para null/undefined, `"0000-00-00 00:00:00"` passaria como
+   * código válido e o comprador copiaria isso para o site dos Correios.
+   */
+  it('trata vazio e data-zero do ME como ausência, e completa mesmo assim', async () => {
+    const { service, httpGet } = fazerService(
+      { status: 'released', tracking: '', generated_at: '0000-00-00 00:00:00' },
+      {
+        status: 'released',
+        tracking: 'AP340313552BR',
+        generated_at: '2026-08-11 19:38:00',
+      },
+    );
+
+    const r = await service.rastrearEnvio(CART);
+
+    expect(httpGet).toHaveBeenCalled();
+    expect(r.codigo).toBe('AP340313552BR');
+    expect(r.etapaAtual).toBe('emitida');
   });
 });

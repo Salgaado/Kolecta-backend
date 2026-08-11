@@ -26,6 +26,7 @@ import {
 import {
   interpretarRastreio,
   dataMEParaDate,
+  limpo,
   type Rastreio,
   type RespostaRastreioME,
 } from './rastreio';
@@ -952,11 +953,67 @@ export class ShippingService {
    * se engole (a emissão) ou propaga (a tela).
    */
   async rastrearEnvio(cartId: string): Promise<Rastreio> {
-    const data = await this.postEnvio('/shipment/tracking', {
+    const data = (await this.postEnvio('/shipment/tracking', {
       orders: [cartId],
-    });
+    })) as Record<string, RespostaRastreioME> | null;
     const item = data?.[cartId] ?? Object.values(data ?? {})[0];
-    return interpretarRastreio(item as RespostaRastreioME);
+
+    // O `/shipment/tracking` atrasa em relação ao `/orders/{id}`: em 11/08/2026
+    // o envio a27aa929 (Correios PAC) já constava no `/orders` com
+    // `tracking: 'AP340313552BR'` e `generated_at` preenchidos enquanto este
+    // endpoint, consultado no MESMO minuto, devolvia `null` nos dois.
+    //
+    // Isso não é cosmético. Quem chama (`rastrearPedido`) GRAVA o resultado no
+    // pedido, e é dali que sai o código que o comprador usa para rastrear e as
+    // datas que fazem o pedido virar `shipped`/`delivered` — que por sua vez
+    // liberam o saldo retido do vendedor. Um nulo aqui vira saldo preso lá.
+    //
+    // O complemento só é buscado quando falta o código, que é o sintoma de que
+    // este endpoint está atrasado. No caminho normal o rastreio continua
+    // custando UMA requisição por envio.
+    const completo = limpo(item?.tracking)
+      ? item
+      : await this._completarRastreioPeloPedido(cartId, item);
+
+    return interpretarRastreio(completo);
+  }
+
+  /**
+   * Preenche com o `GET /orders/{id}` o que o `/shipment/tracking` deixou vazio.
+   *
+   * Só COMPLEMENTA: nada que o `/shipment/tracking` afirmou é sobrescrito — ele
+   * segue sendo a fonte, este é o remendo do atraso. Se a consulta falhar,
+   * devolve o original, porque rastreio incompleto é melhor que rastreio nenhum
+   * (e o próximo ciclo do cron tenta de novo).
+   *
+   * `self_tracking` (o código interno do Melhor Envio) NÃO entra: é de outro
+   * sistema de rastreio, e exibi-lo como se fosse o código dos Correios manda o
+   * comprador a um site onde o objeto dele não existe.
+   */
+  private async _completarRastreioPeloPedido(
+    cartId: string,
+    base: RespostaRastreioME | undefined,
+  ): Promise<RespostaRastreioME | undefined> {
+    try {
+      const resposta = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/orders/${cartId}`, {
+          headers: this.authHeaders(),
+          timeout: 15000,
+        }),
+      );
+      const d = (resposta.data ?? {}) as RespostaRastreioME;
+      return {
+        status: limpo(base?.status) ?? limpo(d.status),
+        tracking: limpo(base?.tracking) ?? limpo(d.tracking),
+        generated_at: limpo(base?.generated_at) ?? limpo(d.generated_at),
+        posted_at: limpo(base?.posted_at) ?? limpo(d.posted_at),
+        delivered_at: limpo(base?.delivered_at) ?? limpo(d.delivered_at),
+        canceled_at: limpo(base?.canceled_at) ?? limpo(d.canceled_at),
+        expired_at: limpo(base?.expired_at) ?? limpo(d.expired_at),
+      };
+    } catch {
+      return base;
+    }
   }
 
   /**

@@ -83,8 +83,15 @@ export function interpretarRastreio(
   };
 }
 
-/** Vazio, nulo ou a data-zero do Melhor Envio contam como "não aconteceu". */
-function limpo(v: unknown): string | null {
+/**
+ * Vazio, nulo ou a data-zero do Melhor Envio contam como "não aconteceu".
+ *
+ * Exportado porque quem consulta o ME precisa da MESMA régua para decidir se um
+ * campo veio de verdade: o `/shipment/tracking` devolve ora `null`, ora `""`,
+ * ora `"0000-00-00 00:00:00"` para dizer a mesma coisa. Reimplementar essa
+ * regra do lado do HTTP é como o nulo escapa.
+ */
+export function limpo(v: unknown): string | null {
   const s = String(v ?? '').trim();
   if (!s || s.startsWith('0000')) return null;
   return s;
