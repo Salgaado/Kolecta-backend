@@ -27,7 +27,7 @@ function createTableSql(tabela: SQLiteTable): string {
 describe('OrdersService — baixa de estoque', () => {
   let client: Client;
   let db: ReturnType<typeof drizzle>;
-  let baixar: (listingId: string) => Promise<void>;
+  let baixar: (listingId: string, quantidade?: number) => Promise<void>;
 
   const agora = Math.floor(Date.now() / 1000);
 
@@ -53,8 +53,8 @@ describe('OrdersService — baixa de estoque', () => {
     const service = Object.create(OrdersService.prototype) as OrdersService;
     (service as any).logger = { log: jest.fn(), warn: jest.fn() };
     // `baixarEstoque` recebe a transação; aqui o próprio db faz esse papel.
-    baixar = (listingId: string) =>
-      (service as any).baixarEstoque(db, listingId);
+    baixar = (listingId: string, quantidade?: number) =>
+      (service as any).baixarEstoque(db, listingId, quantidade);
   });
 
   afterAll(() => client?.close());
@@ -93,5 +93,35 @@ describe('OrdersService — baixa de estoque', () => {
     await criarAnuncio('L1', 0);
     await baixar('L1');
     expect((await ler('L1')).stock).toBe(0);
+  });
+
+  // ── Baixa por QUANTIDADE (compra de N unidades) ──
+  it('baixa N unidades de uma vez e mantém no ar', async () => {
+    await criarAnuncio('L1', 5);
+    await baixar('L1', 2);
+    expect(await ler('L1')).toEqual({ stock: 3, status: 'active' });
+  });
+
+  it('comprar exatamente o estoque zera e pausa', async () => {
+    await criarAnuncio('L1', 3);
+    await baixar('L1', 3);
+    expect(await ler('L1')).toEqual({ stock: 0, status: 'paused' });
+  });
+
+  it('nunca vende mais do que tem: qtd acima do estoque não deixa negativo', async () => {
+    // Corrida rara: o estoque caiu abaixo da quantidade paga. Zera e pausa em
+    // vez de ir a negativo (o pedido já foi pago; sobra conferência manual).
+    await criarAnuncio('L1', 2);
+    await baixar('L1', 5);
+    const { stock, status } = await ler('L1');
+    expect(stock).toBe(0);
+    expect(status).toBe('paused');
+  });
+
+  it('duas compras simultâneas de N não levam o estoque a negativo', async () => {
+    await criarAnuncio('L1', 3);
+    await Promise.all([baixar('L1', 2), baixar('L1', 2)]);
+    const { stock } = await ler('L1');
+    expect(stock).toBeGreaterThanOrEqual(0);
   });
 });

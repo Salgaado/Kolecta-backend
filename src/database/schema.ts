@@ -480,7 +480,12 @@ export const orders = sqliteTable('orders', {
     .references(() => listings.id),
   addressId: text('address_id').references(() => addresses.id),
 
-  // Valor total em centavos (item + frete)
+  // Quantidade de unidades do anúncio neste pedido. Default 1 (peça única e
+  // pedidos antigos). Para item com estoque, o comprador pode levar N; o
+  // total, o split e a baixa de estoque multiplicam por aqui.
+  quantity: integer('quantity').notNull().default(1),
+
+  // Valor total em centavos (item*quantidade + frete)
   totalInCents: integer('total_in_cents').notNull(),
 
   // Frete cobrado do comprador, em centavos. Vai para a KOLECTA no split, junto

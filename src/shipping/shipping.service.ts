@@ -1090,8 +1090,18 @@ export class ShippingService {
     };
     const listingWeightKg =
       listing?.weightGrams != null ? listing.weightGrams / 1000 : undefined;
+    // Quantidade multiplica só o PESO (1 envio, peso total). As dimensões ficam
+    // as do pacote base: para colecionável denso o preço é dominado pelo peso, e
+    // empilhar as medidas correria o risco de estourar o limite da transportadora.
+    const qtd = Math.max(1, Math.trunc(data.quantity ?? 1));
+    const pesoUnit = pick(
+      data.weight_kg,
+      listingWeightKg,
+      'SHIPPING_DEFAULT_WEIGHT_KG',
+      0.3,
+    );
     return {
-      weight: pick(data.weight_kg, listingWeightKg, 'SHIPPING_DEFAULT_WEIGHT_KG', 0.3),
+      weight: pesoUnit * qtd,
       width: pick(data.width_cm, listing?.widthCm, 'SHIPPING_DEFAULT_WIDTH_CM', 16),
       height: pick(data.height_cm, listing?.heightCm, 'SHIPPING_DEFAULT_HEIGHT_CM', 6),
       length: pick(data.length_cm, listing?.lengthCm, 'SHIPPING_DEFAULT_LENGTH_CM', 12),

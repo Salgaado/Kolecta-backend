@@ -14,7 +14,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { eq, inArray, and, lt, gt, isNotNull, sql } from 'drizzle-orm';
+import { eq, inArray, and, lt, gt, gte, isNotNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { CreateOrderDto, UpdateOrderStatusDto } from './dto/create-order.dto';
 import {
@@ -399,6 +399,24 @@ export class OrdersService {
       );
     }
 
+    // Quantidade pedida (default 1). Peça única (stock null) só vende 1; item
+    // com estoque vende até o que tem. Esta checagem é a primeira barreira; a
+    // trava real contra oversell é a baixa ATÔMICA no pagamento (baixarEstoque).
+    const quantity = Math.max(1, Math.trunc(dto.items[0].quantity ?? 1));
+    if (listing.stock == null) {
+      if (quantity > 1) {
+        throw new BadRequestException(
+          'Este anúncio é de peça única: só é possível comprar 1 unidade.',
+        );
+      }
+    } else if (quantity > listing.stock) {
+      throw new BadRequestException(
+        listing.stock > 0
+          ? `Só há ${listing.stock} unidade(s) disponível(is) deste anúncio.`
+          : 'Este anúncio está sem estoque no momento.',
+      );
+    }
+
     // Comprador paga item + frete. O FRETE VAI PARA A KOLECTA no split, junto
     // com a comissão: é ela que compra a etiqueta no Melhor Envio e manda o PDF
     // ao vendedor. Antes o frete ia 100% ao vendedor — com a emissão automática
@@ -408,7 +426,10 @@ export class OrdersService {
     const deliveryMethod: 'shipping' | 'pickup' =
       dto.deliveryMethod === 'pickup' ? 'pickup' : 'shipping';
 
-    const itemInCents: number = listing.priceInCents ?? 0;
+    // Item = preço unitário × quantidade. A comissão incide sobre este valor
+    // (já multiplicado), então escala sozinha. O frete vem cotado do cliente
+    // para o peso total das unidades (1 envio só).
+    const itemInCents: number = (listing.priceInCents ?? 0) * quantity;
     const shippingInCents: number =
       deliveryMethod === 'pickup' ? 0 : (dto.shippingInCents ?? 0);
     const totalInCents: number = itemInCents + shippingInCents;
@@ -562,6 +583,7 @@ export class OrdersService {
           buyerId,
           sellerId: listing.sellerId,
           listingId: listing.id,
+          quantity,
           // Endereço de entrega do checkout — antes era descartado, deixando o
           // pedido sem destino e travando a geração da etiqueta.
           addressId: enderecoEntrega?.id ?? null,
@@ -1586,26 +1608,55 @@ export class OrdersService {
    * dispensa nova moderação), enquanto `sold` é um beco sem saída que obriga a
    * recriar o anúncio.
    */
-  private async baixarEstoque(tx: any, listingId: string): Promise<void> {
+  private async baixarEstoque(
+    tx: any,
+    listingId: string,
+    quantity = 1,
+  ): Promise<void> {
+    const qtd = Math.max(1, Math.trunc(quantity));
+    // Baixa ATÔMICA: só desce se houver estoque suficiente (stock >= qtd). É o
+    // que impede duas compras da última unidade levarem o estoque a negativo.
     const baixados = await tx
       .update(schema.listings)
       .set({
-        stock: sql`${schema.listings.stock} - 1`,
+        stock: sql`${schema.listings.stock} - ${qtd}`,
         updatedAt: new Date(),
       })
       .where(
         and(
           eq(schema.listings.id, listingId),
           isNotNull(schema.listings.stock),
-          gt(schema.listings.stock, 0),
+          gte(schema.listings.stock, qtd),
         ),
       )
       .returning({ stock: schema.listings.stock });
 
-    // Nada baixado = anúncio sem controle de estoque (ou já zerado): unidade
-    // única, comportamento de sempre.
     const restante = baixados[0]?.stock;
     if (restante == null) {
+      // Nada baixado: ou o estoque caiu abaixo da quantidade paga (corrida rara),
+      // ou é peça única (stock nulo). Distingue sem reler, só com UPDATE:
+      // primeiro tenta o caso oversell (stock não-nulo < qtd); se casar, zera e
+      // pausa para não vender de novo — o pedido já foi pago.
+      const oversold = await tx
+        .update(schema.listings)
+        .set({ stock: 0, status: 'paused', pausedByStock: true, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.listings.id, listingId),
+            isNotNull(schema.listings.stock),
+            lt(schema.listings.stock, qtd),
+          ),
+        )
+        .returning({ stock: schema.listings.stock });
+
+      if (oversold.length > 0) {
+        this.logger.warn(
+          `📦 Anúncio ${listingId}: estoque menor que a quantidade paga (${qtd}). Zerado e pausado — conferir.`,
+        );
+        return;
+      }
+
+      // Sobrou o caso peça única (stock nulo): comportamento de sempre, vendido.
       await tx
         .update(schema.listings)
         .set({ status: 'sold', updatedAt: new Date() })
@@ -1624,7 +1675,7 @@ export class OrdersService {
       return;
     }
 
-    this.logger.log(`📦 Anúncio ${listingId}: estoque restante ${restante}.`);
+    this.logger.log(`📦 Anúncio ${listingId}: baixou ${qtd}, restante ${restante}.`);
   }
 
   // ── Shared order confirmation logic ───────────────────────────────────────
@@ -1697,7 +1748,7 @@ export class OrdersService {
         })
         .where(eq(schema.orders.id, orderId));
 
-      await this.baixarEstoque(tx, order.listingId);
+      await this.baixarEstoque(tx, order.listingId, order.quantity ?? 1);
     });
 
     // Creditar valor líquido como saldo retido (held_balance) para o vendedor

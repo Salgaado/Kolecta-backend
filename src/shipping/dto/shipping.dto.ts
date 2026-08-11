@@ -55,6 +55,17 @@ export class QuoteShippingDto {
   @IsString()
   @IsOptional()
   listing_id?: string;
+
+  /**
+   * Quantas unidades do mesmo anúncio no envio. O peso do pacote é multiplicado
+   * por aqui (1 envio, peso total), para quem compra mais aproveitar o frete.
+   * Default 1.
+   */
+  @IsNumber()
+  @Min(1)
+  @Type(() => Number)
+  @IsOptional()
+  quantity?: number;
 }
 
 /** Dimensões/peso do volume a etiquetar. */

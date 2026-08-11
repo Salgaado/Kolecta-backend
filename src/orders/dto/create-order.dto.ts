@@ -18,6 +18,15 @@ export class OrderItemDto {
   @IsString()
   @IsNotEmpty()
   listingId: string;
+
+  // Quantas unidades. Opcional (default 1, compatível com clientes antigos).
+  // O teto real é o estoque do anúncio, validado no service. Max 99 barra
+  // pedido absurdo/erro de cliente antes de qualquer cobrança.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  quantity?: number;
 }
 
 /**
