@@ -774,7 +774,9 @@ export class AuctionsService {
    * Idempotente: só toca em leilão pausado. Evento repetido não faz nada.
    */
   @OnEvent('seller.apto-a-receber')
-  async retomarLeiloesDoVendedor(evento: { sellerId: string }): Promise<number> {
+  async retomarLeiloesDoVendedor(evento: {
+    sellerId: string;
+  }): Promise<number> {
     const pausados = await this.db
       .select({
         id: schema.auctions.id,
@@ -896,9 +898,7 @@ export class AuctionsService {
    * enquanto a primeira ainda existe. Numa instabilidade do gateway, tratar
    * dúvida como ausência bloquearia o limite de todos os líderes de uma vez.
    */
-  private async _preAuthAindaRetida(
-    chargeId: string,
-  ): Promise<boolean | null> {
+  private async _preAuthAindaRetida(chargeId: string): Promise<boolean | null> {
     try {
       const charge: any = await this.pagarme.get(`/charges/${chargeId}`);
       // O sinal fica em `last_transaction.status`, não em `charge.status`: a
@@ -1919,5 +1919,109 @@ export class AuctionsService {
       needsShippingChoice: true,
       paymentDeadlineHours: PAYMENT_DEADLINE_HOURS,
     });
+  }
+
+  /**
+   * Reenvia ao vencedor o aviso de que ele arrematou.
+   *
+   * O aviso original sai UMA vez, no fecho, e não havia como repeti-lo. Quando
+   * ele se perde — cadastro com e-mail inválido, caixa cheia, provedor fora — o
+   * vencedor simplesmente nunca fica sabendo, e o relógio corre igual: vencido o
+   * prazo, a pré-auth é liberada e a peça vai para o 2º colocado. Foi o que
+   * quase aconteceu em 11/08/2026 com dois arremates (R$ 460) de um comprador
+   * cujo cadastro tinha e-mail placeholder.
+   *
+   * O e-mail é lido do banco na HORA do envio (`auction.listener`), então
+   * consertar o cadastro e chamar isto aqui basta — não é preciso reprocessar
+   * nada do leilão.
+   *
+   * Não reabre o leilão nem estende o prazo: só avisa. E só vale para
+   * `pending_payment` — pedido pago não tem aviso a dar, cancelado não tem mais
+   * o que pagar.
+   */
+  async reenviarAvisoDeArremate(orderId: string): Promise<{
+    orderId: string;
+    destinatario: string;
+    horasRestantes: number | null;
+    precisaEscolherFrete: boolean;
+  }> {
+    const order = await this.db.query.orders.findFirst({
+      where: eq(schema.orders.id, orderId),
+    });
+    if (!order)
+      throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
+
+    if (order.status !== 'pending_payment') {
+      throw new BadRequestException(
+        `Pedido ${orderId} está '${order.status}'. O aviso de arremate só faz ` +
+          `sentido em 'pending_payment'.`,
+      );
+    }
+
+    const auction = await this.db.query.auctions.findFirst({
+      where: eq(schema.auctions.listingId, order.listingId),
+    });
+    if (!auction) {
+      throw new BadRequestException(
+        `Pedido ${orderId} não veio de leilão — não há aviso de arremate.`,
+      );
+    }
+
+    const listing = await this.db.query.listings.findFirst({
+      where: eq(schema.listings.id, order.listingId),
+    });
+    const vencedor = await this.db.query.users.findFirst({
+      where: eq(schema.users.id, order.buyerId),
+    });
+    if (!vencedor?.email) {
+      throw new BadRequestException(
+        `Vencedor ${order.buyerId} não tem e-mail cadastrado — conserte o ` +
+          `cadastro antes de reenviar, senão o aviso se perde de novo.`,
+      );
+    }
+
+    // Prazo REAL que sobra, não as 48h originais: o e-mail chega depois e
+    // prometer o prazo cheio de novo faria o vencedor se planejar pelo número
+    // errado.
+    const horasRestantes = order.paymentDeadlineAt
+      ? Math.max(
+          0,
+          (order.paymentDeadlineAt.getTime() - Date.now()) / 3_600_000,
+        )
+      : null;
+
+    // O frete só está pendente se ele ainda não escolheu — reenviar não pode
+    // pedir de novo o que já foi feito.
+    const precisaEscolherFrete =
+      !order.shippingServiceId &&
+      (order.deliveryMethod ?? 'shipping') !== 'pickup';
+
+    this.eventEmitter.emit('auction.won', {
+      orderId,
+      winnerId: order.buyerId,
+      listingTitle: listing?.title ?? 'Item Kolecta',
+      // Só a peça: o frete ainda não foi escolhido, então somá-lo aqui mostraria
+      // um total que o vencedor não reconheceria.
+      finalAmountInCents: order.totalInCents - (order.shippingInCents ?? 0),
+      needsPayment: true,
+      needsShippingChoice: precisaEscolherFrete,
+      paymentDeadlineHours:
+        horasRestantes == null
+          ? PAYMENT_DEADLINE_HOURS
+          : Math.floor(horasRestantes),
+    });
+
+    this.logger.log(
+      `Aviso de arremate reenviado (pedido ${orderId}) para ${vencedor.email} — ` +
+        `restam ${horasRestantes?.toFixed(1) ?? '?'}h.`,
+    );
+
+    return {
+      orderId,
+      destinatario: vencedor.email,
+      horasRestantes:
+        horasRestantes == null ? null : Number(horasRestantes.toFixed(1)),
+      precisaEscolherFrete,
+    };
   }
 }

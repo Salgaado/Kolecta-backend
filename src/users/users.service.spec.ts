@@ -121,3 +121,112 @@ describe('UsersService', () => {
     });
   });
 });
+
+/**
+ * Cadastro que nasce sem os dados do Clerk.
+ *
+ * `fetchClerkUser` estoura em QUALQUER resposta não-2xx. Em 08/08/2026 um
+ * comprador entrou por login do Google e a chamada falhou no instante do
+ * cadastro — a sessão já vale no callback, mas o registro pode não ter
+ * propagado. Nome e e-mail viraram sintéticos, e o `findOrCreate` devolvia cedo
+ * em toda chamada seguinte: ninguém nunca mais olhava aquele registro. Ele
+ * seguiu ativo, arrematou dois leilões (R$ 460) e não recebeu um único aviso,
+ * porque todos foram para `<id>@placeholder.kolecta` — domínio que não existe.
+ */
+describe('UsersService — cadastro placeholder se cura sozinho', () => {
+  let service: UsersService;
+  const PLACEHOLDER = {
+    ...fakeUser,
+    email: 'user_abc@placeholder.kolecta',
+    name: 'Novo Usuário',
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DATABASE_CONNECTION, useValue: mockDb },
+      ],
+    }).compile();
+    service = mod.get<UsersService>(UsersService);
+    process.env.CLERK_SECRET_KEY = 'sk_test_x';
+  });
+
+  it('troca o placeholder pelos dados reais quando o Clerk volta a responder', async () => {
+    // 1ª leitura: o registro placeholder. 2ª: o findById de depois do reparo.
+    const curado = {
+      ...fakeUser,
+      email: 'billy@real.com.br',
+      name: 'billy gois',
+    };
+    selectChain.limit
+      .mockResolvedValueOnce([PLACEHOLDER])
+      .mockResolvedValueOnce([curado]);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        emailAddresses: [{ emailAddress: 'billy@real.com.br' }],
+        firstName: 'billy',
+        lastName: 'gois',
+      }),
+    }) as any;
+
+    const r = await service.findOrCreate('user_abc');
+
+    expect(updateChain.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'billy@real.com.br',
+        name: 'billy gois',
+      }),
+    );
+    expect(r.email).toBe('billy@real.com.br');
+  });
+
+  /**
+   * O reparo é socorro, não pré-requisito: se o Clerk falhar de novo, a
+   * requisição que só queria saber quem é o usuário não pode morrer junto.
+   */
+  it('devolve o registro como está quando o Clerk falha de novo', async () => {
+    selectChain.limit.mockResolvedValueOnce([PLACEHOLDER]);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: false, status: 404 }) as any;
+
+    const r = await service.findOrCreate('user_abc');
+
+    expect(r).toEqual(PLACEHOLDER);
+    expect(updateChain.set).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Sem e-mail no Clerk não há o que curar. Sem esta guarda, todo request de um
+   * usuário nessa situação gastaria uma chamada à API do Clerk, para sempre.
+   */
+  it('não tenta gravar quando o Clerk também não tem e-mail', async () => {
+    selectChain.limit.mockResolvedValueOnce([PLACEHOLDER]);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        emailAddresses: [],
+        firstName: null,
+        lastName: null,
+      }),
+    }) as any;
+
+    const r = await service.findOrCreate('user_abc');
+
+    expect(r).toEqual(PLACEHOLDER);
+    expect(updateChain.set).not.toHaveBeenCalled();
+  });
+
+  it('não gasta chamada ao Clerk para quem já tem e-mail de verdade', async () => {
+    selectChain.limit.mockResolvedValueOnce([fakeUser]);
+    global.fetch = jest.fn() as any;
+
+    const r = await service.findOrCreate('user_abc');
+
+    expect(r).toEqual(fakeUser);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});

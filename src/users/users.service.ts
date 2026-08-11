@@ -16,6 +16,13 @@ export type UserRecord = typeof schema.users.$inferSelect;
 // DTO movido para ./dto/user.dto.ts (classe, p/ o ValidationPipe global).
 export { UpdateUserDto };
 
+/**
+ * Domínio do e-mail sintético usado quando o Clerk não respondeu na criação do
+ * cadastro. Não existe como domínio de verdade: e-mail que termina assim NUNCA
+ * é entregue, e é por isso que um cadastro nesse estado precisa ser reparado.
+ */
+const SUFIXO_PLACEHOLDER = '@placeholder.kolecta';
+
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
@@ -77,6 +84,12 @@ export class UsersService {
       .limit(1);
 
     if (result.length) {
+      // Cadastro que nasceu cego tem uma ÚNICA chance de ser consertado: aqui.
+      // Sem isto o placeholder era definitivo — o `return` acima devolvia cedo
+      // em toda chamada seguinte, e ninguém mais olhava para aquele registro.
+      if (this.ehPlaceholder(result[0].email)) {
+        return (await this.repararPlaceholder(result[0])) ?? result[0];
+      }
       return result[0];
     }
 
@@ -86,22 +99,96 @@ export class UsersService {
     try {
       // Tenta obter dados do Clerk via SDK
       const clerkUser = await this.fetchClerkUser(id);
-      const email = clerkUser?.emailAddresses?.[0]?.emailAddress ?? `${id}@placeholder.kolecta`;
-      const name = [clerkUser?.firstName, clerkUser?.lastName].filter(Boolean).join(' ') || 'Novo Usuário';
+      const email =
+        clerkUser?.emailAddresses?.[0]?.emailAddress ??
+        `${id}@placeholder.kolecta`;
+      const name =
+        [clerkUser?.firstName, clerkUser?.lastName].filter(Boolean).join(' ') ||
+        'Novo Usuário';
 
       await this.db.insert(schema.users).values({ id, email, name });
-      this.logger.log(`[findOrCreate] Usuário criado no Turso: ${id} | ${email}`);
+      this.logger.log(
+        `[findOrCreate] Usuário criado no Turso: ${id} | ${email}`,
+      );
     } catch (err) {
-      // Se falhar ao buscar do Clerk, cria com dados mínimos
-      this.logger.warn(`[findOrCreate] Fallback (sem dados do Clerk): ${err.message}`);
+      // Cria mesmo assim: sem registro, a requisição que trouxe o usuário até
+      // aqui falharia inteira. Mas ERROR, não WARN — este cadastro nasce sem
+      // e-mail utilizável, e todo aviso que a plataforma mandar para ele cai no
+      // vazio até alguém (ou a auto-cura acima) consertar.
+      this.logger.error(
+        `[findOrCreate] Clerk não respondeu para ${id} (${err.message}). ` +
+          `Cadastro criado com e-mail PLACEHOLDER — nenhum e-mail chegará a ` +
+          `este usuário até ser reparado.`,
+      );
       await this.db.insert(schema.users).values({
         id,
-        email: `${id}@placeholder.kolecta`,
+        email: `${id}${SUFIXO_PLACEHOLDER}`,
         name: 'Novo Usuário',
       });
     }
 
     return this.findById(id);
+  }
+
+  /** E-mail sintético, gravado quando o Clerk não respondeu na criação. */
+  private ehPlaceholder(email: string | null | undefined): boolean {
+    return !!email?.endsWith(SUFIXO_PLACEHOLDER);
+  }
+
+  /**
+   * Troca o cadastro cego pelos dados reais do Clerk, na primeira oportunidade.
+   *
+   * Em 08/08/2026 um comprador entrou por login do Google e o `GET /v1/users/{id}`
+   * do Clerk falhou no instante do cadastro — a sessão já vale no callback, mas o
+   * registro pode não ter propagado. `fetchClerkUser` estoura em QUALQUER resposta
+   * não-2xx, então um 404 de meio segundo gravou nome e e-mail sintéticos. Ele
+   * seguiu ativo: salvou cartão, deu dois lances e arrematou dois leilões — e os
+   * avisos de arremate foram todos para `<id>@placeholder.kolecta`.
+   *
+   * Best-effort de propósito. Se o Clerk falhar de novo, devolve `null` e quem
+   * chamou segue com o registro como está: consertar o cadastro não pode derrubar
+   * uma requisição que só queria saber quem é o usuário. Na próxima chamada tenta
+   * de novo, e é isso que torna a falha transitória em vez de permanente.
+   */
+  private async repararPlaceholder(
+    atual: UserRecord,
+  ): Promise<UserRecord | null> {
+    try {
+      const clerkUser = await this.fetchClerkUser(atual.id);
+      const email: string | undefined =
+        clerkUser?.emailAddresses?.[0]?.emailAddress;
+
+      // Sem e-mail no Clerk não há o que curar — trocar placeholder por
+      // placeholder só gastaria uma chamada por requisição, para sempre.
+      if (!email || this.ehPlaceholder(email)) return null;
+
+      const nome = [clerkUser?.firstName, clerkUser?.lastName]
+        .filter(Boolean)
+        .join(' ');
+
+      await this.db
+        .update(schema.users)
+        .set({
+          email,
+          // Só sobrescreve o nome se o Clerk tiver um: melhor "Novo Usuário"
+          // do que apagar o que o próprio usuário já tenha editado aqui.
+          ...(nome ? { name: nome } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.users.id, atual.id));
+
+      this.logger.log(
+        `[findOrCreate] Cadastro placeholder reparado: ${atual.id} → ${email}`,
+      );
+      return this.findById(atual.id);
+    } catch (err: any) {
+      // `email` é UNIQUE: se outro registro já usa esse endereço, cai aqui —
+      // e é caso de fusão manual, não de retry.
+      this.logger.warn(
+        `[findOrCreate] Não foi possível reparar o placeholder de ${atual.id}: ${err?.message}`,
+      );
+      return null;
+    }
   }
 
   // ─── Buscar dados do Clerk via API ──────────────────────────────────────────

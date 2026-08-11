@@ -154,4 +154,18 @@ export class AuctionsController {
     const bid = await this.auctionsService.placeBid(id, bidderId, dto);
     return { data: bid };
   }
+
+  // ── POST /api/auctions/orders/:orderId/reenviar-aviso — Admin ───────────
+  // Reenvia ao vencedor o aviso de arremate de um pedido que ainda aguarda
+  // pagamento. Só admin: é o socorro para quando o aviso original se perdeu, e
+  // disparar e-mail para comprador não é ação de vendedor.
+
+  @Post('orders/:orderId/reenviar-aviso')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  async reenviarAvisoDeArremate(@Param('orderId') orderId: string) {
+    const data = await this.auctionsService.reenviarAvisoDeArremate(orderId);
+    return { data };
+  }
 }

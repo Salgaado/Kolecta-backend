@@ -172,3 +172,72 @@ describe('WebhookService', () => {
     });
   });
 });
+
+/**
+ * Falha de inserção no `user.created`.
+ *
+ * O erro era engolido e o controller respondia 200 assim mesmo: o Clerk marcava
+ * como entregue e nunca mais tentava. O usuário virava um fantasma — autenticava
+ * normalmente, porque o JWT é válido, mas só entrava no nosso banco pelo
+ * `findOrCreate`, que sem os dados do Clerk grava placeholder. Foi assim que um
+ * comprador arrematou dois leilões em 11/08/2026 sem receber um único aviso.
+ *
+ * O caso mais comum é `email` nulo — a coluna é NOT NULL — num cadastro social
+ * cujo endereço ainda não propagou. É exatamente o que uma reentrega resolve.
+ */
+describe('WebhookService — user.created que falha ao inserir', () => {
+  const evt = {
+    type: 'user.created',
+    data: {
+      id: 'user_fantasma',
+      email_addresses: [],
+      first_name: 'billy',
+      last_name: 'gois',
+      has_image: false,
+    },
+  };
+
+  function montar(usuarioJaExiste: boolean) {
+    const limit = jest
+      .fn()
+      .mockResolvedValue(usuarioJaExiste ? [{ id: 'user_fantasma' }] : []);
+    const db = {
+      insert: jest.fn().mockReturnValue({
+        values: jest
+          .fn()
+          .mockRejectedValue(
+            new Error('NOT NULL constraint failed: users.email'),
+          ),
+      }),
+      update: jest.fn(),
+      delete: jest.fn(),
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        limit,
+      }),
+    };
+    const emitter = { emit: jest.fn() };
+    return { service: new WebhookService(db as any, emitter as any), emitter };
+  }
+
+  it('propaga o erro para o Clerk reenviar', async () => {
+    const { service, emitter } = montar(false);
+
+    await expect(service.handleEvent(evt)).rejects.toThrow(/NOT NULL/);
+    // Não deu boas-vindas a quem não entrou no banco.
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  /**
+   * O Clerk reenvia por padrão. Sem esta guarda, a segunda entrega bateria na
+   * chave primária, viraria erro de novo e prenderia o webhook num laço de
+   * retry eterno por um usuário que já está no banco.
+   */
+  it('trata reentrega de usuário já existente como sucesso', async () => {
+    const { service, emitter } = montar(true);
+
+    await expect(service.handleEvent(evt)).resolves.toBeUndefined();
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+});

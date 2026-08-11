@@ -82,7 +82,40 @@ export class WebhookService {
       // falha por conta própria; e-mail nunca derruba o webhook.
       this.eventEmitter.emit('user.registered', { id, email, name });
     } catch (err) {
-      this.logger.error(`[user.created] Erro ao inserir usuário:`, err.message);
+      // Reentrega do MESMO evento não é falha: o Clerk reenvia por padrão, e a
+      // segunda tentativa bate na chave primária. Responder erro aqui colocaria
+      // o webhook num laço de retry eterno por um usuário que já está no banco.
+      const [existente] = await this.db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.id, id))
+        .limit(1);
+
+      if (existente) {
+        this.logger.log(
+          `[user.created] Usuário ${id} já existia — evento duplicado, ignorado.`,
+        );
+        return;
+      }
+
+      // Falha de verdade: o usuário existe no Clerk e NÃO existe aqui.
+      //
+      // Antes isto era engolido, e o controller respondia 200 mesmo assim — o
+      // Clerk marcava como entregue e nunca mais tentava. O usuário virava um
+      // fantasma: autenticava normalmente (o JWT é válido), mas só entrava no
+      // nosso banco pelo `findOrCreate`, que sem os dados do Clerk grava
+      // placeholder. Foi assim que um comprador arrematou dois leilões em
+      // 11/08/2026 sem receber um único aviso.
+      //
+      // Propagando, o controller devolve 5xx e o Clerk reenvia com backoff. O
+      // caso mais comum de erro aqui é `email` nulo (a coluna é NOT NULL) num
+      // cadastro social cujo endereço ainda não propagou — exatamente o que uma
+      // reentrega resolve.
+      this.logger.error(
+        `[user.created] Erro ao inserir usuário ${id}: ${err.message}. ` +
+          `Propagando para o Clerk reenviar.`,
+      );
+      throw err;
     }
   }
 

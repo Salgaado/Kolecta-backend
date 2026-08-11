@@ -934,7 +934,9 @@ describe('AuctionsService', () => {
     it('na dúvida (consulta falhou) NÃO renova — trata como retida', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where.mockResolvedValueOnce([reauthRowLonge]);
-      mockPagarmeService.get.mockRejectedValueOnce(new Error('502 bad gateway'));
+      mockPagarmeService.get.mockRejectedValueOnce(
+        new Error('502 bad gateway'),
+      );
       service = await buildModule();
 
       const result = await service.reauthorizeExpiringBids();
@@ -1408,9 +1410,7 @@ describe('AuctionsService', () => {
       // Líquido do vendedor retido na wallet.
       expect(mockWalletService.hold).toHaveBeenCalled();
       // A retenção do lance cai só DEPOIS da cobrança passar.
-      expect(mockPagarmeService.delete).toHaveBeenCalledWith(
-        '/charges/ch_bid',
-      );
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith('/charges/ch_bid');
       // Etiqueta só é acionada agora, com o frete pago.
       expect(mockEventEmitter.emit).toHaveBeenCalledWith(
         'auction.paid',
@@ -1456,9 +1456,7 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([overdueOrder]) // vencidos
-        .mockResolvedValueOnce([
-          { id: 'auction_1', reservePriceInCents: null },
-        ]) // auction por listingId
+        .mockResolvedValueOnce([{ id: 'auction_1', reservePriceInCents: null }]) // auction por listingId
         .mockResolvedValueOnce([]); // _getActiveBidAuth: sem pré-auth de pé
       stubUpdatesWithCancel([overdueOrder]); // cancelou o pedido
       // _findRunnerUp: só há lances do próprio vencedor faltoso → sem elegível.
@@ -1550,5 +1548,146 @@ describe('AuctionsService', () => {
 
       expect(result.expired).toEqual([]);
     });
+  });
+});
+
+/**
+ * Reenvio do aviso de arremate.
+ *
+ * O aviso sai UMA vez, no fecho, e não havia como repeti-lo. Quando ele se
+ * perde, o vencedor nunca fica sabendo — e o prazo corre igual: vencido, a
+ * pré-auth é liberada e a peça vai para o 2º colocado. Em 11/08/2026 dois
+ * arremates (R$ 460) ficaram nessa situação porque o cadastro do comprador
+ * tinha e-mail placeholder, e não existia socorro nenhum.
+ */
+describe('AuctionsService — reenviar aviso de arremate', () => {
+  const PEDIDO = {
+    id: 'ord-1',
+    buyerId: 'user_bidder',
+    listingId: 'lst-1',
+    status: 'pending_payment',
+    totalInCents: 26000,
+    shippingInCents: 0,
+    shippingServiceId: null,
+    deliveryMethod: 'shipping',
+    paymentDeadlineAt: new Date(Date.now() + 45 * 3_600_000),
+  };
+
+  function montar(over: any = {}) {
+    const emitter = { emit: jest.fn() };
+    const db: any = {
+      query: {
+        orders: {
+          findFirst: jest.fn().mockResolvedValue(over.order ?? PEDIDO),
+        },
+        auctions: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue(
+              'auction' in over ? over.auction : { id: 'auc-1' },
+            ),
+        },
+        listings: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ title: 'Hot Wheels Sam Walton' }),
+        },
+        users: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue(
+              'user' in over
+                ? over.user
+                : { id: 'user_bidder', email: 'billy@real.com.br' },
+            ),
+        },
+      },
+    };
+    const service = new AuctionsService(
+      db,
+      mockWalletService as any,
+      mockFounderService as any,
+      mockCardsService as any,
+      mockPagarmeService as any,
+      mockShippingService as any,
+      emitter as any,
+    );
+    return { service, emitter };
+  }
+
+  it('reemite auction.won com o prazo que REALMENTE sobra', async () => {
+    const { service, emitter } = montar();
+
+    const r = await service.reenviarAvisoDeArremate('ord-1');
+
+    expect(emitter.emit).toHaveBeenCalledWith(
+      'auction.won',
+      expect.objectContaining({
+        orderId: 'ord-1',
+        winnerId: 'user_bidder',
+        needsPayment: true,
+        needsShippingChoice: true,
+        finalAmountInCents: 26000,
+      }),
+    );
+    // 45h restantes, não as 48h originais: o e-mail chega depois, e repetir o
+    // prazo cheio faria o vencedor se planejar pelo número errado.
+    const payload = emitter.emit.mock.calls[0][1] as any;
+    expect(payload.paymentDeadlineHours).toBe(44);
+    expect(r.destinatario).toBe('billy@real.com.br');
+  });
+
+  it('não pede escolha de frete a quem já escolheu', async () => {
+    const { service, emitter } = montar({
+      order: {
+        ...PEDIDO,
+        shippingServiceId: 1,
+        shippingInCents: 2274,
+        totalInCents: 28274,
+      },
+    });
+
+    await service.reenviarAvisoDeArremate('ord-1');
+
+    const payload = emitter.emit.mock.calls[0][1] as any;
+    expect(payload.needsShippingChoice).toBe(false);
+    // O valor anunciado é o da PEÇA: somar o frete mostraria um total que o
+    // vencedor não reconheceria do leilão.
+    expect(payload.finalAmountInCents).toBe(26000);
+  });
+
+  /**
+   * Reenviar para um cadastro quebrado repetiria o problema original em
+   * silêncio. Melhor recusar e mandar consertar o cadastro primeiro.
+   */
+  it('recusa quando o vencedor não tem e-mail', async () => {
+    const { service, emitter } = montar({
+      user: { id: 'user_bidder', email: null },
+    });
+
+    await expect(service.reenviarAvisoDeArremate('ord-1')).rejects.toThrow(
+      /e-mail/i,
+    );
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('recusa pedido que não está aguardando pagamento', async () => {
+    const { service, emitter } = montar({
+      order: { ...PEDIDO, status: 'paid' },
+    });
+
+    await expect(service.reenviarAvisoDeArremate('ord-1')).rejects.toThrow(
+      /pending_payment/,
+    );
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('recusa pedido que não veio de leilão', async () => {
+    const { service, emitter } = montar({ auction: null });
+
+    await expect(service.reenviarAvisoDeArremate('ord-1')).rejects.toThrow(
+      /não veio de leilão/i,
+    );
+    expect(emitter.emit).not.toHaveBeenCalled();
   });
 });
