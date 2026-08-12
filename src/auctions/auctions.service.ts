@@ -67,6 +67,16 @@ const REAUTH_WINDOW_HOURS = parseInt(
 );
 
 /**
+ * Corpo de erro da Pagar.me, nas duas formas em que ele chega: `errors` como
+ * LISTA (recusa da adquirente) ou como OBJETO indexado pelo campo (validação
+ * do request). Ver `_motivoPagarme`.
+ */
+interface CorpoErroPagarme {
+  message?: string;
+  errors?: { message?: string }[] | Record<string, string | string[]>;
+}
+
+/**
  * Prazo (horas) que o vencedor de um leilão tem para pagar quando a captura da
  * pré-auth falha no fecho (pedido `pending_payment`). Expirado → o cron oferece
  * ao 2º colocado ou reabre o anúncio. Configurável por
@@ -727,6 +737,37 @@ export class AuctionsService {
     return { orderId: pagarmeOrder.id, chargeId: charge.id, expiresAt };
   }
 
+  /**
+   * Motivo legível de uma falha da Pagar.me.
+   *
+   * O corpo do erro vem em DUAS formas, e a que interessa aqui é a segunda:
+   * `errors` como LISTA (`[{ message }]`, recusa da adquirente) ou como OBJETO
+   * indexado pelo campo (`{ billing: ['"value" is required'] }`, validação do
+   * request). Ler só a lista devolvia "Erro na comunicação com a Pagar.me" —
+   * que não diz qual campo faltou, justamente no erro em que o campo é a
+   * única informação útil.
+   */
+  private _motivoPagarme(err: unknown): string | null {
+    const resposta = (err as { response?: unknown })?.response;
+    const corpo = ((resposta as { pagarme?: unknown })?.pagarme ?? resposta) as
+      | CorpoErroPagarme
+      | undefined;
+    const errors = corpo?.errors;
+
+    if (Array.isArray(errors)) {
+      const msgs = errors.map((e) => e?.message).filter(Boolean);
+      if (msgs.length) return msgs.join('; ');
+    } else if (errors && typeof errors === 'object') {
+      const partes = Object.entries(errors).map(
+        ([campo, msgs]) =>
+          `${campo}: ${[msgs].flat().filter(Boolean).join(', ')}`,
+      );
+      if (partes.length) return partes.join('; ');
+    }
+
+    return corpo?.message || (err as { message?: string })?.message || null;
+  }
+
   /** Cancela (void) uma pré-autorização. Best-effort — não derruba o fluxo. */
   private async _voidPreAuth(chargeId: string): Promise<void> {
     try {
@@ -1267,6 +1308,24 @@ export class AuctionsService {
       );
     }
 
+    // ── Endereço de cobrança (a Pagar.me EXIGE no cartão) ──
+    // O cartão salvo nasce só do token (`cards.service.ts` posta `{ token }`),
+    // e o token não carrega endereço — a tokenização no navegador manda apenas
+    // número/nome/validade/CVV. Então o endereço precisa vir DAQUI, a cada
+    // cobrança, como já vem no lance e no checkout. Sem ele a Pagar.me recusa a
+    // cobrança inteira com `validation_error | billing | "value" is required`,
+    // antes de qualquer análise de risco.
+    //
+    // Vem do cadastro, e não do endereço do pedido, porque na retirada em mãos
+    // não há endereço de entrega — e o cartão exige endereço do mesmo jeito.
+    const billingAddress = await this._getBillingAddress(buyerId);
+    if (!billingAddress) {
+      throw new BadRequestException(
+        'Cadastre um endereço em Minha Conta para pagar — a operadora exige ' +
+          'endereço de cobrança do titular do cartão.',
+      );
+    }
+
     const sellerRecipientId = await this._getSellerRecipientId(order.sellerId);
     const totalInCents = order.totalInCents;
 
@@ -1307,6 +1366,7 @@ export class AuctionsService {
                 capture: true, // cobrança à vista (captura imediata)
                 statement_descriptor: 'KOLECTA',
                 card_id: cardRef.cardId,
+                card: { billing_address: billingAddress },
                 ...(split ? { split } : {}),
               },
             },
@@ -1315,9 +1375,21 @@ export class AuctionsService {
         },
         `bid-pay-${order.id}-${Math.floor(Date.now() / 1000)}`,
       );
-    } catch {
+    } catch (err: unknown) {
+      // NÃO engolir o motivo — mesma lição do lance (`_createBidPreAuth`). Este
+      // catch trocava QUALQUER falha por "tente outro cartão", e foi ele que
+      // escondeu a ausência do `billing_address` acima: o vencedor era mandado
+      // trocar de cartão por um erro que não era do cartão, e o servidor não
+      // registrava nada.
+      const detalhe = this._motivoPagarme(err);
+      this.logger.error(
+        `Cobrança do arremate ${order.id} falhou (comprador ${buyerId}): ` +
+          JSON.stringify((err as { response?: unknown })?.response ?? detalhe),
+      );
       throw new BadRequestException(
-        'Não foi possível cobrar seu cartão. Tente outro cartão.',
+        detalhe
+          ? `Não foi possível cobrar seu cartão: ${detalhe}`
+          : 'Não foi possível cobrar seu cartão. Tente outro cartão.',
       );
     }
 

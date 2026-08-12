@@ -1312,6 +1312,7 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([pendingOrder])
+        .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
         .mockResolvedValueOnce([
           { recipientId: 're_seller', canReceive: true },
         ]); // sellerProfiles → vendedor apto
@@ -1365,6 +1366,9 @@ describe('AuctionsService', () => {
             deliveryMethod: 'pickup',
           },
         ])
+        // Endereço de cobrança: vem do CADASTRO, não do pedido — na retirada
+        // em mãos não há endereço de entrega e o cartão exige um do mesmo jeito.
+        .mockResolvedValueOnce([mockEndereco])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // _settle
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // void: auction por listingId
@@ -1381,6 +1385,7 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([pendingOrder]) // order
+        .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId (_settle)
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId (void)
@@ -1416,6 +1421,101 @@ describe('AuctionsService', () => {
         'auction.paid',
         expect.objectContaining({ orderId: 'order_1', shippingInCents: 1550 }),
       );
+    });
+
+    /**
+     * REGRESSÃO (12/08): a cobrança do arremate ia sem `billing_address` e a
+     * Pagar.me recusava o request inteiro com `validation_error | billing |
+     * "value" is required` — antes de qualquer análise de risco. O checkout
+     * (026ec07) e o lance (c469505) receberam o endereço em 25/07; este
+     * terceiro caminho ficou de fora porque nenhum leilão tinha fechado ainda.
+     * O cartão salvo nasce só do token, então o endereço PRECISA ir no payload.
+     */
+    it('manda o billing_address do cadastro no cartão', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([pendingOrder])
+        .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([]);
+      mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
+      service = await buildModule();
+
+      await service.payAuctionOrder(bidderId, 'order_1');
+
+      expect(mockPagarmeService.post).toHaveBeenCalledWith(
+        '/orders',
+        expect.objectContaining({
+          payments: [
+            expect.objectContaining({
+              credit_card: expect.objectContaining({
+                card_id: 'card_1',
+                card: {
+                  billing_address: {
+                    // "número, rua, bairro" numa linha só, como a Pagar.me espera.
+                    line_1: '100, Rua Teste, Centro',
+                    zip_code: '01310100', // sem máscara
+                    city: 'Sao Paulo',
+                    state: 'SP',
+                    country: 'BR',
+                  },
+                },
+              }),
+            }),
+          ],
+        }),
+        expect.any(String),
+      );
+    });
+
+    it('RECUSA pagar, sem chamar a Pagar.me, se o comprador não tem endereço', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([pendingOrder])
+        .mockResolvedValueOnce([]); // nenhum endereço cadastrado
+      service = await buildModule();
+
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).rejects.toThrow(/endereço de cobrança/i);
+      // Falhar aqui, dizendo o que fazer, é melhor que levar um
+      // `validation_error` do gateway travestido de "cartão recusado".
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
+    });
+
+    /**
+     * O catch trocava QUALQUER falha por "tente outro cartão" — foi ele que
+     * escondeu a ausência do endereço por dois dias, mandando o comprador
+     * trocar de cartão por um erro que não era do cartão. Na validação, a
+     * Pagar.me devolve `errors` como OBJETO indexado pelo campo, não como
+     * lista: ler só a lista devolvia "Erro na comunicação com a Pagar.me".
+     */
+    it('entrega o motivo REAL da Pagar.me quando o request é invalidado', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([pendingOrder])
+        .mockResolvedValueOnce([mockEndereco])
+        .mockResolvedValueOnce([
+          { recipientId: 're_seller', canReceive: true },
+        ]);
+      mockPagarmeService.post.mockReset().mockRejectedValue({
+        response: {
+          message: 'Erro na comunicação com a Pagar.me',
+          pagarme: {
+            message: 'The request is invalid.',
+            errors: { billing: ['"value" is required'] },
+          },
+        },
+      });
+      service = await buildModule();
+
+      await expect(
+        service.payAuctionOrder(bidderId, 'order_1'),
+      ).rejects.toThrow('billing: "value" is required');
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
     });
   });
 
