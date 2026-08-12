@@ -20,6 +20,17 @@ export function eventoDeOrderPaga(metadataType?: string): string {
     : 'pagarme.order.paid';
 }
 
+/** Status de uma cobrança apenas AUTORIZADA (retenção, sem captura). */
+const STATUS_RETENCAO = 'authorized_pending_capture';
+
+/** O que a liberação de uma retenção concluiu. */
+export interface ResultadoLiberacao {
+  chargeId: string;
+  statusPagarme: string | null;
+  acao: 'liberada' | 'nao-e-retencao' | 'erro-consulta' | 'erro-cancelamento';
+  detalhe?: string;
+}
+
 /** O que a conciliação concluiu sobre um pedido. */
 export interface ResultadoConciliacao {
   orderId: string;
@@ -60,6 +71,81 @@ export class ConciliacaoService {
 
   /** Estados em que ainda faz sentido perguntar à Pagar.me. */
   private readonly PENDENTES = ['pending', 'pending_payment'];
+
+  /**
+   * Cancela uma RETENÇÃO (pré-autorização não capturada), devolvendo o limite
+   * ao comprador na hora.
+   *
+   * Existe porque a retenção do lance ficava de pé depois do arremate pago: o
+   * comprador terminava com o valor cobrado E o valor retido comprometidos ao
+   * mesmo tempo. O bug foi corrigido para os próximos (a auth passou a ser lida
+   * antes da consolidação), mas as retenções já criadas continuam presas até a
+   * adquirente expirá-las sozinha — este é o caminho para soltá-las na mão.
+   *
+   * ⚠️ A consulta ANTES do cancelamento não é conferência preguiçosa, é a
+   * salvaguarda principal: na Pagar.me o `DELETE /charges/{id}` cancela uma
+   * cobrança autorizada, mas numa cobrança PAGA o mesmo verbo vira ESTORNO.
+   * Um id trocado desfaria uma venda e devolveria o dinheiro do vendedor. Por
+   * isso só age no status de retenção, e recusa qualquer outro.
+   */
+  async liberarRetencao(chargeId: string): Promise<ResultadoLiberacao> {
+    let charge: any;
+    try {
+      charge = await this.pagarme.get(`/charges/${chargeId}`);
+    } catch (err: unknown) {
+      const detalhe = motivoPagarme(err) ?? 'falha na consulta';
+      return {
+        chargeId,
+        statusPagarme: null,
+        acao: 'erro-consulta',
+        detalhe,
+      };
+    }
+
+    const status: string | null = charge?.status ?? null;
+    if (status !== STATUS_RETENCAO) {
+      this.logger.warn(
+        `Liberação recusada: ${chargeId} está '${status}', não '${STATUS_RETENCAO}'.`,
+      );
+      return {
+        chargeId,
+        statusPagarme: status,
+        acao: 'nao-e-retencao',
+        detalhe:
+          `A cobrança está '${status}'. Só uma retenção ('${STATUS_RETENCAO}') ` +
+          'pode ser liberada — cancelar uma cobrança paga seria um estorno.',
+      };
+    }
+
+    try {
+      await this.pagarme.delete(`/charges/${chargeId}`);
+    } catch (err: unknown) {
+      const detalhe = motivoPagarme(err) ?? 'falha no cancelamento';
+      this.logger.error(`Falha ao liberar a retenção ${chargeId}: ${detalhe}`);
+      return {
+        chargeId,
+        statusPagarme: status,
+        acao: 'erro-cancelamento',
+        detalhe,
+      };
+    }
+
+    const valor = typeof charge?.amount === 'number' ? charge.amount : null;
+    this.logger.log(
+      `🔓 Retenção ${chargeId} liberada` +
+        (valor !== null ? ` (R$ ${(valor / 100).toFixed(2)})` : '') +
+        ' — limite devolvido ao comprador.',
+    );
+    return {
+      chargeId,
+      statusPagarme: status,
+      acao: 'liberada',
+      detalhe:
+        valor !== null
+          ? `R$ ${(valor / 100).toFixed(2)} devolvidos ao limite.`
+          : undefined,
+    };
+  }
 
   /**
    * Concilia UM pedido.

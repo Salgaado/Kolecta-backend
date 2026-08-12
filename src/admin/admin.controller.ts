@@ -92,6 +92,20 @@ export class AdminController {
     };
   }
 
+  // ── POST /api/admin/charges/:chargeId/liberar-retencao ───────────────────
+  // Cancela uma pré-autorização não capturada e devolve o limite ao comprador
+  // na hora. Para as retenções que ficaram de pé antes da correção da ordem
+  // (a auth era lida depois da consolidação e o cancelamento nunca rodava).
+  //
+  // Recusa qualquer cobrança que não esteja em `authorized_pending_capture`:
+  // numa cobrança PAGA o mesmo DELETE seria um ESTORNO.
+
+  @Post('charges/:chargeId/liberar-retencao')
+  @HttpCode(HttpStatus.OK)
+  async liberarRetencao(@Param('chargeId') chargeId: string) {
+    return { data: await this.conciliacaoService.liberarRetencao(chargeId) };
+  }
+
   // ── POST /api/admin/test-email ───────────────────────────────────────────
   // Valida a config de e-mail do ambiente sem esperar uma venda real.
   // Ex: { "to": "voce@exemplo.com" } → devolve sent | skipped | failed.

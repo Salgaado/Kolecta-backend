@@ -10,7 +10,7 @@ import { DATABASE_CONNECTION } from '../database/database.module';
  * não fez nada — então a fonte de verdade aqui é a API da Pagar.me, NUNCA a
  * nossa tabela de eventos.
  */
-const mockPagarme = { get: jest.fn() };
+const mockPagarme = { get: jest.fn(), delete: jest.fn() };
 
 const makeDb = () => {
   const chain: any = {};
@@ -198,5 +198,74 @@ describe('ConciliacaoService', () => {
     service = await build();
 
     expect((await service.conciliarPedido('nope')).acao).toBe('sem-referencia');
+  });
+
+  /**
+   * A retenção do lance ficava de pé depois do arremate pago: o comprador
+   * terminava com o valor cobrado E o valor retido comprometidos ao mesmo
+   * tempo. Corrigido para os próximos; as já criadas precisam ser soltas.
+   */
+  describe('liberarRetencao', () => {
+    it('cancela a retenção e devolve o limite', async () => {
+      mockPagarme.get.mockResolvedValueOnce({
+        id: 'ch_1',
+        status: 'authorized_pending_capture',
+        amount: 20000,
+      });
+      mockPagarme.delete.mockResolvedValueOnce({});
+      service = await build();
+
+      const r = await service.liberarRetencao('ch_1');
+
+      expect(r.acao).toBe('liberada');
+      expect(mockPagarme.delete).toHaveBeenCalledWith('/charges/ch_1');
+      expect(r.detalhe).toContain('200.00');
+    });
+
+    /**
+     * A salvaguarda principal. Na Pagar.me o mesmo DELETE que cancela uma
+     * cobrança autorizada vira ESTORNO numa cobrança paga: um id trocado
+     * desfaria a venda e devolveria o dinheiro do vendedor.
+     */
+    it('RECUSA cancelar uma cobrança PAGA — seria um estorno', async () => {
+      mockPagarme.get.mockResolvedValueOnce({
+        id: 'ch_pago',
+        status: 'paid',
+        amount: 20000,
+      });
+      service = await build();
+
+      const r = await service.liberarRetencao('ch_pago');
+
+      expect(r.acao).toBe('nao-e-retencao');
+      expect(mockPagarme.delete).not.toHaveBeenCalled();
+    });
+
+    it('não cancela nada quando a consulta falha (fail-closed)', async () => {
+      mockPagarme.get.mockRejectedValueOnce(new Error('502'));
+      service = await build();
+
+      const r = await service.liberarRetencao('ch_1');
+
+      expect(r.acao).toBe('erro-consulta');
+      expect(mockPagarme.delete).not.toHaveBeenCalled();
+    });
+
+    it('reporta a falha do cancelamento em vez de fingir sucesso', async () => {
+      mockPagarme.get.mockResolvedValueOnce({
+        id: 'ch_1',
+        status: 'authorized_pending_capture',
+        amount: 20000,
+      });
+      mockPagarme.delete.mockRejectedValueOnce({
+        response: { pagarme: { message: 'Charge cannot be canceled' } },
+      });
+      service = await build();
+
+      const r = await service.liberarRetencao('ch_1');
+
+      expect(r.acao).toBe('erro-cancelamento');
+      expect(r.detalhe).toBe('Charge cannot be canceled');
+    });
   });
 });
