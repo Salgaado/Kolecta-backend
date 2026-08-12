@@ -292,3 +292,194 @@ describe('CardsService — customer que não existe mais na conta', () => {
     expect(db.delete).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * A Pagar.me guarda a CÓPIA dela do nome e do e-mail. Corrigir o cadastro no
+ * nosso banco não alcança essa cópia — e é ela que o antifraude lê.
+ *
+ * O caso (12/08): um comprador cujo customer nasceu "Novo Usuário" com e-mail
+ * `<id>@placeholder.kolecta` tinha documento e telefone em ordem, então o
+ * reparo saía na primeira linha e o cadastro nunca era atualizado. Ele pagou um
+ * arremate e teve o outro barrado pelo antifraude.
+ */
+describe('CardsService — cadastro desatualizado na Pagar.me', () => {
+  let db: any;
+
+  const CPF = '52998224725';
+  const PHONES_REMOTOS = {
+    mobile_phone: { country_code: '55', area_code: '43', number: '991055311' },
+  };
+
+  /** Customer completo (documento + telefone) mas com os dados do placeholder. */
+  const customerPlaceholder = () => ({
+    document: CPF,
+    name: 'Novo Usuário',
+    email: 'user_1@placeholder.kolecta',
+    phones: PHONES_REMOTOS,
+  });
+
+  const build = async () => {
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        CardsService,
+        { provide: DATABASE_CONNECTION, useValue: db },
+        { provide: PagarmeService, useValue: mockPagarme },
+      ],
+    }).compile();
+    return mod.get<CardsService>(CardsService);
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPagarme.post.mockReset();
+    mockPagarme.get.mockReset();
+    mockPagarme.put.mockReset().mockResolvedValue({});
+    db = makeDb();
+  });
+
+  /** As leituras que o reparo faz depois de decidir que há o que consertar. */
+  const encenarReparo = (over: {
+    cpf?: string | null;
+    phone?: string | null;
+  }) =>
+    db.where
+      .mockResolvedValueOnce([usuario({ cpf: over.cpf ?? null })]) // resolveDocument → users
+      .mockResolvedValueOnce([]) // resolveDocument → seller_profiles
+      .mockResolvedValueOnce([usuario({ phone: over.phone ?? null })]); // resolvePhone
+
+  it('ATUALIZA nome e e-mail quando o customer ficou com o placeholder', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_1' }])
+      .mockResolvedValueOnce([{ customerId: 'cus_1' }])
+      .mockResolvedValueOnce([
+        { name: 'billy gois', email: 'fimdeobra@fimdeobra.com.br' },
+      ]); // o nosso cadastro, já corrigido
+    encenarReparo({ cpf: CPF, phone: TELEFONE });
+    mockPagarme.get.mockResolvedValueOnce(customerPlaceholder());
+
+    const service = await build();
+    await service.getCardRef('user_1');
+
+    expect(mockPagarme.put).toHaveBeenCalledWith(
+      '/customers/cus_1',
+      expect.objectContaining({
+        name: 'billy gois',
+        email: 'fimdeobra@fimdeobra.com.br',
+      }),
+    );
+  });
+
+  /**
+   * O reparo roda em TODO lance e em todo pagamento de arremate. Se escrevesse
+   * sempre, seria uma escrita na Pagar.me por lance.
+   */
+  it('NÃO escreve quando o cadastro remoto já está igual ao nosso', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_1' }])
+      .mockResolvedValueOnce([{ customerId: 'cus_1' }])
+      .mockResolvedValueOnce([
+        { name: 'Billy Gois', email: 'fimdeobra@fimdeobra.com.br' },
+      ]);
+    mockPagarme.get.mockResolvedValueOnce({
+      document: CPF,
+      name: 'Billy Gois',
+      email: 'fimdeobra@fimdeobra.com.br',
+      phones: PHONES_REMOTOS,
+    });
+
+    const service = await build();
+    await service.getCardRef('user_1');
+
+    expect(mockPagarme.put).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A direção do reparo importa: se o placeholder estiver do NOSSO lado, mandar
+   * ele para a Pagar.me trocaria um dado bom por um inútil.
+   */
+  it('NÃO empurra o placeholder do nosso lado por cima de um cadastro bom', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_1' }])
+      .mockResolvedValueOnce([{ customerId: 'cus_1' }])
+      .mockResolvedValueOnce([
+        { name: 'Novo Usuário', email: 'user_1@placeholder.kolecta' },
+      ]);
+    mockPagarme.get.mockResolvedValueOnce({
+      document: CPF,
+      name: 'Billy Gois',
+      email: 'fimdeobra@fimdeobra.com.br',
+      phones: PHONES_REMOTOS,
+    });
+
+    const service = await build();
+    await service.getCardRef('user_1');
+
+    expect(mockPagarme.put).not.toHaveBeenCalled();
+  });
+
+  /**
+   * O PUT da Pagar.me não é patch: campo omitido não é preservado. Consertar o
+   * nome não pode apagar o telefone e quebrar a cobrança seguinte.
+   */
+  it('reenvia o telefone REMOTO quando não temos um telefone local', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_1' }])
+      .mockResolvedValueOnce([{ customerId: 'cus_1' }])
+      .mockResolvedValueOnce([
+        { name: 'billy gois', email: 'fimdeobra@fimdeobra.com.br' },
+      ]);
+    encenarReparo({ cpf: CPF, phone: null }); // sem telefone no nosso banco
+    mockPagarme.get.mockResolvedValueOnce(customerPlaceholder());
+
+    const service = await build();
+    await service.getCardRef('user_1');
+
+    expect(mockPagarme.put).toHaveBeenCalledWith(
+      '/customers/cus_1',
+      expect.objectContaining({ phones: PHONES_REMOTOS }),
+    );
+  });
+
+  /**
+   * Reparo é best-effort. Exigir CPF de quem só tinha o nome desatualizado
+   * trocaria um problema cosmético por um bloqueio — e o customer está
+   * completo, então a cobrança funciona.
+   */
+  it('NÃO bloqueia o lance por falta de CPF local quando só o nome divergia', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_1' }])
+      .mockResolvedValueOnce([{ customerId: 'cus_1' }])
+      .mockResolvedValueOnce([
+        { name: 'billy gois', email: 'fimdeobra@fimdeobra.com.br' },
+      ]);
+    encenarReparo({ cpf: null, phone: TELEFONE }); // sem documento nosso
+    mockPagarme.get.mockResolvedValueOnce(customerPlaceholder());
+
+    const service = await build();
+
+    await expect(service.getCardRef('user_1')).resolves.toEqual({
+      customerId: 'cus_1',
+      cardId: 'card_1',
+    });
+    expect(mockPagarme.put).not.toHaveBeenCalled();
+  });
+
+  it('falha do PUT não derruba quem só queria dar um lance', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_1' }])
+      .mockResolvedValueOnce([{ customerId: 'cus_1' }])
+      .mockResolvedValueOnce([
+        { name: 'billy gois', email: 'fimdeobra@fimdeobra.com.br' },
+      ]);
+    encenarReparo({ cpf: CPF, phone: TELEFONE });
+    mockPagarme.get.mockResolvedValueOnce(customerPlaceholder());
+    mockPagarme.put.mockRejectedValueOnce(new Error('502'));
+
+    const service = await build();
+
+    await expect(service.getCardRef('user_1')).resolves.toEqual({
+      customerId: 'cus_1',
+      cardId: 'card_1',
+    });
+  });
+});

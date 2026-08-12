@@ -11,6 +11,7 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { UpdateUserDto } from './dto/user.dto';
 import { RecordConsentDto } from './dto/consent.dto';
+import { PLACEHOLDER_EMAIL_SUFFIX } from '../common/cadastro-placeholder';
 
 export type UserRecord = typeof schema.users.$inferSelect;
 // DTO movido para ./dto/user.dto.ts (classe, p/ o ValidationPipe global).
@@ -20,8 +21,12 @@ export { UpdateUserDto };
  * Domínio do e-mail sintético usado quando o Clerk não respondeu na criação do
  * cadastro. Não existe como domínio de verdade: e-mail que termina assim NUNCA
  * é entregue, e é por isso que um cadastro nesse estado precisa ser reparado.
+ *
+ * Mora em `common/cadastro-placeholder` porque o `CardsService` precisa do
+ * mesmo critério — a Pagar.me guarda a cópia dela do nome e do e-mail, e um
+ * cliente placeholder é barrado pelo antifraude.
  */
-const SUFIXO_PLACEHOLDER = '@placeholder.kolecta';
+const SUFIXO_PLACEHOLDER = PLACEHOLDER_EMAIL_SUFFIX;
 
 @Injectable()
 export class UsersService {

@@ -15,6 +15,7 @@ import {
 } from '../common/payment-flags';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { motivoPagarme } from '../pagarme/pagarme-erro';
+import { emailUtil, nomeUtil } from '../common/cadastro-placeholder';
 
 /** Cartão salvo, já mascarado, pronto para o frontend (sem dado sensível PCI). */
 export interface MaskedCard {
@@ -319,15 +320,23 @@ export class CardsService {
   }
 
   /**
-   * Garante que um customer JA existente tenha documento na Pagar.me.
+   * Garante que um customer JA existente esteja completo E atualizado na
+   * Pagar.me.
    *
    * Customers criados antes desta correcao nasceram sem documento, e a cobranca
    * no cartao falha sem ele. Recriar o customer nao serve: o cartao salvo esta
    * vinculado ao antigo e seria perdido. Entao completamos no lugar, via PUT.
    *
-   * Nao derruba o fluxo se a consulta falhar: se o customer ja estiver correto
-   * ou a Pagar.me responder outra coisa, seguimos — quem valida de verdade e a
-   * cobranca, e o erro dela agora chega legivel a quem deu o lance.
+   * Desde 12/08 tambem conserta NOME e E-MAIL divergentes. O caso que motivou:
+   * um comprador cujo customer nasceu "Novo Usuario" com e-mail
+   * `@placeholder.kolecta` tinha documento e telefone em ordem, entao o reparo
+   * saia na primeira linha — e o antifraude seguia avaliando um cliente que nao
+   * identifica ninguem. Corrigir o cadastro no nosso banco nao bastava: a
+   * Pagar.me guarda a copia dela.
+   *
+   * Nao derruba o fluxo se a consulta OU a escrita falhar: reparo e
+   * best-effort, quem valida de verdade e a cobranca — e o erro dela agora
+   * chega legivel a quem deu o lance.
    */
   private async completarCadastroDoCustomer(
     customerId: string,
@@ -349,11 +358,37 @@ export class CardsService {
       return 'ok';
     }
 
-    const temTelefone = Object.keys(remoto?.phones ?? {}).length > 0;
-    if (remoto?.document && temTelefone) return 'ok'; // ja esta completo
+    const faltaDocumento = !remoto?.document;
+    const faltaTelefone = Object.keys(remoto?.phones ?? {}).length === 0;
+
+    // O nosso cadastro e a fonte da verdade (vem do Clerk). Lido ANTES da
+    // decisao porque agora ele tambem define se ha o que consertar.
+    const [user] = await this.db
+      .select({ name: schema.users.name, email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+
+    const nomeLocal = nomeUtil(user?.name);
+    const emailLocal = emailUtil(user?.email);
+
+    // Divergencia so conta quando o NOSSO lado tem dado aproveitavel: empurrar
+    // "Novo Usuario" para a Pagar.me seria trocar um dado velho por um pior.
+    const desatualizado =
+      (!!nomeLocal && nomeLocal !== String(remoto?.name ?? '').trim()) ||
+      (!!emailLocal &&
+        emailLocal.toLowerCase() !==
+          String(remoto?.email ?? '')
+            .trim()
+            .toLowerCase());
+
+    if (!faltaDocumento && !faltaTelefone && !desatualizado) return 'ok';
 
     const doc = await this.resolveDocument(userId);
     if (!doc) {
+      // Sem documento a cobranca falha — mas so quando ele REALMENTE falta no
+      // customer. Se o unico motivo era atualizar nome/e-mail, bloquear o
+      // usuario por um reparo cosmetico trocaria um problema por outro pior.
+      if (!faltaDocumento && !faltaTelefone) return 'ok';
       throw new BadRequestException(
         'Informe seu CPF ou CNPJ para usar o cartao — a operadora exige o ' +
           'documento do titular para autorizar cobrancas.',
@@ -361,32 +396,44 @@ export class CardsService {
     }
 
     const phones = await this.resolvePhone(userId);
-    if (!temTelefone && !phones) {
+    if (faltaTelefone && !phones) {
       throw new BadRequestException(
         'Informe um telefone com DDD em Financeiro > Cartao para lances — a ' +
           'operadora exige telefone do titular para autorizar cobrancas.',
       );
     }
 
-    // O PUT da Pagar.me NAO e um patch: sem `name` ele responde 422 ("The name
-    // field is required"). Reenviamos os campos que ja existem no customer,
-    // caindo no nosso cadastro quando o remoto vier vazio.
-    const [user] = await this.db
-      .select({ name: schema.users.name, email: schema.users.email })
-      .from(schema.users)
-      .where(eq(schema.users.id, userId));
+    // O PUT da Pagar.me NAO e um patch: campo omitido nao e preservado. Por
+    // isso o telefone REMOTO e reenviado quando nao temos um local — reparar o
+    // nome nao pode apagar o telefone e quebrar a proxima cobranca.
+    const phonesParaEnviar = phones ?? (faltaTelefone ? null : remoto?.phones);
 
-    await this.pagarme.put(`/customers/${customerId}`, {
-      name: remoto?.name || user?.name || 'Usuario Kolecta',
-      email: remoto?.email || user?.email,
-      type: doc.type,
-      document: doc.document,
-      document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
-      ...(phones ? { phones } : {}),
-    });
+    try {
+      await this.pagarme.put(`/customers/${customerId}`, {
+        // O NOSSO cadastro vem primeiro. Antes era `remoto?.name || user?.name`
+        // — o remoto ganhava, entao um customer que nasceu "Novo Usuario"
+        // reenviava "Novo Usuario" a cada reparo e nunca saia desse estado.
+        name: nomeLocal ?? remoto?.name ?? 'Usuario Kolecta',
+        email: emailLocal ?? remoto?.email,
+        type: doc.type,
+        document: doc.document,
+        document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
+        ...(phonesParaEnviar ? { phones: phonesParaEnviar } : {}),
+      });
+    } catch (err: unknown) {
+      // Best-effort: falhar aqui nao pode derrubar quem so queria dar um lance.
+      // Faltando documento/telefone a cobranca falha adiante com motivo
+      // legivel; a divergencia de nome/e-mail tenta de novo na proxima leitura.
+      this.logger.warn(
+        `Reparo do customer ${customerId} falhou (ignorado): ${motivoPagarme(err)}`,
+      );
+      return 'ok';
+    }
+
     await this.persistCpf(userId, doc.document);
     this.logger.log(
-      `Cadastro completado no customer ${customerId} (user ${userId}).`,
+      `Cadastro ${desatualizado ? 'atualizado' : 'completado'} no customer ` +
+        `${customerId} (user ${userId}).`,
     );
     return 'ok';
   }
