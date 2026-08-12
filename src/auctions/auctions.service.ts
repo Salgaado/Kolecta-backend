@@ -1464,11 +1464,32 @@ export class AuctionsService {
       throw new BadRequestException(reason);
     }
 
-    await this._settlePaidAuctionOrder(
+    await this._concluirArrematePago(
       order,
       pagarmeOrder.id,
       charge?.id ?? null,
     );
+
+    return { orderId: order.id, paid: true };
+  }
+
+  /**
+   * Tudo que acontece DEPOIS de a cobrança do arremate ser confirmada:
+   * consolida o pedido, libera a retenção do lance e dispara a etiqueta.
+   *
+   * Compartilhado de propósito entre o pagamento pelo site (`payAuctionOrder`)
+   * e a conciliação pelo webhook (`handlePagarmeAuctionPaid`) — porque foi a
+   * AUSÊNCIA desse compartilhamento que deixou um arremate pago pelo painel da
+   * Pagar.me sem nada registrado aqui: o site liquidava tudo dentro da própria
+   * requisição, o webhook era redundante, e ninguém notou que ele não sabia
+   * fazer o trabalho sozinho.
+   */
+  private async _concluirArrematePago(
+    order: typeof schema.orders.$inferSelect,
+    pagarmeOrderId: string,
+    chargeId: string | null,
+  ) {
+    await this._settlePaidAuctionOrder(order, pagarmeOrderId, chargeId);
 
     // A cobrança do total passou — só agora a retenção do lance pode cair. A
     // ordem importa: liberar antes de cobrar deixaria o vencedor sem garantia
@@ -1482,8 +1503,11 @@ export class AuctionsService {
       .from(schema.auctions)
       .where(eq(schema.auctions.listingId, order.listingId));
     if (auctionDoPedido) {
-      const auth = await this._getActiveBidAuth(auctionDoPedido.id, buyerId);
-      if (auth?.chargeId && auth.chargeId !== charge?.id) {
+      const auth = await this._getActiveBidAuth(
+        auctionDoPedido.id,
+        order.buyerId,
+      );
+      if (auth?.chargeId && auth.chargeId !== chargeId) {
         await this._voidPreAuth(auth.chargeId);
         this.logger.log(
           `Pré-auth ${auth.chargeId} do lance liberada após o pagamento do arremate ${order.id}.`,
@@ -1492,7 +1516,7 @@ export class AuctionsService {
     }
 
     this.logger.log(
-      `💳 Arremate ${order.id} pago pelo vencedor: pagarme ${pagarmeOrder.id} ` +
+      `💳 Arremate ${order.id} pago pelo vencedor: pagarme ${pagarmeOrderId} ` +
         `(total R$${(order.totalInCents / 100).toFixed(2)}, frete ` +
         `R$${((order.shippingInCents ?? 0) / 100).toFixed(2)}).`,
     );
@@ -1503,14 +1527,64 @@ export class AuctionsService {
     // segundo e-mail contraditório.
     this.eventEmitter.emit('auction.paid', {
       orderId: order.id,
-      buyerId,
+      buyerId: order.buyerId,
       sellerId: order.sellerId,
       totalInCents: order.totalInCents,
       shippingInCents: order.shippingInCents ?? 0,
       deliveryMethod: order.deliveryMethod ?? 'shipping',
     });
+  }
 
-    return { orderId: order.id, paid: true };
+  /**
+   * Arremate pago FORA do fluxo do site: reprocessamento no painel da Pagar.me,
+   * ou qualquer cobrança que a nossa requisição não acompanhou até o fim.
+   *
+   * Existe porque o `order.paid` do leilão caía no handler do CHECKOUT, que só
+   * conhece o status `pending` — o pedido de leilão fica `pending_payment`.
+   * Nomes parecidos, estados diferentes: o webhook lia, achava que já estava
+   * resolvido, saía calado e era gravado como `processed`. Um arremate de
+   * R$ 200 foi pago em 12/08 e ficou invisível aqui — a caminho de ser
+   * cancelado pelo cron de prazo, com o dinheiro já capturado.
+   */
+  @OnEvent('pagarme.auction.paid')
+  async handlePagarmeAuctionPaid(data: any) {
+    const orderId: string | undefined = data?.metadata?.orderId;
+    if (!orderId) {
+      this.logger.warn(
+        `Pagar.me order.paid de arremate (${data?.id}) sem orderId no metadata. Ignorando.`,
+      );
+      return;
+    }
+
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+
+    if (!order) {
+      this.logger.warn(`order.paid de arremate: pedido ${orderId} não existe.`);
+      return;
+    }
+
+    // Idempotência: no caminho normal o site já liquidou dentro da requisição e
+    // o webhook chega logo atrás. Sair calado aqui é o esperado, não um erro.
+    if (order.status !== 'pending_payment') {
+      this.logger.log(
+        `Arremate ${orderId} já estava ${order.status} — webhook sem efeito.`,
+      );
+      return;
+    }
+
+    const charge = data?.charges?.[0];
+    await this._concluirArrematePago(
+      order,
+      data?.id ?? 'pagarme',
+      charge?.id ?? null,
+    );
+
+    this.logger.log(
+      `✅ Arremate ${orderId} conciliado PELO WEBHOOK (pago fora do site).`,
+    );
   }
 
   /**

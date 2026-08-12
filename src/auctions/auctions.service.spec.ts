@@ -1660,6 +1660,97 @@ describe('AuctionsService', () => {
     });
   });
 
+  // ── handlePagarmeAuctionPaid (conciliação por webhook) ───────────────────
+
+  /**
+   * Arremate pago FORA do fluxo do site — reprocessamento no painel da
+   * Pagar.me, por exemplo. Antes o `order.paid` do leilão caía no handler do
+   * checkout, que só conhece o status `pending`; o de leilão é
+   * `pending_payment`. O webhook saía calado e era gravado como `processed`.
+   * Em 12/08 um arremate de R$ 200 pago pelo painel ficou invisível aqui, a
+   * caminho de ser cancelado pelo cron com o dinheiro já capturado.
+   */
+  describe('handlePagarmeAuctionPaid', () => {
+    const pendingOrder = {
+      id: 'order_1',
+      buyerId: bidderId,
+      sellerId,
+      listingId: mockListingId,
+      totalInCents: 20000,
+      shippingInCents: 0,
+      deliveryMethod: 'pickup',
+      sellerNetInCents: 17800,
+      platformFeeInCents: 2200,
+      status: 'pending_payment',
+    };
+
+    const evento = (over: Record<string, unknown> = {}) => ({
+      id: 'or_reprocessado',
+      metadata: { type: 'bid_payment', orderId: 'order_1' },
+      charges: [{ id: 'ch_novo', status: 'paid' }],
+      ...over,
+    });
+
+    it('consolida o pedido e LIBERA a retenção do lance', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([pendingOrder]) // pedido
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // _settle
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // void
+        .mockResolvedValueOnce([{ chargeId: 'ch_bid', orderId: 'or_bid' }]);
+      service = await buildModule();
+
+      await service.handlePagarmeAuctionPaid(evento());
+
+      // Líquido do vendedor retido na wallet — o que não tinha acontecido.
+      expect(mockWalletService.hold).toHaveBeenCalled();
+      // A pré-auth do lance cai: sem isso o comprador fica com o valor
+      // cobrado E o valor retido presos no cartão ao mesmo tempo.
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith('/charges/ch_bid');
+      // Etiqueta/aviso seguem pelo mesmo evento do fluxo normal.
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'auction.paid',
+        expect.objectContaining({ orderId: 'order_1' }),
+      );
+    });
+
+    /**
+     * No caminho normal o site liquida dentro da própria requisição e o
+     * webhook chega logo atrás. Sair calado é o esperado — não pode reter o
+     * líquido do vendedor duas vezes.
+     */
+    it('NÃO faz nada quando o pedido já foi liquidado pelo site', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([{ ...pendingOrder, status: 'paid' }]);
+      service = await buildModule();
+
+      await service.handlePagarmeAuctionPaid(evento());
+
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
+      expect(mockPagarmeService.delete).not.toHaveBeenCalled();
+    });
+
+    it('ignora evento sem orderId no metadata', async () => {
+      mockDb = makeDrizzleMock();
+      service = await buildModule();
+
+      await service.handlePagarmeAuctionPaid(evento({ metadata: {} }));
+
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
+    });
+
+    it('não quebra quando o pedido não existe mais', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([]);
+      service = await buildModule();
+
+      await expect(
+        service.handlePagarmeAuctionPaid(evento()),
+      ).resolves.toBeUndefined();
+      expect(mockWalletService.hold).not.toHaveBeenCalled();
+    });
+  });
+
   // ── expireOverduePendingPayments (Fase 4) ────────────────────────────────
 
   describe('expireOverduePendingPayments', () => {

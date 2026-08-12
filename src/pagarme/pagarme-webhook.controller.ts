@@ -107,6 +107,14 @@ export class PagarmeWebhookController {
       case 'order.paid':
         if (data.metadata?.type === 'wallet_deposit') {
           await this.handleWalletDeposit(data);
+        } else if (data.metadata?.type === 'bid_payment') {
+          // Arremate de leilão tem estado PRÓPRIO (`pending_payment`) e
+          // liquidação própria — retenção do lance a liberar, anúncio a marcar
+          // como vendido. Mandar para o handler do checkout, que só conhece
+          // `pending`, fazia o webhook sair calado: um arremate pago pelo
+          // painel da Pagar.me em 12/08 ficou invisível aqui, a caminho de ser
+          // cancelado pelo cron de prazo com o dinheiro já capturado.
+          this.eventEmitter.emit('pagarme.auction.paid', data);
         } else {
           // Confirmação de compra (checkout) → Fase 5 trata via @OnEvent.
           this.eventEmitter.emit('pagarme.order.paid', data);
