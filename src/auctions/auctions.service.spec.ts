@@ -1399,9 +1399,9 @@ describe('AuctionsService', () => {
         // em mãos não há endereço de entrega e o cartão exige um do mesmo jeito.
         .mockResolvedValueOnce([mockEndereco])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
-        .mockResolvedValueOnce([{ id: 'auction_1' }]) // _settle
-        .mockResolvedValueOnce([{ id: 'auction_1' }]) // void: auction por listingId
-        .mockResolvedValueOnce([]); // _getActiveBidAuth: sem auth
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
+        .mockResolvedValueOnce([]) // _getActiveBidAuth: sem auth
+        .mockResolvedValueOnce([{ id: 'auction_1' }]); // _settle
       mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
       service = await buildModule();
 
@@ -1417,9 +1417,9 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]) // anúncio
-        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId (_settle)
-        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId (void)
-        .mockResolvedValueOnce([{ chargeId: 'ch_bid', orderId: 'or_bid' }]); // pré-auth do lance
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId
+        .mockResolvedValueOnce([{ chargeId: 'ch_bid', orderId: 'or_bid' }]) // pré-auth do lance: LIDA ANTES do settle
+        .mockResolvedValueOnce([{ id: 'auction_1' }]); // auction por listingId (_settle)
       mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
       service = await buildModule();
 
@@ -1471,9 +1471,9 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([
           { ...mockEndereco, recipientName: 'Billy Gois' },
         ]) // endereço do pedido
-        .mockResolvedValueOnce([{ id: 'auction_1' }])
-        .mockResolvedValueOnce([{ id: 'auction_1' }])
-        .mockResolvedValueOnce([]);
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
+        .mockResolvedValueOnce([]) // sem pré-auth de pé
+        .mockResolvedValueOnce([{ id: 'auction_1' }]);
       mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
       service = await buildModule();
 
@@ -1511,9 +1511,9 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([mockEndereco])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ title: 'Mazda RX7 FD3S' }])
-        .mockResolvedValueOnce([{ id: 'auction_1' }])
-        .mockResolvedValueOnce([{ id: 'auction_1' }])
-        .mockResolvedValueOnce([]);
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
+        .mockResolvedValueOnce([]) // sem pré-auth de pé
+        .mockResolvedValueOnce([{ id: 'auction_1' }]);
       mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
       service = await buildModule();
 
@@ -1546,9 +1546,9 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([mockEndereco])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }])
-        .mockResolvedValueOnce([{ id: 'auction_1' }])
-        .mockResolvedValueOnce([{ id: 'auction_1' }])
-        .mockResolvedValueOnce([]);
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
+        .mockResolvedValueOnce([]) // sem pré-auth de pé
+        .mockResolvedValueOnce([{ id: 'auction_1' }]);
       mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
       service = await buildModule();
 
@@ -1579,9 +1579,9 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([pendingOrder])
         .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
-        .mockResolvedValueOnce([{ id: 'auction_1' }])
-        .mockResolvedValueOnce([{ id: 'auction_1' }])
-        .mockResolvedValueOnce([]);
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
+        .mockResolvedValueOnce([]) // sem pré-auth de pé
+        .mockResolvedValueOnce([{ id: 'auction_1' }]);
       mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
       service = await buildModule();
 
@@ -1695,9 +1695,9 @@ describe('AuctionsService', () => {
       mockDb = makeDrizzleMock();
       mockDb.where
         .mockResolvedValueOnce([pendingOrder]) // pedido
-        .mockResolvedValueOnce([{ id: 'auction_1' }]) // _settle
-        .mockResolvedValueOnce([{ id: 'auction_1' }]) // void
-        .mockResolvedValueOnce([{ chargeId: 'ch_bid', orderId: 'or_bid' }]);
+        .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction
+        .mockResolvedValueOnce([{ chargeId: 'ch_bid', orderId: 'or_bid' }]) // pré-auth: LIDA ANTES do settle
+        .mockResolvedValueOnce([{ id: 'auction_1' }]); // _settle
       service = await buildModule();
 
       await service.handlePagarmeAuctionPaid(evento());
@@ -1712,6 +1712,38 @@ describe('AuctionsService', () => {
         'auction.paid',
         expect.objectContaining({ orderId: 'order_1' }),
       );
+    });
+
+    /**
+     * REGRESSÃO (12/08): a retenção do lance NUNCA era liberada.
+     *
+     * `_settlePaidAuctionOrder` marca o lance vencedor como `won` dentro da
+     * transação, e `_getActiveBidAuth` filtra por `status = 'active'`. Lendo a
+     * auth DEPOIS de consolidar, a busca não achava mais nada e o void não
+     * acontecia: o vencedor ficava com o valor cobrado E o valor retido presos
+     * ao mesmo tempo, até a adquirente expirar sozinha (~5 dias). Dois
+     * arremates de 11/08 ficaram assim, R$ 460 travados à toa.
+     *
+     * Este teste trava a ORDEM, não só o efeito — foi a ordem que quebrou, e o
+     * efeito passava mesmo errado porque o mock devolve a auth de qualquer
+     * jeito.
+     */
+    it('lê a pré-auth ANTES de consolidar (senão o lance já virou `won`)', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([pendingOrder])
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([{ chargeId: 'ch_bid', orderId: 'or_bid' }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }]);
+      service = await buildModule();
+
+      await service.handlePagarmeAuctionPaid(evento());
+
+      // 3ª leitura = a auth do lance; a transação é onde o lance vira `won`.
+      const leituraDaAuth = mockDb.where.mock.invocationCallOrder[2];
+      const consolidacao = mockDb.transaction.mock.invocationCallOrder[0];
+      expect(leituraDaAuth).toBeLessThan(consolidacao);
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith('/charges/ch_bid');
     });
 
     /**

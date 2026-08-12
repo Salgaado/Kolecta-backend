@@ -1500,30 +1500,35 @@ export class AuctionsService {
     pagarmeOrderId: string,
     chargeId: string | null,
   ) {
-    await this._settlePaidAuctionOrder(order, pagarmeOrderId, chargeId);
-
-    // A cobrança do total passou — só agora a retenção do lance pode cair. A
-    // ordem importa: liberar antes de cobrar deixaria o vencedor sem garantia
-    // nenhuma no intervalo, e uma recusa aí custaria o item a ele.
+    // A retenção do lance é LIDA ANTES de consolidar, e só liberada depois.
     //
-    // Best-effort: se o void falhar, o dinheiro do comprador segue retido até a
-    // adquirente expirar a auth sozinha (~5 dias). Ruim, mas não desfaz a venda
-    // — por isso fica em log e não derruba a resposta.
+    // A ordem não é estilo: `_settlePaidAuctionOrder` marca o lance vencedor
+    // como `won` dentro da transação, e `_getActiveBidAuth` filtra por
+    // `status = 'active'`. Lendo depois, a busca não acha mais nada e o void
+    // NUNCA acontecia — o vencedor ficava com o valor cobrado E o valor retido
+    // presos ao mesmo tempo, até a adquirente expirar a auth sozinha (~5 dias).
+    // Dois arremates de 11/08 ficaram assim, R$ 460 travados sem necessidade.
+    //
+    // Liberar só DEPOIS da consolidação continua certo: a retenção é a garantia
+    // enquanto o dinheiro não entrou.
     const [auctionDoPedido] = await this.db
       .select({ id: schema.auctions.id })
       .from(schema.auctions)
       .where(eq(schema.auctions.listingId, order.listingId));
-    if (auctionDoPedido) {
-      const auth = await this._getActiveBidAuth(
-        auctionDoPedido.id,
-        order.buyerId,
+    const auth = auctionDoPedido
+      ? await this._getActiveBidAuth(auctionDoPedido.id, order.buyerId)
+      : null;
+
+    await this._settlePaidAuctionOrder(order, pagarmeOrderId, chargeId);
+
+    // Best-effort: se o void falhar, o dinheiro do comprador segue retido até a
+    // adquirente expirar a auth sozinha. Ruim, mas não desfaz a venda — por
+    // isso fica em log e não derruba a resposta.
+    if (auth?.chargeId && auth.chargeId !== chargeId) {
+      await this._voidPreAuth(auth.chargeId);
+      this.logger.log(
+        `Pré-auth ${auth.chargeId} do lance liberada após o pagamento do arremate ${order.id}.`,
       );
-      if (auth?.chargeId && auth.chargeId !== chargeId) {
-        await this._voidPreAuth(auth.chargeId);
-        this.logger.log(
-          `Pré-auth ${auth.chargeId} do lance liberada após o pagamento do arremate ${order.id}.`,
-        );
-      }
     }
 
     this.logger.log(
