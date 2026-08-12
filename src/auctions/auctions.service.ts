@@ -1457,6 +1457,17 @@ export class AuctionsService {
     const charge = pagarmeOrder?.charges?.[0];
     const paid = pagarmeOrder?.status === 'paid' || charge?.status === 'paid';
     if (!paid) {
+      // Guarda a referência ANTES de desistir. A recusa não é o fim da
+      // história: ela pode ser reprocessada no painel da Pagar.me, e sem o id
+      // aqui não há como perguntar depois se virou pagamento — foi assim que
+      // um arremate de R$200 pago em 12/08 ficou sem rastro do nosso lado.
+      // O pedido segue `pending_payment`; só a referência é gravada.
+      if (pagarmeOrder?.id) {
+        await this.db
+          .update(schema.orders)
+          .set({ pagarmeOrderId: pagarmeOrder.id, updatedAt: new Date() })
+          .where(eq(schema.orders.id, order.id));
+      }
       const reason =
         charge?.last_transaction?.gateway_response?.errors?.[0]?.message ||
         charge?.last_transaction?.acquirer_message ||
