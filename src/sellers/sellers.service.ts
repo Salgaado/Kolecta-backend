@@ -64,7 +64,11 @@ export class SellersService {
       .where(
         and(
           eq(orders.sellerId, id),
-          inArray(orders.status, ['paid', 'shipped', 'delivered']),
+          // 'completed' faltava: é o estado FINAL da venda (saldo liberado ao
+          // vendedor, pós-entrega), justamente a venda mais concluída que não
+          // contava. Vendedor com 6 'completed' + 1 'delivered' via "1 venda" no
+          // perfil. Mesma lista canônica de pedido bem-sucedido do messages.service.
+          inArray(orders.status, ['paid', 'shipped', 'delivered', 'completed']),
         ),
       )
       .get();
