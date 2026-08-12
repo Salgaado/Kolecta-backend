@@ -18,6 +18,8 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { QuoteShippingDto, GenerateLabelDto } from './dto/shipping.dto';
 import {
+  EXIGEM_NOTA_FISCAL,
+  exigeNotaFiscal,
   nomeDoServico,
   parseServicos,
   servicoPorId,
@@ -107,6 +109,13 @@ export class ShippingService {
     'https://sandbox.melhorenvio.com.br/api/v2/me';
   private readonly token = process.env.MELHOR_ENVIO_TOKEN;
 
+  /**
+   * Quem exige nota fiscal, lido do Melhor Envio. Guardado por 24h: a regra é da
+   * transportadora, muda em escala de meses, e uma chamada extra por cotação
+   * seria peso puro no caminho mais quente do checkout.
+   */
+  private exigemNota: { em: number; ids: Set<number> } | null = null;
+
   constructor(
     private readonly httpService: HttpService,
     @Inject(DATABASE_CONNECTION)
@@ -165,7 +174,27 @@ export class ShippingService {
         }),
       );
 
-      const cotadas = response.data.filter((opt: any) => !opt.error);
+      const cotouComErro = response.data.filter((opt: any) => !opt.error);
+
+      // Fora quem exige nota fiscal. O `calculate` NÃO aplica essa regra: cota a
+      // Jadlog com preço e prazo e só o `/cart` recusa, com o frete já pago
+      // (pedido 0c57df5a). Quem sabe da regra é `GET /shipment/services`, e é
+      // dela que sai este corte.
+      const exigemNota = await this.servicosQueExigemNota();
+      const cotadas = cotouComErro.filter(
+        (opt: any) => !exigemNota.has(Number(opt.id)),
+      );
+      const semNota = cotouComErro.length - cotadas.length;
+      if (semNota > 0) {
+        this.logger.log(
+          `Frete ${fromCep} → ${data.to_cep}: ${semNota} opção(ões) escondidas por ` +
+            `exigirem nota fiscal: ` +
+            cotouComErro
+              .filter((o: any) => exigemNota.has(Number(o.id)))
+              .map((o: any) => `${o.company?.name} ${o.name}`)
+              .join(', '),
+        );
+      }
 
       // Quem manda no que aparece: a plataforma corta, e o VENDEDOR pode cortar
       // mais dentro do que sobrou (a agência perto da casa dele é o que decide
@@ -953,6 +982,54 @@ export class ShippingService {
           `${err?.message ?? err}. Usando o padrão da plataforma.`,
       );
       return { servicos: null, aceitaRetirada: true };
+    }
+  }
+
+  /**
+   * Ids dos serviços que exigem nota fiscal, direto do Melhor Envio.
+   *
+   * Vem da API, e não de uma lista nossa, porque a regra é deles: se a Jadlog
+   * parar de exigir nota, ou se os Correios passarem a exigir, a cotação
+   * acompanha sozinha, sem deploy. A lista fixa em `servicos.ts` é a rede de
+   * segurança — falha na consulta não pode zerar o filtro e devolver ao
+   * comprador uma transportadora que vai recusar.
+   */
+  private async servicosQueExigemNota(): Promise<Set<number>> {
+    const agora = Date.now();
+    if (this.exigemNota && agora - this.exigemNota.em < 24 * 60 * 60 * 1000) {
+      return this.exigemNota.ids;
+    }
+    try {
+      const resposta = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/shipment/services`, {
+          headers: this.authHeaders(),
+          timeout: 5000,
+        }),
+      );
+      const lista: any[] = Array.isArray(resposta.data)
+        ? resposta.data
+        : (resposta.data?.data ?? []);
+      // Lista vazia é resposta estranha, não "ninguém exige nota": tratar como
+      // sucesso desligaria o filtro justamente quando a API está ruim.
+      if (lista.length === 0) throw new Error('lista de serviços vazia');
+
+      const ids = new Set<number>(
+        lista
+          .filter((s) => exigeNotaFiscal(s?.requirements))
+          .map((s) => Number(s.id)),
+      );
+      this.exigemNota = { em: agora, ids };
+      this.logger.log(
+        `Melhor Envio: ${ids.size} de ${lista.length} serviços exigem nota fiscal ` +
+          `(${[...ids].map(nomeDoServico).join(', ') || 'nenhum'}).`,
+      );
+      return ids;
+    } catch (err: any) {
+      this.logger.warn(
+        `Não deu para ler os requisitos dos serviços no Melhor Envio ` +
+          `(${err?.message ?? err}). Usando a lista fixa de ${EXIGEM_NOTA_FISCAL.length}.`,
+      );
+      return new Set(EXIGEM_NOTA_FISCAL);
     }
   }
 

@@ -154,6 +154,49 @@ export const CATALOGO_SERVICOS: readonly ServicoEnvio[] = [
   },
 ];
 
+/**
+ * Serviços que EXIGEM nota fiscal, de `GET /me/shipment/services` →
+ * `requirements` (conferido em 12/08/2026 na conta de produção).
+ *
+ * Todo envio da Kolecta vai `non_commercial: true`, sem nota — então estes são
+ * impossíveis para nós, e mostrá-los na cotação é vender um frete que não vira
+ * etiqueta. Não tem a ver com o vendedor ser PF ou PJ: a Rock Wheels tem CNPJ e
+ * a Jadlog recusou do mesmo jeito, porque quem não tem nota é o ENVIO.
+ *
+ * É a lista de reserva: o normal é ler `requirements` da API, que se atualiza
+ * sozinha se uma transportadora mudar de regra. Isto aqui é o que vale quando a
+ * chamada falha — a cotação não pode cair junto.
+ */
+export const EXIGEM_NOTA_FISCAL: readonly number[] = [3, 4, 12, 15, 16, 22, 27];
+
+/**
+ * Este serviço exige nota fiscal? Lê o `requirements` como o Melhor Envio o
+ * devolve, que vem em DUAS formas:
+ *
+ * - lista de rótulos: `["names","addresses","documents","invoice"]`;
+ * - objeto de regras estilo Laravel (a Total Express é assim hoje), em que a
+ *   nota aparece como `options.invoice.key: ["required_if:options.non_commercial,false"]`
+ *   — ou seja, obrigatória só quando o envio se declara COMERCIAL. Para nós,
+ *   que declaramos o contrário, não é exigência nenhuma.
+ *
+ * Ler só a primeira forma trataria a segunda como "não exige" por acidente. Aqui
+ * é por decisão, e a diferença está escrita.
+ */
+export function exigeNotaFiscal(requirements: unknown): boolean {
+  if (Array.isArray(requirements)) {
+    return requirements.some((r) => String(r).toLowerCase() === 'invoice');
+  }
+  const regras = (requirements as any)?.rules;
+  if (!regras || typeof regras !== 'object') return false;
+  return Object.entries(regras).some(([campo, condicoes]) => {
+    if (!campo.includes('invoice')) return false;
+    const lista = Array.isArray(condicoes) ? condicoes.map(String) : [];
+    // `required` seco exige sempre; `required_if:options.non_commercial,false`
+    // só exige de quem manda nota — que não é o nosso caso.
+    return lista.includes('required');
+  });
+}
+
 const POR_ID = new Map(CATALOGO_SERVICOS.map((s) => [s.id, s]));
 
 export function servicoPorId(id: number): ServicoEnvio | undefined {

@@ -509,8 +509,12 @@ describe('ShippingService — cotação (POST /shipment/calculate)', () => {
   it('avisa no log quando o filtro zera uma rota que tinha opções', async () => {
     db.query.listings.findFirst.mockResolvedValue({ sellerId: 'seller-1' });
     db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
+    // Loggi Coleta e Ponto: fora da lista da plataforma e SEM exigência de nota
+    // fiscal. Tem que ser assim para o corte que se testa aqui ser o da lista —
+    // com Jadlog/LATAM o filtro de nota fiscal cortaria antes, e este teste
+    // passaria a medir outra coisa.
     httpPost.mockReturnValue(
-      cotacao([4, 'Jadlog', '.Com'], [12, 'LATAM Cargo', 'éFácil']),
+      cotacao([32, 'Loggi', 'Coleta'], [34, 'Loggi', 'Loggi Ponto']),
     );
     const service = new ShippingService(http, db as any);
     const aviso = jest
@@ -859,6 +863,138 @@ describe('ShippingService — emissão automática da etiqueta', () => {
     expect(db.patches.some((p: any) => p.shippingCartId === 'cart-9')).toBe(
       true,
     );
+  });
+});
+
+/**
+ * Transportadora que exige nota fiscal não pode nem aparecer.
+ *
+ * Todo envio da Kolecta vai `non_commercial: true`, e o `/shipment/calculate`
+ * ignora isso: cota a Jadlog com preço e prazo, e só o `/cart` recusa — com o
+ * comprador já tendo pago. Quem sabe da regra é `GET /shipment/services`, no
+ * campo `requirements`.
+ *
+ * Não é filtro por PF/PJ: a Rock Wheels tem CNPJ e levou a mesma recusa. O que
+ * a transportadora rejeita é o envio sem nota, não o documento de quem envia.
+ */
+describe('ShippingService — serviços que exigem nota fiscal', () => {
+  const servico = (id: number, requirements: unknown) => ({
+    id,
+    name: `svc-${id}`,
+    company: { name: 'X' },
+    requirements,
+  });
+  const SEM_NOTA = ['names', 'addresses', 'documents'];
+  const COM_NOTA = ['names', 'addresses', 'documents', 'invoice'];
+
+  const montar = (get?: jest.Mock) => {
+    const httpPost = jest.fn().mockReturnValue(
+      of({
+        data: [1, 2, 3].map((id) => ({
+          id,
+          company: { name: 'X' },
+          name: `svc-${id}`,
+          price: '20.00',
+          delivery_time: 5,
+        })),
+      }),
+    );
+    const db = {
+      query: {
+        listings: {
+          findFirst: jest.fn().mockResolvedValue({ sellerId: 'seller-1' }),
+        },
+        addresses: {
+          findFirst: jest.fn().mockResolvedValue({ zip: '22000-000' }),
+        },
+      },
+      select: jest.fn(() => ({
+        from: jest.fn().mockReturnThis(),
+        // Vendedor sem escolha: quem corta é a plataforma e o filtro de nota.
+        where: jest.fn().mockResolvedValue([{ servicos: null }]),
+      })),
+    };
+    process.env.MELHOR_ENVIO_API_URL = BASE;
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+    // Lista aberta: o corte que se mede aqui é o da nota fiscal, não o da lista.
+    process.env.MELHOR_ENVIO_SERVICOS = '1,2,3';
+    return {
+      service: new ShippingService({ post: httpPost, get } as any, db as any),
+    };
+  };
+
+  const idsCotados = (s: ShippingService) =>
+    s
+      .quoteShipping({ to_cep: '01001-000', listing_id: 'lst-1' } as any)
+      .then((r: any) => r.options.map((o: any) => Number(o.raw.id)));
+
+  afterAll(() => {
+    delete process.env.MELHOR_ENVIO_SERVICOS;
+  });
+
+  it('esconde quem exige nota fiscal, lendo os requisitos da API', async () => {
+    const get = jest.fn().mockReturnValue(
+      of({
+        data: [
+          servico(1, SEM_NOTA),
+          servico(2, SEM_NOTA),
+          servico(3, COM_NOTA),
+        ],
+      }),
+    );
+    const { service } = montar(get);
+
+    expect(await idsCotados(service)).toEqual([1, 2]);
+  });
+
+  it('consulta os requisitos UMA vez e reaproveita', async () => {
+    const get = jest.fn().mockReturnValue(of({ data: [servico(3, COM_NOTA)] }));
+    const { service } = montar(get);
+
+    await idsCotados(service);
+    await idsCotados(service);
+
+    // O caminho mais quente do checkout não paga uma chamada extra por cotação.
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('cai na lista fixa quando a consulta dos requisitos falha', async () => {
+    const get = jest.fn().mockReturnValue(throwError(() => new Error('502')));
+    const { service } = montar(get);
+
+    // Sem a rede de segurança, um erro na API devolveria a Jadlog ao comprador.
+    expect(await idsCotados(service)).toEqual([1, 2]);
+  });
+
+  it('lista vazia não é "ninguém exige nota" — mantém o filtro', async () => {
+    const get = jest.fn().mockReturnValue(of({ data: [] }));
+    const { service } = montar(get);
+
+    expect(await idsCotados(service)).toEqual([1, 2]);
+  });
+
+  it('regra `required_if:non_commercial,false` NÃO conta como exigência', async () => {
+    // A Total Express declara assim: a nota só é obrigatória em envio comercial,
+    // que não é o nosso. Ler isso como "exige" esconderia uma opção que funciona.
+    const get = jest.fn().mockReturnValue(
+      of({
+        data: [
+          servico(1, SEM_NOTA),
+          servico(2, {
+            rules: {
+              'options.invoice.key': [
+                'required_if:options.non_commercial,false',
+              ],
+              'options.insurance_value': ['required'],
+            },
+          }),
+          servico(3, { rules: { 'options.invoice.number': ['required'] } }),
+        ],
+      }),
+    );
+    const { service } = montar(get);
+
+    expect(await idsCotados(service)).toEqual([1, 2]);
   });
 });
 
