@@ -124,6 +124,16 @@ export class ShippingService {
   ) {}
 
   async quoteShipping(data: QuoteShippingDto) {
+    // CEP de destino malformado NÃO é caso de mock: é erro de digitação, e a
+    // pessoa precisa saber para corrigir. Barrado aqui, antes de gastar a
+    // chamada — o Melhor Envio responderia 422 de qualquer jeito.
+    const toCep = String(data.to_cep ?? '').replace(/\D/g, '');
+    if (toCep.length !== 8) {
+      throw new BadRequestException(
+        'CEP de entrega inválido: confira o número, são 8 dígitos.',
+      );
+    }
+
     if (!this.token) {
       this.logger.warn(
         'Token do Melhor Envio não configurado. Retornando mocks para desenvolvimento.',
@@ -163,7 +173,7 @@ export class ShippingService {
     try {
       const payload = {
         from: { postal_code: fromCep },
-        to: { postal_code: data.to_cep.replace(/\D/g, '') },
+        to: { postal_code: toCep },
         package: pkg,
       };
 
@@ -247,12 +257,62 @@ export class ShippingService {
 
       return { options, pickup: prefs.aceitaRetirada };
     } catch (error: any) {
+      // CEP recusado é problema de DADO, não de disponibilidade: devolver mock
+      // aqui fazia o comprador com CEP errado ver "PAC R$ 25,90" e "SEDEX
+      // R$ 45,50" — preços fixos do mock, de um frete que não existe. Encontrado
+      // no mapeamento de 12/08 (95800-009, Venâncio Aires/RS, CEP inexistente).
+      const recusado = this.cepRecusadoPeloMelhorEnvio(error);
+      if (recusado === 'destino') {
+        this.logger.warn(
+          `Melhor Envio não reconhece o CEP de destino ${toCep}.`,
+        );
+        throw new BadRequestException(
+          'Não encontramos esse CEP de entrega. Confira o número.',
+        );
+      }
+      if (recusado === 'origem') {
+        // Culpa do cadastro do VENDEDOR. Dizer ao comprador para conferir o CEP
+        // dele seria mandá-lo corrigir o que está certo.
+        this.logger.error(
+          `CEP de origem inválido no Melhor Envio: ${fromCep} ` +
+            `(anúncio ${data.listing_id ?? '?'}). Nenhum frete é cotável até o ` +
+            `vendedor corrigir o endereço.`,
+        );
+        throw new BadRequestException(
+          'Não foi possível calcular o frete deste anúncio: o endereço de ' +
+            'origem do vendedor está com CEP inválido.',
+        );
+      }
+
+      // O resto — timeout, instabilidade, 5xx — continua no mock: aí a opção
+      // existe, só não deu para consultar agora.
       this.logger.error(
         'Erro ao cotar frete no Melhor Envio',
         error?.response?.data || error.message,
       );
       return this.getMockShippingQuote(prefs.aceitaRetirada);
     }
+  }
+
+  /**
+   * Qual das duas pontas o Melhor Envio recusou, quando recusou.
+   *
+   * Ele responde 422 com `errors.postal_code` e o lado só aparece no TEXTO da
+   * mensagem — `cep_origem` ou `cep_destino`. Com os dois inválidos, reclama da
+   * origem primeiro (conferido contra a API em 12/08/2026).
+   */
+  private cepRecusadoPeloMelhorEnvio(err: any): 'origem' | 'destino' | null {
+    const dados = err?.response?.data;
+    const doCampo = dados?.errors?.postal_code;
+    const texto = [
+      ...(Array.isArray(doCampo) ? doCampo : [doCampo]),
+      dados?.message,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    if (/cep_origem/i.test(texto)) return 'origem';
+    if (/cep_destino/i.test(texto)) return 'destino';
+    return null;
   }
 
   /**
@@ -711,6 +771,9 @@ export class ShippingService {
       : null;
     const pacote = this.resolvePackage({} as QuoteShippingDto, listing ?? null);
 
+    // Falha ao recotar não pode virar o erro do pedido: o motivo que o vendedor
+    // precisa ler é a recusa da transportadora, não "CEP inválido" vindo de uma
+    // consulta que era só para achar alternativa.
     const cotacao = await this.quoteShipping({
       from_cep: String(origem.zip),
       to_cep: String(destino.zip),
@@ -719,7 +782,13 @@ export class ShippingService {
       width_cm: pacote.width,
       height_cm: pacote.height,
       length_cm: pacote.length,
-    } as QuoteShippingDto);
+    } as QuoteShippingDto).catch((err: any) => {
+      this.logger.warn(
+        `Pedido ${order.id}: não deu para recotar a rota em busca de ` +
+          `alternativa (${err?.message ?? err}).`,
+      );
+      return null;
+    });
 
     const opcoes: Array<{ id: number; nome: string; precoEmCentavos: number }> =
       (cotacao?.options ?? [])

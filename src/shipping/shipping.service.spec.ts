@@ -895,6 +895,97 @@ describe('ShippingService — emissão automática da etiqueta', () => {
 });
 
 /**
+ * CEP inválido tem que DOER, não virar mock.
+ *
+ * O mock existe para ambiente sem token, e estava servindo também de rede para
+ * erro de dado: o Melhor Envio responde 422 num CEP inexistente, a cotação caía
+ * no `catch` e devolvia "PAC R$ 25,90 / SEDEX R$ 45,50" — preços fixos, de um
+ * frete que não existe. Achado no mapeamento de 12/08/2026: o CEP 95800-009
+ * (Venâncio Aires/RS) não existe, e o comprador veria dois fretes plausíveis.
+ */
+describe('ShippingService — CEP recusado não vira mock', () => {
+  const erro422 = (mensagem: string) => {
+    const err: any = new Error('Request failed with status code 422');
+    err.response = {
+      status: 422,
+      data: {
+        errors: { postal_code: [mensagem] },
+        message: 'The given data was invalid.',
+      },
+    };
+    return err;
+  };
+
+  const fazer = (aoPostar: () => any) => {
+    const db = {
+      query: {
+        listings: {
+          findFirst: jest.fn().mockResolvedValue({ sellerId: 'seller-1' }),
+        },
+        addresses: {
+          findFirst: jest.fn().mockResolvedValue({ zip: '22000-000' }),
+        },
+      },
+      select: jest.fn(() => ({
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockResolvedValue([{ servicos: null }]),
+      })),
+    };
+    process.env.MELHOR_ENVIO_API_URL = BASE;
+    process.env.MELHOR_ENVIO_TOKEN = 'test-token';
+    const post = jest.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/shipment/calculate')) return aoPostar();
+      return of({ data: [] });
+    });
+    return new ShippingService({ post } as any, db as any);
+  };
+
+  const cotar = (s: ShippingService, cep = '95800009') =>
+    s.quoteShipping({ to_cep: cep, listing_id: 'lst-1' } as any);
+
+  it('CEP de destino recusado → erro para o comprador, não preço inventado', async () => {
+    const service = fazer(() => {
+      throw erro422('O campo cep_destino está invalido');
+    });
+
+    await expect(cotar(service)).rejects.toThrow(
+      /não encontramos esse cep de entrega/i,
+    );
+  });
+
+  it('CEP de ORIGEM recusado não manda o comprador conferir o CEP dele', async () => {
+    const service = fazer(() => {
+      throw erro422('O campo cep_origem está invalido');
+    });
+
+    // A culpa é do cadastro do vendedor; mandar o comprador corrigir o que está
+    // certo é pior do que não explicar.
+    await expect(cotar(service)).rejects.toThrow(
+      /endereço de origem do vendedor/i,
+    );
+  });
+
+  it('CEP fora do formato nem chega a consultar o Melhor Envio', async () => {
+    const post = jest.fn();
+    const service = fazer(() => of({ data: [] }));
+    (service as any).httpService = { post };
+
+    await expect(cotar(service, '0250115')).rejects.toThrow(/8 dígitos/i);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('instabilidade do Melhor Envio CONTINUA caindo no mock', async () => {
+    // Aqui a opção existe, só não deu para consultar — o comportamento antigo
+    // é o certo, e não pode ter sido levado junto.
+    const service = fazer(() => throwError(() => new Error('ETIMEDOUT')));
+
+    const r = await cotar(service, '01001000');
+
+    expect(r.options.map((o: any) => o.service)).toEqual(['PAC', 'SEDEX']);
+  });
+});
+
+/**
  * Transportadora que exige nota fiscal não pode nem aparecer.
  *
  * Todo envio da Kolecta vai `non_commercial: true`, e o `/shipment/calculate`
