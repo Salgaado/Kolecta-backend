@@ -163,6 +163,12 @@ export const CATALOGO_SERVICOS: readonly ServicoEnvio[] = [
  * etiqueta. Não tem a ver com o vendedor ser PF ou PJ: a Rock Wheels tem CNPJ e
  * a Jadlog recusou do mesmo jeito, porque quem não tem nota é o ENVIO.
  *
+ * DECISÃO DO DONO (12/08/2026), para ninguém "consertar" isto depois: a Kolecta
+ * despacha com DECLARAÇÃO DE CONTEÚDO, e é o suficiente. Exigir nota fiscal do
+ * vendedor para liberar uma transportadora a mais é burocracia que não se paga,
+ * havendo transportadora que aceita sem. Esta lista não sai daqui enquanto essa
+ * for a regra — o que muda, se mudar, é a Kolecta passar a emitir nota.
+ *
  * É a lista de reserva: o normal é ler `requirements` da API, que se atualiza
  * sozinha se uma transportadora mudar de regra. Isto aqui é o que vale quando a
  * chamada falha — a cotação não pode cair junto.

@@ -208,19 +208,29 @@ export class ShippingService {
       // dá para saber quantas opções o corte custou nesta rota. Pedir já
       // filtrado economizaria alguns bytes e cegaria o log.
       const permitidos = new Set(permitidosIds);
-      const permitidas = permitidos.size
+      const escolhidas = permitidos.size
         ? cotadas.filter((opt: any) => permitidos.has(Number(opt.id)))
         : cotadas;
 
       // Mini Envios só aceita até ~300g; Loggi Express e JeT têm cobertura
-      // regional. Numa rota que nenhum dos escolhidos atende, o comprador fica
-      // SEM frete e não consegue fechar a compra. É silencioso do lado dele, e
-      // este log é o único lugar onde isso aparece.
-      if (permitidas.length === 0 && cotadas.length > 0) {
+      // regional. Numa rota que nenhum dos escolhidos atende, o comprador ficava
+      // SEM frete e não conseguia fechar a compra — silencioso do lado dele, e
+      // este log era o único lugar onde aparecia.
+      //
+      // Agora a lista cede. A regra da casa é não deixar de oferecer envio: uma
+      // preferência de transportadora é conveniência do vendedor, e venda
+      // perdida por falta de frete custa mais do que despachar numa empresa que
+      // não era a favorita dele. O que NÃO cede é o filtro de nota fiscal — ali
+      // a opção não existe de verdade, oferecê-la seria vender uma etiqueta
+      // impossível.
+      const permitidas =
+        escolhidas.length === 0 && cotadas.length > 0 ? cotadas : escolhidas;
+
+      if (escolhidas.length === 0 && cotadas.length > 0) {
         this.logger.warn(
-          `Frete ${fromCep} → ${data.to_cep}: nenhuma transportadora permitida atende. ` +
-            `Permitidos: ${permitidosIds.map(nomeDoServico).join(', ') || 'nenhum'}. ` +
-            `${cotadas.length} opção(ões) foram descartadas pelo filtro: ` +
+          `Frete ${fromCep} → ${data.to_cep}: nenhuma transportadora escolhida atende. ` +
+            `Escolhidas: ${permitidosIds.map(nomeDoServico).join(', ') || 'nenhuma'}. ` +
+            `Oferecendo mesmo assim, para não deixar o comprador sem frete: ` +
             cotadas
               .map((o: any) => `${o.company?.name} ${o.name} (id ${o.id})`)
               .join(', '),

@@ -506,7 +506,14 @@ describe('ShippingService — cotação (POST /shipment/calculate)', () => {
     expect(payload.services).toBeUndefined();
   });
 
-  it('avisa no log quando o filtro zera uma rota que tinha opções', async () => {
+  /**
+   * A lista de transportadoras cede antes de o comprador ficar sem frete.
+   *
+   * Preferir a empresa da esquina é conveniência do vendedor; venda perdida por
+   * falta de opção de envio custa mais do que despachar por outra. Antes desta
+   * regra a resposta vinha vazia e ninguém do lado do comprador entendia por quê.
+   */
+  it('sem opção permitida na rota, oferece as que sobraram em vez de nada', async () => {
     db.query.listings.findFirst.mockResolvedValue({ sellerId: 'seller-1' });
     db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
     // Loggi Coleta e Ponto: fora da lista da plataforma e SEM exigência de nota
@@ -526,12 +533,33 @@ describe('ShippingService — cotação (POST /shipment/calculate)', () => {
       listing_id: 'lst-1',
     } as any);
 
-    // Comprador sem frete não fecha a compra, e do lado dele isso é silencioso.
-    expect(options).toEqual([]);
+    expect(options.map((o: any) => Number(o.raw.id))).toEqual([32, 34]);
+    // Mas fica escrito: a lista do vendedor não valeu nesta rota.
     expect(aviso).toHaveBeenCalledWith(
-      expect.stringContaining('nenhuma transportadora permitida atende'),
+      expect.stringContaining('nenhuma transportadora escolhida atende'),
     );
     aviso.mockRestore();
+  });
+
+  /**
+   * O filtro de nota fiscal NÃO cede — é a diferença entre "não era a preferida"
+   * e "não existe". Oferecer a Jadlog aqui seria vender uma etiqueta impossível,
+   * que foi o pedido 0c57df5a.
+   */
+  it('rota só com transportadora que exige nota volta vazia mesmo', async () => {
+    db.query.listings.findFirst.mockResolvedValue({ sellerId: 'seller-1' });
+    db.query.addresses.findFirst.mockResolvedValue({ zip: '22000-000' });
+    httpPost.mockReturnValue(
+      cotacao([3, 'Jadlog', '.Package'], [12, 'LATAM Cargo', 'éFácil']),
+    );
+    const service = new ShippingService(http, db as any);
+
+    const { options } = await service.quoteShipping({
+      to_cep: '01001-000',
+      listing_id: 'lst-1',
+    } as any);
+
+    expect(options).toEqual([]);
   });
 
   it('usa peso/dimensões persistidos no anúncio quando existem', async () => {
