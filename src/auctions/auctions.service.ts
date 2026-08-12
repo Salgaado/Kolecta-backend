@@ -33,6 +33,7 @@ import { CardsService } from '../cards/cards.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
 import { motivoPagarme } from '../pagarme/pagarme-erro';
+import type { PagarmeAddress } from '../cards/cards.service';
 import { ShippingService } from '../shipping/shipping.service';
 import {
   CreateAuctionDto,
@@ -66,6 +67,21 @@ const REAUTH_WINDOW_HOURS = parseInt(
   process.env.PAGARME_REAUTH_WINDOW_HOURS ?? '24',
   10,
 );
+
+/** Item discriminado na order da Pagar.me (o antifraude lê a descrição). */
+interface PagarmeItem {
+  amount: number;
+  description: string;
+  quantity: number;
+  code: string;
+}
+
+/** Destino da entrega na order. Sem `amount` — ver `_contextoAntifraude`. */
+interface PagarmeShipping {
+  description: string;
+  recipient_name: string;
+  address: PagarmeAddress;
+}
 
 /**
  * Prazo (horas) que o vencedor de um leilão tem para pagar quando a captura da
@@ -1236,6 +1252,94 @@ export class AuctionsService {
   }
 
   /**
+   * Itens discriminados e destino da entrega para a cobrança do arremate — o
+   * material que o antifraude usa para decidir.
+   *
+   * Uma linha só ("Arremate Kolecta #abc123") não identifica produto nem
+   * destino: o que chega é um valor solto, indistinguível de teste de cartão.
+   * O checkout discrimina desde `3ba9a4e` e aprova normalmente; este caminho
+   * ficou para trás e teve um arremate barrado em 12/08.
+   */
+  private async _contextoAntifraude(
+    order: typeof schema.orders.$inferSelect,
+  ): Promise<{ itens: PagarmeItem[]; entrega: PagarmeShipping | null }> {
+    const shippingInCents = order.shippingInCents ?? 0;
+
+    const [listing] = await this.db
+      .select({ title: schema.listings.title })
+      .from(schema.listings)
+      .where(eq(schema.listings.id, order.listingId));
+
+    const detalhados: PagarmeItem[] = [
+      {
+        amount: this._bidPartOf(order),
+        description: (listing?.title || 'Item Kolecta').slice(0, 250),
+        quantity: 1,
+        code: order.listingId.slice(0, 52),
+      },
+      ...(shippingInCents > 0
+        ? [
+            {
+              amount: shippingInCents,
+              description: 'Frete',
+              quantity: 1,
+              code: 'frete',
+            },
+          ]
+        : []),
+    ];
+
+    // A soma dos itens TEM que bater com o valor cobrado — a Pagar.me recusa a
+    // order inteira se divergir. Na dúvida volta para a linha única, que é
+    // sempre correta: contexto melhor não vale uma cobrança recusada.
+    const soma = detalhados.reduce((t, i) => t + i.amount, 0);
+    const itens =
+      soma === order.totalInCents && detalhados[0].amount > 0
+        ? detalhados
+        : [
+            {
+              amount: order.totalInCents,
+              description: `Arremate Kolecta #${order.id.slice(0, 8)}`,
+              quantity: 1,
+              code: 'kolecta-bid-payment',
+            },
+          ];
+
+    // Retirada em mãos não tem destino a declarar.
+    if (order.deliveryMethod !== 'shipping' || !order.addressId) {
+      return { itens, entrega: null };
+    }
+
+    const [end] = await this.db
+      .select()
+      .from(schema.addresses)
+      .where(eq(schema.addresses.id, order.addressId));
+    if (!end) return { itens, entrega: null };
+
+    return {
+      itens,
+      // SEM `amount` de propósito: com ele a Pagar.me SOMA o valor ao total
+      // (verificado na API — 2553 virou 4106) e o comprador pagaria o frete
+      // duas vezes. Sem ele o bloco é aceito, o total não muda e o antifraude
+      // passa a enxergar para onde vai a peça.
+      entrega: {
+        description: 'Entrega Kolecta',
+        recipient_name: end.recipientName || 'Comprador',
+        address: {
+          line_1: [end.number, end.street, end.neighborhood]
+            .filter(Boolean)
+            .join(', '),
+          ...(end.complement ? { line_2: end.complement } : {}),
+          zip_code: String(end.zip).replace(/\D/g, ''),
+          city: end.city,
+          state: end.state,
+          country: (end.country || 'BR').toUpperCase(),
+        },
+      },
+    };
+  }
+
+  /**
    * Vencedor paga o arremate (pedido `pending_payment`) via cartão salvo,
    * dentro do prazo. Cobrança à vista com captura imediata (não é pré-auth) e
    * split nativo, no total já com frete. Aprovado → pedido `paid`, anúncio
@@ -1302,20 +1406,20 @@ export class AuctionsService {
       platformFeeInCents,
     );
 
+    // ── Itens e destino para a Pagar.me (leitura do antifraude) ──
+    // "Arremate Kolecta #c7a6babf" não diz nada a quem avalia risco: some o
+    // produto, some o destino, e o que sobra é indistinguível de teste de
+    // cartão. Mesma regra do checkout (`orders.service.ts`), que aprova.
+    const { itens, entrega } = await this._contextoAntifraude(order);
+
     let pagarmeOrder: any;
     try {
       pagarmeOrder = await this.pagarme.post(
         '/orders',
         {
           customer_id: cardRef.customerId,
-          items: [
-            {
-              amount: totalInCents,
-              description: `Arremate Kolecta #${order.id.slice(0, 8)}`,
-              quantity: 1,
-              code: 'kolecta-bid-payment',
-            },
-          ],
+          items: itens,
+          ...(entrega ? { shipping: entrega } : {}),
           payments: [
             {
               payment_method: 'credit_card',

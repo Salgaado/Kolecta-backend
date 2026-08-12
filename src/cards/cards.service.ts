@@ -46,6 +46,16 @@ interface PagarmeCustomer {
   id: string;
 }
 
+/** Endereco no formato da Pagar.me (customer.address e shipping.address). */
+export interface PagarmeAddress {
+  line_1: string;
+  line_2?: string;
+  zip_code: string;
+  city: string;
+  state: string;
+  country: string;
+}
+
 /**
  * O que a leitura do customer remoto concluiu.
  *
@@ -320,6 +330,36 @@ export class CardsService {
   }
 
   /**
+   * Endereco do usuario no formato da Pagar.me (o padrao, ou o primeiro).
+   *
+   * Vai gravado NO CUSTOMER, e nao na cobranca, porque quem paga com cartao
+   * salvo cobra por `customer_id` — e `customer_id` e `customer` inline sao
+   * mutuamente exclusivos na API. O endereco so alcanca o antifraude por aqui.
+   *
+   * Sem ele a transacao chega como cliente sem endereco nenhum, que e o perfil
+   * de quem esta testando cartao — foi o que barrou um arremate em 12/08.
+   */
+  private async resolveAddress(userId: string): Promise<PagarmeAddress | null> {
+    const enderecos = await this.db
+      .select()
+      .from(schema.addresses)
+      .where(eq(schema.addresses.userId, userId));
+    const end = enderecos.find((e) => e.isDefault) ?? enderecos[0];
+    if (!end) return null;
+    return {
+      // A Pagar.me espera "numero, rua, bairro" numa linha so.
+      line_1: [end.number, end.street, end.neighborhood]
+        .filter(Boolean)
+        .join(', '),
+      ...(end.complement ? { line_2: end.complement } : {}),
+      zip_code: String(end.zip).replace(/\D/g, ''),
+      city: end.city,
+      state: end.state,
+      country: (end.country || 'BR').toUpperCase(),
+    };
+  }
+
+  /**
    * Garante que um customer JA existente esteja completo E atualizado na
    * Pagar.me.
    *
@@ -347,6 +387,7 @@ export class CardsService {
       name?: string | null;
       email?: string | null;
       phones?: Record<string, unknown> | null;
+      address?: Record<string, unknown> | null;
     } | null = null;
     try {
       remoto = await this.pagarme.get(`/customers/${customerId}`);
@@ -371,6 +412,12 @@ export class CardsService {
     const nomeLocal = nomeUtil(user?.name);
     const emailLocal = emailUtil(user?.email);
 
+    // Endereco: o antifraude pontua com ele, e nenhum customer nosso nasceu
+    // com um. So conta como pendencia quando TEMOS um para mandar — do
+    // contrario o reparo escreveria a cada lance sem nunca mudar nada.
+    const enderecoLocal = await this.resolveAddress(userId);
+    const faltaEndereco = !remoto?.address && !!enderecoLocal;
+
     // Divergencia so conta quando o NOSSO lado tem dado aproveitavel: empurrar
     // "Novo Usuario" para a Pagar.me seria trocar um dado velho por um pior.
     const desatualizado =
@@ -381,13 +428,15 @@ export class CardsService {
             .trim()
             .toLowerCase());
 
-    if (!faltaDocumento && !faltaTelefone && !desatualizado) return 'ok';
+    if (!faltaDocumento && !faltaTelefone && !faltaEndereco && !desatualizado) {
+      return 'ok';
+    }
 
     const doc = await this.resolveDocument(userId);
     if (!doc) {
       // Sem documento a cobranca falha — mas so quando ele REALMENTE falta no
-      // customer. Se o unico motivo era atualizar nome/e-mail, bloquear o
-      // usuario por um reparo cosmetico trocaria um problema por outro pior.
+      // customer. Se o unico motivo era atualizar nome/e-mail/endereco,
+      // bloquear o usuario por um reparo trocaria um problema por outro pior.
       if (!faltaDocumento && !faltaTelefone) return 'ok';
       throw new BadRequestException(
         'Informe seu CPF ou CNPJ para usar o cartao — a operadora exige o ' +
@@ -419,6 +468,13 @@ export class CardsService {
         document: doc.document,
         document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
         ...(phonesParaEnviar ? { phones: phonesParaEnviar } : {}),
+        // Mesmo cuidado do telefone: o PUT nao e patch, entao um endereco que
+        // ja exista la e reenviado em vez de sumir.
+        ...(enderecoLocal
+          ? { address: enderecoLocal }
+          : remoto?.address
+            ? { address: remoto.address }
+            : {}),
       });
     } catch (err: unknown) {
       // Best-effort: falhar aqui nao pode derrubar quem so queria dar um lance.
@@ -515,13 +571,18 @@ export class CardsService {
       );
     }
 
+    // Endereco ja na criacao: o antifraude pontua com ele, e um customer que
+    // nasce sem obriga um PUT de reparo depois.
+    const endereco = await this.resolveAddress(userId);
+
     const customer = await this.pagarme.post<PagarmeCustomer>('/customers', {
-      name: user.name || 'Usuario Kolecta',
-      email: user.email,
+      name: nomeUtil(user.name) ?? 'Usuario Kolecta',
+      email: emailUtil(user.email),
       type: doc.type,
       document: doc.document,
       document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
       phones,
+      ...(endereco ? { address: endereco } : {}),
     });
 
     if (!customer?.id) {

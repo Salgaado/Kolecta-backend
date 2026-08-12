@@ -341,11 +341,29 @@ describe('CardsService — cadastro desatualizado na Pagar.me', () => {
   const encenarReparo = (over: {
     cpf?: string | null;
     phone?: string | null;
+    enderecos?: unknown[];
   }) =>
     db.where
+      // `resolveAddress` roda ANTES da decisão: o endereço também é motivo de
+      // reparo, porque o antifraude pontua com ele e nenhum customer nosso
+      // nasceu com um.
+      .mockResolvedValueOnce(over.enderecos ?? []) // resolveAddress → addresses
       .mockResolvedValueOnce([usuario({ cpf: over.cpf ?? null })]) // resolveDocument → users
       .mockResolvedValueOnce([]) // resolveDocument → seller_profiles
       .mockResolvedValueOnce([usuario({ phone: over.phone ?? null })]); // resolvePhone
+
+  const ENDERECO = {
+    id: 'addr_1',
+    isDefault: true,
+    street: 'Rua Agnello',
+    number: '460',
+    complement: null,
+    neighborhood: 'Tarobá',
+    city: 'Londrina',
+    state: 'PR',
+    zip: '86042-310',
+    country: 'BR',
+  };
 
   it('ATUALIZA nome e e-mail quando o customer ficou com o placeholder', async () => {
     db.where
@@ -462,6 +480,44 @@ describe('CardsService — cadastro desatualizado na Pagar.me', () => {
       cardId: 'card_1',
     });
     expect(mockPagarme.put).not.toHaveBeenCalled();
+  });
+
+  /**
+   * O pagamento por cartão salvo cobra por `customer_id`, e `customer_id` e
+   * `customer` inline são mutuamente exclusivos na API — então o endereço só
+   * alcança o antifraude se estiver gravado NO CLIENTE. Aqui nome, e-mail,
+   * documento e telefone já batem: o endereço é o ÚNICO motivo do reparo.
+   */
+  it('grava o ENDEREÇO no customer, único caminho até o antifraude', async () => {
+    db.where
+      .mockResolvedValueOnce([{ cardId: 'card_1' }])
+      .mockResolvedValueOnce([{ customerId: 'cus_1' }])
+      .mockResolvedValueOnce([
+        { name: 'billy gois', email: 'fimdeobra@fimdeobra.com.br' },
+      ]);
+    encenarReparo({ cpf: CPF, phone: TELEFONE, enderecos: [ENDERECO] });
+    mockPagarme.get.mockResolvedValueOnce({
+      document: CPF,
+      name: 'billy gois',
+      email: 'fimdeobra@fimdeobra.com.br',
+      phones: PHONES_REMOTOS,
+    });
+
+    const service = await build();
+    await service.getCardRef('user_1');
+
+    expect(mockPagarme.put).toHaveBeenCalledWith(
+      '/customers/cus_1',
+      expect.objectContaining({
+        address: {
+          line_1: '460, Rua Agnello, Tarobá', // "número, rua, bairro"
+          zip_code: '86042310', // sem máscara
+          city: 'Londrina',
+          state: 'PR',
+          country: 'BR',
+        },
+      }),
+    );
   });
 
   it('falha do PUT não derruba quem só queria dar um lance', async () => {

@@ -1343,9 +1343,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([pendingOrder])
         .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
-        .mockResolvedValueOnce([
-          { recipientId: 're_seller', canReceive: true },
-        ]); // sellerProfiles → vendedor apto
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
+        .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]); // anúncio
       mockPagarmeService.post.mockReset().mockResolvedValue({
         id: 'or_x',
         status: 'failed',
@@ -1417,6 +1416,7 @@ describe('AuctionsService', () => {
         .mockResolvedValueOnce([pendingOrder]) // order
         .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
+        .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]) // anúncio
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId (_settle)
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId (void)
         .mockResolvedValueOnce([{ chargeId: 'ch_bid', orderId: 'or_bid' }]); // pré-auth do lance
@@ -1427,21 +1427,23 @@ describe('AuctionsService', () => {
 
       expect(result).toEqual({ orderId: 'order_1', paid: true });
       // Cobrança com captura imediata (capture:true), não pré-auth, e no TOTAL
-      // com frete — não no valor do lance.
-      expect(mockPagarmeService.post).toHaveBeenCalledWith(
-        '/orders',
-        expect.objectContaining({
-          items: expect.arrayContaining([
-            expect.objectContaining({ amount: 7550 }),
-          ]),
-          payments: expect.arrayContaining([
-            expect.objectContaining({
-              credit_card: expect.objectContaining({ capture: true }),
-            }),
-          ]),
-        }),
-        expect.any(String),
+      // com frete — não no valor do lance. Os itens vão DISCRIMINADOS (peça e
+      // frete em linhas separadas, com o título real do anúncio), e a soma
+      // deles tem que bater com os 7550 cobrados.
+      const corpo = mockPagarmeService.post.mock.calls[0][1];
+      expect(corpo.items).toEqual([
+        {
+          amount: 6000,
+          description: 'Hot Wheels Sam Walton',
+          quantity: 1,
+          code: mockListingId,
+        },
+        { amount: 1550, description: 'Frete', quantity: 1, code: 'frete' },
+      ]);
+      expect(corpo.items.reduce((t: number, i: any) => t + i.amount, 0)).toBe(
+        7550,
       );
+      expect(corpo.payments[0].credit_card.capture).toBe(true);
       // Líquido do vendedor retido na wallet.
       expect(mockWalletService.hold).toHaveBeenCalled();
       // A retenção do lance cai só DEPOIS da cobrança passar.
@@ -1451,6 +1453,116 @@ describe('AuctionsService', () => {
         'auction.paid',
         expect.objectContaining({ orderId: 'order_1', shippingInCents: 1550 }),
       );
+    });
+
+    /**
+     * O antifraude lê a descrição dos itens e o destino. Uma linha só
+     * ("Arremate Kolecta #abc123"), sem endereço, chega como um valor solto —
+     * indistinguível de teste de cartão. Foi o payload que teve um arremate
+     * barrado em 12/08, enquanto o checkout, que discrimina, aprova.
+     */
+    it('declara o DESTINO da entrega — e sem `amount`, que a Pagar.me somaria', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([{ ...pendingOrder, addressId: 'addr_1' }])
+        .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]) // anúncio
+        .mockResolvedValueOnce([
+          { ...mockEndereco, recipientName: 'Billy Gois' },
+        ]) // endereço do pedido
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([]);
+      mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
+      service = await buildModule();
+
+      await service.payAuctionOrder(bidderId, 'order_1');
+
+      const corpo = mockPagarmeService.post.mock.calls[0][1];
+      expect(corpo.shipping).toEqual({
+        description: 'Entrega Kolecta',
+        recipient_name: 'Billy Gois',
+        address: {
+          line_1: '100, Rua Teste, Centro',
+          zip_code: '01310100',
+          city: 'Sao Paulo',
+          state: 'SP',
+          country: 'BR',
+        },
+      });
+      // Com `amount` a Pagar.me SOMA o valor ao total (2553 virou 4106 na API)
+      // e o comprador pagaria o frete duas vezes.
+      expect(corpo.shipping).not.toHaveProperty('amount');
+    });
+
+    it('retirada em mãos não declara destino, e o item é só a peça', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([
+          {
+            ...pendingOrder,
+            totalInCents: 6000,
+            shippingInCents: 0,
+            shippingServiceId: null,
+            deliveryMethod: 'pickup',
+          },
+        ])
+        .mockResolvedValueOnce([mockEndereco])
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([{ title: 'Mazda RX7 FD3S' }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([]);
+      mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
+      service = await buildModule();
+
+      await service.payAuctionOrder(bidderId, 'order_1');
+
+      const corpo = mockPagarmeService.post.mock.calls[0][1];
+      expect(corpo.shipping).toBeUndefined();
+      expect(corpo.items).toEqual([
+        {
+          amount: 6000,
+          description: 'Mazda RX7 FD3S',
+          quantity: 1,
+          code: mockListingId,
+        },
+      ]);
+    });
+
+    /**
+     * Contexto melhor não vale uma cobrança recusada: a Pagar.me rejeita a
+     * order inteira se a soma dos itens não bater com o cobrado (ou se um item
+     * vier zerado). Nesse caso volta para a linha única, que é sempre correta.
+     */
+    it('cai para a linha única quando os itens não fecham com o total', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([
+          // Frete igual ao total: a parte da peça daria zero.
+          { ...pendingOrder, totalInCents: 1550, shippingInCents: 1550 },
+        ])
+        .mockResolvedValueOnce([mockEndereco])
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([{ id: 'auction_1' }])
+        .mockResolvedValueOnce([]);
+      mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
+      service = await buildModule();
+
+      await service.payAuctionOrder(bidderId, 'order_1');
+
+      const corpo = mockPagarmeService.post.mock.calls[0][1];
+      expect(corpo.items).toEqual([
+        {
+          amount: 1550,
+          description: 'Arremate Kolecta #order_1',
+          quantity: 1,
+          code: 'kolecta-bid-payment',
+        },
+      ]);
     });
 
     /**
@@ -1528,9 +1640,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([pendingOrder])
         .mockResolvedValueOnce([mockEndereco])
-        .mockResolvedValueOnce([
-          { recipientId: 're_seller', canReceive: true },
-        ]);
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]); // anúncio
       mockPagarmeService.post.mockReset().mockRejectedValue({
         response: {
           message: 'Erro na comunicação com a Pagar.me',
