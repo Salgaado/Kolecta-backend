@@ -32,6 +32,9 @@ import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
+import { motivoPagarme } from '../pagarme/pagarme-erro';
+import { ConciliacaoService } from '../pagarme/conciliacao.service';
+import type { PagarmeAddress } from '../cards/cards.service';
 import { ShippingService } from '../shipping/shipping.service';
 import {
   CreateAuctionDto,
@@ -65,6 +68,21 @@ const REAUTH_WINDOW_HOURS = parseInt(
   process.env.PAGARME_REAUTH_WINDOW_HOURS ?? '24',
   10,
 );
+
+/** Item discriminado na order da Pagar.me (o antifraude lê a descrição). */
+interface PagarmeItem {
+  amount: number;
+  description: string;
+  quantity: number;
+  code: string;
+}
+
+/** Destino da entrega na order. Sem `amount` — ver `_contextoAntifraude`. */
+interface PagarmeShipping {
+  description: string;
+  recipient_name: string;
+  address: PagarmeAddress;
+}
 
 /**
  * Prazo (horas) que o vencedor de um leilão tem para pagar quando a captura da
@@ -126,6 +144,7 @@ export class AuctionsService {
     private readonly cardsService: CardsService,
     private readonly pagarme: PagarmeService,
     private readonly shipping: ShippingService,
+    private readonly conciliacao: ConciliacaoService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -589,15 +608,25 @@ export class AuctionsService {
       : null;
   }
 
-  /** Auth vigente (order/charge) do lance ativo de um usuário no leilão. */
+  /**
+   * Auth vigente (order/charge) do lance ativo de um usuário no leilão.
+   *
+   * Devolve também o VALOR autorizado: é ele que pode ser capturado no
+   * arremate, e capturar acima do autorizado não é permitido.
+   */
   private async _getActiveBidAuth(
     auctionId: string,
     bidderId: string,
-  ): Promise<{ chargeId: string | null; orderId: string | null } | null> {
+  ): Promise<{
+    chargeId: string | null;
+    orderId: string | null;
+    amountInCents: number;
+  } | null> {
     const [b] = await this.db
       .select({
         chargeId: schema.bids.pagarmeChargeId,
         orderId: schema.bids.pagarmeOrderId,
+        amountInCents: schema.bids.amountInCents,
       })
       .from(schema.bids)
       .where(
@@ -685,19 +714,16 @@ export class AuctionsService {
         // Idempotência por lance (valor + bidder + janela do segundo).
         `bid-preauth-${params.auctionId}-${params.bidderId}-${params.amountInCents}-${Math.floor(Date.now() / 1000)}`,
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
       // NÃO engolir o motivo: antes o catch trocava qualquer falha por "tente
       // outro cartão", e um erro de DOCUMENTO ou de endereço virava um problema
       // de cartão aos olhos de quem dava o lance — impossível de diagnosticar
       // sem abrir o log do servidor.
-      const detalhe =
-        err?.response?.pagarme?.errors?.[0]?.message ||
-        err?.response?.errors?.[0]?.message ||
-        err?.response?.message ||
-        err?.message;
+      const detalhe = motivoPagarme(err);
       this.logger.error(
         `Pré-autorização do lance falhou (leilão ${params.auctionId}, ` +
-          `bidder ${params.bidderId}): ${JSON.stringify(err?.response ?? detalhe)}`,
+          `bidder ${params.bidderId}): ` +
+          JSON.stringify((err as { response?: unknown })?.response ?? detalhe),
       );
       throw new BadRequestException(
         detalhe
@@ -1238,6 +1264,94 @@ export class AuctionsService {
   }
 
   /**
+   * Itens discriminados e destino da entrega para a cobrança do arremate — o
+   * material que o antifraude usa para decidir.
+   *
+   * Uma linha só ("Arremate Kolecta #abc123") não identifica produto nem
+   * destino: o que chega é um valor solto, indistinguível de teste de cartão.
+   * O checkout discrimina desde `3ba9a4e` e aprova normalmente; este caminho
+   * ficou para trás e teve um arremate barrado em 12/08.
+   */
+  private async _contextoAntifraude(
+    order: typeof schema.orders.$inferSelect,
+  ): Promise<{ itens: PagarmeItem[]; entrega: PagarmeShipping | null }> {
+    const shippingInCents = order.shippingInCents ?? 0;
+
+    const [listing] = await this.db
+      .select({ title: schema.listings.title })
+      .from(schema.listings)
+      .where(eq(schema.listings.id, order.listingId));
+
+    const detalhados: PagarmeItem[] = [
+      {
+        amount: this._bidPartOf(order),
+        description: (listing?.title || 'Item Kolecta').slice(0, 250),
+        quantity: 1,
+        code: order.listingId.slice(0, 52),
+      },
+      ...(shippingInCents > 0
+        ? [
+            {
+              amount: shippingInCents,
+              description: 'Frete',
+              quantity: 1,
+              code: 'frete',
+            },
+          ]
+        : []),
+    ];
+
+    // A soma dos itens TEM que bater com o valor cobrado — a Pagar.me recusa a
+    // order inteira se divergir. Na dúvida volta para a linha única, que é
+    // sempre correta: contexto melhor não vale uma cobrança recusada.
+    const soma = detalhados.reduce((t, i) => t + i.amount, 0);
+    const itens =
+      soma === order.totalInCents && detalhados[0].amount > 0
+        ? detalhados
+        : [
+            {
+              amount: order.totalInCents,
+              description: `Arremate Kolecta #${order.id.slice(0, 8)}`,
+              quantity: 1,
+              code: 'kolecta-bid-payment',
+            },
+          ];
+
+    // Retirada em mãos não tem destino a declarar.
+    if (order.deliveryMethod !== 'shipping' || !order.addressId) {
+      return { itens, entrega: null };
+    }
+
+    const [end] = await this.db
+      .select()
+      .from(schema.addresses)
+      .where(eq(schema.addresses.id, order.addressId));
+    if (!end) return { itens, entrega: null };
+
+    return {
+      itens,
+      // SEM `amount` de propósito: com ele a Pagar.me SOMA o valor ao total
+      // (verificado na API — 2553 virou 4106) e o comprador pagaria o frete
+      // duas vezes. Sem ele o bloco é aceito, o total não muda e o antifraude
+      // passa a enxergar para onde vai a peça.
+      entrega: {
+        description: 'Entrega Kolecta',
+        recipient_name: end.recipientName || 'Comprador',
+        address: {
+          line_1: [end.number, end.street, end.neighborhood]
+            .filter(Boolean)
+            .join(', '),
+          ...(end.complement ? { line_2: end.complement } : {}),
+          zip_code: String(end.zip).replace(/\D/g, ''),
+          city: end.city,
+          state: end.state,
+          country: (end.country || 'BR').toUpperCase(),
+        },
+      },
+    };
+  }
+
+  /**
    * Vencedor paga o arremate (pedido `pending_payment`) via cartão salvo,
    * dentro do prazo. Cobrança à vista com captura imediata (não é pré-auth) e
    * split nativo, no total já com frete. Aprovado → pedido `paid`, anúncio
@@ -1267,6 +1381,72 @@ export class AuctionsService {
       );
     }
 
+    // ── Endereço de cobrança (a Pagar.me EXIGE no cartão) ──
+    // O cartão salvo nasce só do token (`cards.service.ts` posta `{ token }`),
+    // e o token não carrega endereço — a tokenização no navegador manda apenas
+    // número/nome/validade/CVV. Então o endereço precisa vir DAQUI, a cada
+    // cobrança, como já vem no lance e no checkout. Sem ele a Pagar.me recusa a
+    // cobrança inteira com `validation_error | billing | "value" is required`,
+    // antes de qualquer análise de risco.
+    //
+    // Vem do cadastro, e não do endereço do pedido, porque na retirada em mãos
+    // não há endereço de entrega — e o cartão exige endereço do mesmo jeito.
+    const billingAddress = await this._getBillingAddress(buyerId);
+    if (!billingAddress) {
+      throw new BadRequestException(
+        'Cadastre um endereço em Minha Conta para pagar — a operadora exige ' +
+          'endereço de cobrança do titular do cartão.',
+      );
+    }
+
+    // ── A retenção do lance É o pagamento da peça ──
+    // O lance já bloqueou no cartão exatamente o valor da peça. Cobrar de novo
+    // do zero, como se fazia, obrigava o comprador a ter o DOBRO do limite:
+    // quem desse um lance de R$500 com R$500 de limite ganhava o leilão e não
+    // conseguia arrematar. Uma pré-autorização existe para virar cobrança —
+    // então ela é capturada, e só o frete (que ela não cobria) vira cobrança
+    // nova.
+    const [auctionDoPedido] = await this.db
+      .select({ id: schema.auctions.id })
+      .from(schema.auctions)
+      .where(eq(schema.auctions.listingId, order.listingId));
+    const auth = auctionDoPedido
+      ? await this._getActiveBidAuth(auctionDoPedido.id, buyerId)
+      : null;
+
+    const bidInCents = this._bidPartOf(order);
+    // Só serve se cobrir a peça inteira: capturar acima do autorizado não é
+    // permitido, e capturar A MENOS deixaria a diferença sem pagamento.
+    const retencaoCobreAPeca =
+      !!auth?.chargeId && auth.amountInCents === bidInCents;
+    // `_preAuthAindaRetida` devolve `null` quando não deu para saber, e aqui a
+    // dúvida pesa para o lado da CAPTURA (só `false` desvia para o fallback).
+    // O motivo é assimétrico: se a retenção existir e mesmo assim cobrarmos do
+    // zero, o comprador fica com os dois valores presos — o problema que esta
+    // mudança existe para acabar. Se ela não existir e tentarmos capturar, a
+    // captura falha, nada é cobrado e ele tenta de novo.
+    const retencaoDePe =
+      retencaoCobreAPeca &&
+      (await this._preAuthAindaRetida(auth!.chargeId!)) !== false;
+
+    if (retencaoDePe) {
+      return await this._pagarCapturandoRetencao(
+        order,
+        auth!.chargeId!,
+        bidInCents,
+        cardRef,
+        billingAddress,
+      );
+    }
+
+    // Fallback: sem retenção utilizável (expirada, cancelada, ou valor que não
+    // bate), cobra o total do zero. É o caminho antigo — mantido porque um
+    // arremate não pode ficar impagável só porque a garantia caiu.
+    this.logger.warn(
+      `Arremate ${order.id}: sem retenção utilizável (auth ${auth?.chargeId ?? 'nenhuma'}, ` +
+        `autorizado ${auth?.amountInCents ?? 0} vs peça ${bidInCents}). Cobrando o total do zero.`,
+    );
+
     const sellerRecipientId = await this._getSellerRecipientId(order.sellerId);
     const totalInCents = order.totalInCents;
 
@@ -1286,20 +1466,20 @@ export class AuctionsService {
       platformFeeInCents,
     );
 
+    // ── Itens e destino para a Pagar.me (leitura do antifraude) ──
+    // "Arremate Kolecta #c7a6babf" não diz nada a quem avalia risco: some o
+    // produto, some o destino, e o que sobra é indistinguível de teste de
+    // cartão. Mesma regra do checkout (`orders.service.ts`), que aprova.
+    const { itens, entrega } = await this._contextoAntifraude(order);
+
     let pagarmeOrder: any;
     try {
       pagarmeOrder = await this.pagarme.post(
         '/orders',
         {
           customer_id: cardRef.customerId,
-          items: [
-            {
-              amount: totalInCents,
-              description: `Arremate Kolecta #${order.id.slice(0, 8)}`,
-              quantity: 1,
-              code: 'kolecta-bid-payment',
-            },
-          ],
+          items: itens,
+          ...(entrega ? { shipping: entrega } : {}),
           payments: [
             {
               payment_method: 'credit_card',
@@ -1307,6 +1487,7 @@ export class AuctionsService {
                 capture: true, // cobrança à vista (captura imediata)
                 statement_descriptor: 'KOLECTA',
                 card_id: cardRef.cardId,
+                card: { billing_address: billingAddress },
                 ...(split ? { split } : {}),
               },
             },
@@ -1315,15 +1496,38 @@ export class AuctionsService {
         },
         `bid-pay-${order.id}-${Math.floor(Date.now() / 1000)}`,
       );
-    } catch {
+    } catch (err: unknown) {
+      // NÃO engolir o motivo — mesma lição do lance (`_createBidPreAuth`). Este
+      // catch trocava QUALQUER falha por "tente outro cartão", e foi ele que
+      // escondeu a ausência do `billing_address` acima: o vencedor era mandado
+      // trocar de cartão por um erro que não era do cartão, e o servidor não
+      // registrava nada.
+      const detalhe = motivoPagarme(err);
+      this.logger.error(
+        `Cobrança do arremate ${order.id} falhou (comprador ${buyerId}): ` +
+          JSON.stringify((err as { response?: unknown })?.response ?? detalhe),
+      );
       throw new BadRequestException(
-        'Não foi possível cobrar seu cartão. Tente outro cartão.',
+        detalhe
+          ? `Não foi possível cobrar seu cartão: ${detalhe}`
+          : 'Não foi possível cobrar seu cartão. Tente outro cartão.',
       );
     }
 
     const charge = pagarmeOrder?.charges?.[0];
     const paid = pagarmeOrder?.status === 'paid' || charge?.status === 'paid';
     if (!paid) {
+      // Guarda a referência ANTES de desistir. A recusa não é o fim da
+      // história: ela pode ser reprocessada no painel da Pagar.me, e sem o id
+      // aqui não há como perguntar depois se virou pagamento — foi assim que
+      // um arremate de R$200 pago em 12/08 ficou sem rastro do nosso lado.
+      // O pedido segue `pending_payment`; só a referência é gravada.
+      if (pagarmeOrder?.id) {
+        await this.db
+          .update(schema.orders)
+          .set({ pagarmeOrderId: pagarmeOrder.id, updatedAt: new Date() })
+          .where(eq(schema.orders.id, order.id));
+      }
       const reason =
         charge?.last_transaction?.gateway_response?.errors?.[0]?.message ||
         charge?.last_transaction?.acquirer_message ||
@@ -1331,35 +1535,251 @@ export class AuctionsService {
       throw new BadRequestException(reason);
     }
 
-    await this._settlePaidAuctionOrder(
+    await this._concluirArrematePago(
       order,
       pagarmeOrder.id,
       charge?.id ?? null,
     );
 
-    // A cobrança do total passou — só agora a retenção do lance pode cair. A
-    // ordem importa: liberar antes de cobrar deixaria o vencedor sem garantia
-    // nenhuma no intervalo, e uma recusa aí custaria o item a ele.
+    return { orderId: order.id, paid: true };
+  }
+
+  /**
+   * Paga o arremate CAPTURANDO a retenção do lance.
+   *
+   * A peça já está bloqueada no cartão desde o lance — capturar transforma o
+   * bloqueio na cobrança, sem pedir limite novo. Só o frete, que a retenção não
+   * cobria, vira cobrança à parte.
+   *
+   * A ordem é frete → captura, e não o contrário, porque a operação com risco
+   * real de recusa é a do frete (cartão novo, limite novo); a captura de uma
+   * auth viva quase sempre passa. Falhando primeiro o que tem mais chance de
+   * falhar, o abandono é limpo: nada foi capturado e o pedido segue
+   * `pending_payment`. Na ordem inversa, a falha provável deixaria a peça paga
+   * e o envio não — o risco que o `151a361` levantou com razão.
+   *
+   * O split não muda: a retenção já nasceu com ele (peça − comissão para o
+   * vendedor, comissão para a Kolecta), e o frete vai 100% para a Kolecta, que
+   * compra a etiqueta. Mesmo resultado financeiro da cobrança única anterior.
+   */
+  private async _pagarCapturandoRetencao(
+    order: typeof schema.orders.$inferSelect,
+    chargeIdRetencao: string,
+    bidInCents: number,
+    cardRef: { customerId: string; cardId: string },
+    billingAddress: PagarmeAddress,
+  ) {
+    const shippingInCents = order.shippingInCents ?? 0;
+
+    // 1) Frete primeiro (quando há). Recusa aqui não custa nada: a retenção
+    //    segue intacta e ele tenta de novo.
+    let freteChargeId: string | null = null;
+    if (shippingInCents > 0) {
+      freteChargeId = await this._cobrarFreteAvulso(
+        order,
+        shippingInCents,
+        cardRef,
+        billingAddress,
+      );
+    }
+
+    // 2) Captura da peça.
+    try {
+      await this._capturarRetencao(chargeIdRetencao, bidInCents);
+    } catch (err: unknown) {
+      // O frete já passou e a peça não: devolver o frete é o único desfecho
+      // honesto — ele não recebe nada por ele. Best-effort, e o motivo fica no
+      // log para o caso de o estorno também falhar.
+      if (freteChargeId) {
+        try {
+          await this.pagarme.delete(`/charges/${freteChargeId}`);
+          this.logger.warn(
+            `Frete ${freteChargeId} estornado: a captura da peça falhou no arremate ${order.id}.`,
+          );
+        } catch (errEstorno: unknown) {
+          this.logger.error(
+            `⚠️ Frete ${freteChargeId} do arremate ${order.id} NÃO estornado ` +
+              `após falha na captura: ${motivoPagarme(errEstorno)}. Devolver à mão.`,
+          );
+        }
+      }
+      const detalhe = motivoPagarme(err);
+      this.logger.error(
+        `Captura da retenção ${chargeIdRetencao} falhou (arremate ${order.id}): ${detalhe}`,
+      );
+      throw new BadRequestException(
+        detalhe
+          ? `Não foi possível concluir o pagamento: ${detalhe}`
+          : 'Não foi possível concluir o pagamento. Tente novamente.',
+      );
+    }
+
+    this.logger.log(
+      `💳 Arremate ${order.id} pago por CAPTURA da retenção ${chargeIdRetencao} ` +
+        `(peça R$${(bidInCents / 100).toFixed(2)})` +
+        (freteChargeId
+          ? ` + frete ${freteChargeId} (R$${(shippingInCents / 100).toFixed(2)})`
+          : ' (retirada em mãos)') +
+        '. Nenhum limite adicional foi exigido pela peça.',
+    );
+
+    // O charge da consolidação é o da retenção capturada — e é isso que faz o
+    // `_concluirArrematePago` NÃO tentar cancelá-la: ela virou o pagamento.
+    await this._concluirArrematePago(
+      order,
+      order.pagarmeOrderId ?? chargeIdRetencao,
+      chargeIdRetencao,
+    );
+
+    return { orderId: order.id, paid: true };
+  }
+
+  /**
+   * Cobra SÓ o frete, à vista, numa cobrança própria.
+   *
+   * Sem split de propósito: o frete vai inteiro para a Kolecta, que compra a
+   * etiqueta. Sem `split`, a Pagar.me credita a conta da plataforma — que é
+   * exatamente o destino certo.
+   */
+  private async _cobrarFreteAvulso(
+    order: typeof schema.orders.$inferSelect,
+    shippingInCents: number,
+    cardRef: { customerId: string; cardId: string },
+    billingAddress: PagarmeAddress,
+  ): Promise<string> {
+    let resposta: any;
+    try {
+      resposta = await this.pagarme.post(
+        '/orders',
+        {
+          customer_id: cardRef.customerId,
+          items: [
+            {
+              amount: shippingInCents,
+              description: `Frete do arremate #${order.id.slice(0, 8)}`,
+              quantity: 1,
+              code: 'frete',
+            },
+          ],
+          payments: [
+            {
+              payment_method: 'credit_card',
+              credit_card: {
+                capture: true,
+                statement_descriptor: 'KOLECTA',
+                card_id: cardRef.cardId,
+                card: { billing_address: billingAddress },
+              },
+            },
+          ],
+          // `orderId` no metadata é o que liga esta cobrança ao pedido: não há
+          // coluna para um segundo charge, então a ligação vive do lado da
+          // Pagar.me e no log.
+          metadata: {
+            type: 'bid_shipping',
+            orderId: order.id,
+            buyerId: order.buyerId,
+          },
+        },
+        `bid-frete-${order.id}`,
+      );
+    } catch (err: unknown) {
+      const detalhe = motivoPagarme(err);
+      this.logger.error(
+        `Cobrança do frete do arremate ${order.id} falhou: ${detalhe}`,
+      );
+      throw new BadRequestException(
+        detalhe
+          ? `Não foi possível cobrar o frete: ${detalhe}`
+          : 'Não foi possível cobrar o frete. Tente outro cartão.',
+      );
+    }
+
+    const charge = resposta?.charges?.[0];
+    const pago = resposta?.status === 'paid' || charge?.status === 'paid';
+    if (!pago) {
+      const motivo =
+        charge?.last_transaction?.gateway_response?.errors?.[0]?.message ||
+        charge?.last_transaction?.acquirer_message ||
+        'Cobrança do frete recusada. Verifique os dados ou tente outro cartão.';
+      throw new BadRequestException(motivo);
+    }
+    return charge?.id ?? resposta.id;
+  }
+
+  /**
+   * Captura uma pré-autorização pelo valor autorizado. Lança se não confirmar.
+   *
+   * Reintroduz o `_captureCharge` removido no `151a361` — a captura era o
+   * caminho certo; o que estava errado era achar que ela obrigava a cobrar o
+   * frete junto.
+   */
+  private async _capturarRetencao(
+    chargeId: string,
+    amountInCents: number,
+  ): Promise<void> {
+    const captured = await this.pagarme.post(
+      `/charges/${chargeId}/capture`,
+      { amount: amountInCents },
+      `bid-capture-${chargeId}`,
+    );
+    const status = captured?.status ?? captured?.last_transaction?.status;
+    if (status !== 'paid') {
+      throw new Error(
+        `Captura da retenção ${chargeId} não confirmada (status: ${status}).`,
+      );
+    }
+  }
+
+  /**
+   * Tudo que acontece DEPOIS de a cobrança do arremate ser confirmada:
+   * consolida o pedido, libera a retenção do lance e dispara a etiqueta.
+   *
+   * Compartilhado de propósito entre o pagamento pelo site (`payAuctionOrder`)
+   * e a conciliação pelo webhook (`handlePagarmeAuctionPaid`) — porque foi a
+   * AUSÊNCIA desse compartilhamento que deixou um arremate pago pelo painel da
+   * Pagar.me sem nada registrado aqui: o site liquidava tudo dentro da própria
+   * requisição, o webhook era redundante, e ninguém notou que ele não sabia
+   * fazer o trabalho sozinho.
+   */
+  private async _concluirArrematePago(
+    order: typeof schema.orders.$inferSelect,
+    pagarmeOrderId: string,
+    chargeId: string | null,
+  ) {
+    // A retenção do lance é LIDA ANTES de consolidar, e só liberada depois.
     //
-    // Best-effort: se o void falhar, o dinheiro do comprador segue retido até a
-    // adquirente expirar a auth sozinha (~5 dias). Ruim, mas não desfaz a venda
-    // — por isso fica em log e não derruba a resposta.
+    // A ordem não é estilo: `_settlePaidAuctionOrder` marca o lance vencedor
+    // como `won` dentro da transação, e `_getActiveBidAuth` filtra por
+    // `status = 'active'`. Lendo depois, a busca não acha mais nada e o void
+    // NUNCA acontecia — o vencedor ficava com o valor cobrado E o valor retido
+    // presos ao mesmo tempo, até a adquirente expirar a auth sozinha (~5 dias).
+    // Dois arremates de 11/08 ficaram assim, R$ 460 travados sem necessidade.
+    //
+    // Liberar só DEPOIS da consolidação continua certo: a retenção é a garantia
+    // enquanto o dinheiro não entrou.
     const [auctionDoPedido] = await this.db
       .select({ id: schema.auctions.id })
       .from(schema.auctions)
       .where(eq(schema.auctions.listingId, order.listingId));
-    if (auctionDoPedido) {
-      const auth = await this._getActiveBidAuth(auctionDoPedido.id, buyerId);
-      if (auth?.chargeId && auth.chargeId !== charge?.id) {
-        await this._voidPreAuth(auth.chargeId);
-        this.logger.log(
-          `Pré-auth ${auth.chargeId} do lance liberada após o pagamento do arremate ${order.id}.`,
-        );
-      }
+    const auth = auctionDoPedido
+      ? await this._getActiveBidAuth(auctionDoPedido.id, order.buyerId)
+      : null;
+
+    await this._settlePaidAuctionOrder(order, pagarmeOrderId, chargeId);
+
+    // Best-effort: se o void falhar, o dinheiro do comprador segue retido até a
+    // adquirente expirar a auth sozinha. Ruim, mas não desfaz a venda — por
+    // isso fica em log e não derruba a resposta.
+    if (auth?.chargeId && auth.chargeId !== chargeId) {
+      await this._voidPreAuth(auth.chargeId);
+      this.logger.log(
+        `Pré-auth ${auth.chargeId} do lance liberada após o pagamento do arremate ${order.id}.`,
+      );
     }
 
     this.logger.log(
-      `💳 Arremate ${order.id} pago pelo vencedor: pagarme ${pagarmeOrder.id} ` +
+      `💳 Arremate ${order.id} pago pelo vencedor: pagarme ${pagarmeOrderId} ` +
         `(total R$${(order.totalInCents / 100).toFixed(2)}, frete ` +
         `R$${((order.shippingInCents ?? 0) / 100).toFixed(2)}).`,
     );
@@ -1370,14 +1790,64 @@ export class AuctionsService {
     // segundo e-mail contraditório.
     this.eventEmitter.emit('auction.paid', {
       orderId: order.id,
-      buyerId,
+      buyerId: order.buyerId,
       sellerId: order.sellerId,
       totalInCents: order.totalInCents,
       shippingInCents: order.shippingInCents ?? 0,
       deliveryMethod: order.deliveryMethod ?? 'shipping',
     });
+  }
 
-    return { orderId: order.id, paid: true };
+  /**
+   * Arremate pago FORA do fluxo do site: reprocessamento no painel da Pagar.me,
+   * ou qualquer cobrança que a nossa requisição não acompanhou até o fim.
+   *
+   * Existe porque o `order.paid` do leilão caía no handler do CHECKOUT, que só
+   * conhece o status `pending` — o pedido de leilão fica `pending_payment`.
+   * Nomes parecidos, estados diferentes: o webhook lia, achava que já estava
+   * resolvido, saía calado e era gravado como `processed`. Um arremate de
+   * R$ 200 foi pago em 12/08 e ficou invisível aqui — a caminho de ser
+   * cancelado pelo cron de prazo, com o dinheiro já capturado.
+   */
+  @OnEvent('pagarme.auction.paid')
+  async handlePagarmeAuctionPaid(data: any) {
+    const orderId: string | undefined = data?.metadata?.orderId;
+    if (!orderId) {
+      this.logger.warn(
+        `Pagar.me order.paid de arremate (${data?.id}) sem orderId no metadata. Ignorando.`,
+      );
+      return;
+    }
+
+    const [order] = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId));
+
+    if (!order) {
+      this.logger.warn(`order.paid de arremate: pedido ${orderId} não existe.`);
+      return;
+    }
+
+    // Idempotência: no caminho normal o site já liquidou dentro da requisição e
+    // o webhook chega logo atrás. Sair calado aqui é o esperado, não um erro.
+    if (order.status !== 'pending_payment') {
+      this.logger.log(
+        `Arremate ${orderId} já estava ${order.status} — webhook sem efeito.`,
+      );
+      return;
+    }
+
+    const charge = data?.charges?.[0];
+    await this._concluirArrematePago(
+      order,
+      data?.id ?? 'pagarme',
+      charge?.id ?? null,
+    );
+
+    this.logger.log(
+      `✅ Arremate ${orderId} conciliado PELO WEBHOOK (pago fora do site).`,
+    );
   }
 
   /**
@@ -1482,6 +1952,37 @@ export class AuctionsService {
     const reopened: string[] = [];
     for (const order of overdue) {
       try {
+        // ── Portão: ninguém é cancelado sem PERGUNTAR à Pagar.me ──
+        // Cancelar um pedido já pago é o pior desfecho possível: o item vai ao
+        // 2º colocado com o dinheiro do 1º capturado. Aconteceu quase isso em
+        // 12/08 — um arremate pago pelo painel ficou `pending_payment` porque o
+        // webhook falhou, e este cron o cancelaria no dia seguinte.
+        //
+        // A dúvida também segura o cancelamento: se a consulta falhar, não
+        // sabemos, e não saber não autoriza destruir uma venda. Fica para a
+        // próxima rodada, com alerta.
+        const conciliado = await this.conciliacao.conciliarPedido(order.id);
+        if (conciliado.acao === 'liquidado') {
+          this.logger.warn(
+            `Pedido ${order.id} venceu o prazo mas estava PAGO na Pagar.me — ` +
+              'liquidado em vez de cancelado.',
+          );
+          continue;
+        }
+        if (conciliado.acao === 'erro-consulta') {
+          this.logger.error(
+            `🚨 Pedido ${order.id} venceu o prazo e a Pagar.me não respondeu ` +
+              `(${conciliado.detalhe}). NÃO cancelado — tenta na próxima rodada.`,
+          );
+          continue;
+        }
+        if (conciliado.acao === 'sem-referencia') {
+          this.logger.warn(
+            `Pedido ${order.id} vencido e sem referência na Pagar.me ` +
+              '(nenhuma cobrança chegou a ser criada) — segue para cancelamento.',
+          );
+        }
+
         const outcome = await this._expirePendingPayment(order);
         if (outcome === 'noop') continue;
         expired.push(order.id);

@@ -98,3 +98,16 @@ export class BroadcastDto {
   @Min(0)
   pausaMs?: number;
 }
+
+/**
+ * Conciliação manual de um pedido contra a API da Pagar.me.
+ *
+ * `pagarmeOrderId` é opcional: por padrão usa a referência guardada no pedido.
+ * Informe-a quando ela for nula — o caso de uma cobrança recusada, em que o id
+ * da order era descartado junto com a exceção.
+ */
+export class ConciliarOrderDto {
+  @IsOptional()
+  @IsString()
+  pagarmeOrderId?: string;
+}

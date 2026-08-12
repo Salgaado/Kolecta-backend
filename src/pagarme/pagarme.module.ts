@@ -5,6 +5,9 @@ import { PagarmeService } from './pagarme.service';
 import { PagarmeWebhookController } from './pagarme-webhook.controller';
 import { registerPagarmeDiag } from './pagarme-diagnostics';
 import { WalletModule } from '../wallet/wallet.module';
+import { DatabaseModule } from '../database/database.module';
+import { ConciliacaoService } from './conciliacao.service';
+import { ConciliacaoCron } from './conciliacao.cron';
 
 /**
  * Núcleo da integração Pagar.me.
@@ -15,10 +18,15 @@ import { WalletModule } from '../wallet/wallet.module';
  * as demais fases consumirem via @OnEvent.
  */
 @Module({
-  imports: [HttpModule, WalletModule],
-  providers: [PagarmeConfigService, PagarmeService],
+  imports: [HttpModule, WalletModule, DatabaseModule],
+  providers: [
+    PagarmeConfigService,
+    PagarmeService,
+    ConciliacaoService,
+    ConciliacaoCron,
+  ],
   controllers: [PagarmeWebhookController],
-  exports: [PagarmeService, PagarmeConfigService],
+  exports: [PagarmeService, PagarmeConfigService, ConciliacaoService],
 })
 export class PagarmeModule {
   constructor() {

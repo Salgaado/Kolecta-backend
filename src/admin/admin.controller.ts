@@ -20,11 +20,13 @@ import {
   ResolveDisputeDto,
   SendTestEmailDto,
   BroadcastDto,
+  ConciliarOrderDto,
 } from './dto/admin.dto';
 import { BroadcastService } from '../notifications/broadcast.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { ConciliacaoService } from '../pagarme/conciliacao.service';
 
 @Controller('api/admin')
 @UseGuards(AuthGuard, RolesGuard)
@@ -33,6 +35,7 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly broadcast: BroadcastService,
+    private readonly conciliacaoService: ConciliacaoService,
   ) {}
 
   // ── GET /api/admin/stats ─────────────────────────────────────────────────
@@ -62,6 +65,45 @@ export class AdminController {
   @Get('orders/:id')
   async getOrderDetail(@Param('id') id: string) {
     return { data: await this.adminService.getOrderDetail(id) };
+  }
+
+  // ── POST /api/admin/orders/:id/conciliar ─────────────────────────────────
+  // Pergunta à Pagar.me o estado REAL do pedido e conserta o nosso lado se
+  // divergir. Escape manual enquanto o cron de conciliação não roda sozinho —
+  // e o caminho usado quando o webhook falha de um jeito que não dá para
+  // reenviar (o de 12/08 foi engolido pela nossa própria idempotência).
+  //
+  // Sem `pagarmeOrderId` usa a referência do banco; informe-a quando ela for
+  // nula — é o caso de cobrança recusada, em que o id era descartado.
+  //
+  //   { "pagarmeOrderId": "or_XXXXXXXX" }
+
+  @Post('orders/:id/conciliar')
+  @HttpCode(HttpStatus.OK)
+  async conciliarOrder(
+    @Param('id') id: string,
+    @Body() dto: ConciliarOrderDto,
+  ) {
+    return {
+      data: await this.conciliacaoService.conciliarPedido(
+        id,
+        dto?.pagarmeOrderId,
+      ),
+    };
+  }
+
+  // ── POST /api/admin/charges/:chargeId/liberar-retencao ───────────────────
+  // Cancela uma pré-autorização não capturada e devolve o limite ao comprador
+  // na hora. Para as retenções que ficaram de pé antes da correção da ordem
+  // (a auth era lida depois da consolidação e o cancelamento nunca rodava).
+  //
+  // Recusa qualquer cobrança que não esteja em `authorized_pending_capture`:
+  // numa cobrança PAGA o mesmo DELETE seria um ESTORNO.
+
+  @Post('charges/:chargeId/liberar-retencao')
+  @HttpCode(HttpStatus.OK)
+  async liberarRetencao(@Param('chargeId') chargeId: string) {
+    return { data: await this.conciliacaoService.liberarRetencao(chargeId) };
   }
 
   // ── POST /api/admin/test-email ───────────────────────────────────────────
@@ -129,7 +171,10 @@ export class AdminController {
 
   @Patch('users/:id/role')
   @HttpCode(HttpStatus.OK)
-  async updateUserRole(@Param('id') id: string, @Body() dto: UpdateUserRoleDto) {
+  async updateUserRole(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserRoleDto,
+  ) {
     return { data: await this.adminService.updateUserRole(id, dto) };
   }
 
@@ -164,7 +209,10 @@ export class AdminController {
 
   @Patch('disputes/:id')
   @HttpCode(HttpStatus.OK)
-  async resolveDispute(@Param('id') id: string, @Body() dto: ResolveDisputeDto) {
+  async resolveDispute(
+    @Param('id') id: string,
+    @Body() dto: ResolveDisputeDto,
+  ) {
     return { data: await this.adminService.resolveDispute(id, dto) };
   }
 
@@ -176,7 +224,9 @@ export class AdminController {
     @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit = 50,
     @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset = 0,
   ) {
-    return { data: await this.adminService.listListings(status, limit, offset) };
+    return {
+      data: await this.adminService.listListings(status, limit, offset),
+    };
   }
 
   // ── PATCH /api/admin/listings/:id/status ────────────────────────────────

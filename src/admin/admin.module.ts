@@ -6,6 +6,7 @@ import { AuthModule } from '../auth/auth.module';
 import { ListingsModule } from '../listings/listings.module';
 import { FounderModule } from '../founder/founder.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PagarmeModule } from '../pagarme/pagarme.module';
 
 @Module({
   imports: [
@@ -15,6 +16,8 @@ import { NotificationsModule } from '../notifications/notifications.module';
     FounderModule,
     // Exporta MailService — usado pelo POST /api/admin/test-email.
     NotificationsModule,
+    // Exporta ConciliacaoService — POST /api/admin/orders/:id/conciliar.
+    PagarmeModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

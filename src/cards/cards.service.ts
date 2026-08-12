@@ -14,6 +14,8 @@ import {
   CARTAO_INDISPONIVEL,
 } from '../common/payment-flags';
 import { PagarmeService } from '../pagarme/pagarme.service';
+import { motivoPagarme } from '../pagarme/pagarme-erro';
+import { emailUtil, nomeUtil } from '../common/cadastro-placeholder';
 
 /** Cartão salvo, já mascarado, pronto para o frontend (sem dado sensível PCI). */
 export interface MaskedCard {
@@ -42,6 +44,16 @@ interface PagarmeCard {
 
 interface PagarmeCustomer {
   id: string;
+}
+
+/** Endereco no formato da Pagar.me (customer.address e shipping.address). */
+export interface PagarmeAddress {
+  line_1: string;
+  line_2?: string;
+  zip_code: string;
+  city: string;
+  state: string;
+  country: string;
 }
 
 /**
@@ -113,15 +125,13 @@ export class CardsService {
         `/customers/${customerId}/cards`,
         { token: cardToken },
       );
-    } catch (err: any) {
-      // `pagarme.message` entra na lista porque é onde a API põe o motivo quando
-      // não há `errors[]` — o 404 de customer inexistente, por exemplo. Sem ele
-      // a falha chegava ao usuário como "Erro na comunicação com a Pagar.me",
-      // que não diz nada a ninguém.
+    } catch (err: unknown) {
+      // O motivo vem em dois formatos e o encadeamento antigo só lia um deles:
+      // num erro de VALIDAÇÃO a Pagar.me indexa `errors` pelo campo, então a
+      // mensagem degradava para "The request is invalid." — que diz que algo
+      // está errado sem dizer o quê. `motivoPagarme` lê as duas formas.
       const detail =
-        err?.response?.pagarme?.errors?.[0]?.message ||
-        err?.response?.pagarme?.message ||
-        err?.response?.message ||
+        motivoPagarme(err) ||
         'Não foi possível salvar o cartão. Verifique os dados e tente novamente.';
       throw new BadRequestException(detail);
     }
@@ -320,15 +330,53 @@ export class CardsService {
   }
 
   /**
-   * Garante que um customer JA existente tenha documento na Pagar.me.
+   * Endereco do usuario no formato da Pagar.me (o padrao, ou o primeiro).
+   *
+   * Vai gravado NO CUSTOMER, e nao na cobranca, porque quem paga com cartao
+   * salvo cobra por `customer_id` — e `customer_id` e `customer` inline sao
+   * mutuamente exclusivos na API. O endereco so alcanca o antifraude por aqui.
+   *
+   * Sem ele a transacao chega como cliente sem endereco nenhum, que e o perfil
+   * de quem esta testando cartao — foi o que barrou um arremate em 12/08.
+   */
+  private async resolveAddress(userId: string): Promise<PagarmeAddress | null> {
+    const enderecos = await this.db
+      .select()
+      .from(schema.addresses)
+      .where(eq(schema.addresses.userId, userId));
+    const end = enderecos.find((e) => e.isDefault) ?? enderecos[0];
+    if (!end) return null;
+    return {
+      // A Pagar.me espera "numero, rua, bairro" numa linha so.
+      line_1: [end.number, end.street, end.neighborhood]
+        .filter(Boolean)
+        .join(', '),
+      ...(end.complement ? { line_2: end.complement } : {}),
+      zip_code: String(end.zip).replace(/\D/g, ''),
+      city: end.city,
+      state: end.state,
+      country: (end.country || 'BR').toUpperCase(),
+    };
+  }
+
+  /**
+   * Garante que um customer JA existente esteja completo E atualizado na
+   * Pagar.me.
    *
    * Customers criados antes desta correcao nasceram sem documento, e a cobranca
    * no cartao falha sem ele. Recriar o customer nao serve: o cartao salvo esta
    * vinculado ao antigo e seria perdido. Entao completamos no lugar, via PUT.
    *
-   * Nao derruba o fluxo se a consulta falhar: se o customer ja estiver correto
-   * ou a Pagar.me responder outra coisa, seguimos — quem valida de verdade e a
-   * cobranca, e o erro dela agora chega legivel a quem deu o lance.
+   * Desde 12/08 tambem conserta NOME e E-MAIL divergentes. O caso que motivou:
+   * um comprador cujo customer nasceu "Novo Usuario" com e-mail
+   * `@placeholder.kolecta` tinha documento e telefone em ordem, entao o reparo
+   * saia na primeira linha — e o antifraude seguia avaliando um cliente que nao
+   * identifica ninguem. Corrigir o cadastro no nosso banco nao bastava: a
+   * Pagar.me guarda a copia dela.
+   *
+   * Nao derruba o fluxo se a consulta OU a escrita falhar: reparo e
+   * best-effort, quem valida de verdade e a cobranca — e o erro dela agora
+   * chega legivel a quem deu o lance.
    */
   private async completarCadastroDoCustomer(
     customerId: string,
@@ -339,6 +387,7 @@ export class CardsService {
       name?: string | null;
       email?: string | null;
       phones?: Record<string, unknown> | null;
+      address?: Record<string, unknown> | null;
     } | null = null;
     try {
       remoto = await this.pagarme.get(`/customers/${customerId}`);
@@ -350,11 +399,45 @@ export class CardsService {
       return 'ok';
     }
 
-    const temTelefone = Object.keys(remoto?.phones ?? {}).length > 0;
-    if (remoto?.document && temTelefone) return 'ok'; // ja esta completo
+    const faltaDocumento = !remoto?.document;
+    const faltaTelefone = Object.keys(remoto?.phones ?? {}).length === 0;
+
+    // O nosso cadastro e a fonte da verdade (vem do Clerk). Lido ANTES da
+    // decisao porque agora ele tambem define se ha o que consertar.
+    const [user] = await this.db
+      .select({ name: schema.users.name, email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+
+    const nomeLocal = nomeUtil(user?.name);
+    const emailLocal = emailUtil(user?.email);
+
+    // Endereco: o antifraude pontua com ele, e nenhum customer nosso nasceu
+    // com um. So conta como pendencia quando TEMOS um para mandar — do
+    // contrario o reparo escreveria a cada lance sem nunca mudar nada.
+    const enderecoLocal = await this.resolveAddress(userId);
+    const faltaEndereco = !remoto?.address && !!enderecoLocal;
+
+    // Divergencia so conta quando o NOSSO lado tem dado aproveitavel: empurrar
+    // "Novo Usuario" para a Pagar.me seria trocar um dado velho por um pior.
+    const desatualizado =
+      (!!nomeLocal && nomeLocal !== String(remoto?.name ?? '').trim()) ||
+      (!!emailLocal &&
+        emailLocal.toLowerCase() !==
+          String(remoto?.email ?? '')
+            .trim()
+            .toLowerCase());
+
+    if (!faltaDocumento && !faltaTelefone && !faltaEndereco && !desatualizado) {
+      return 'ok';
+    }
 
     const doc = await this.resolveDocument(userId);
     if (!doc) {
+      // Sem documento a cobranca falha — mas so quando ele REALMENTE falta no
+      // customer. Se o unico motivo era atualizar nome/e-mail/endereco,
+      // bloquear o usuario por um reparo trocaria um problema por outro pior.
+      if (!faltaDocumento && !faltaTelefone) return 'ok';
       throw new BadRequestException(
         'Informe seu CPF ou CNPJ para usar o cartao — a operadora exige o ' +
           'documento do titular para autorizar cobrancas.',
@@ -362,32 +445,51 @@ export class CardsService {
     }
 
     const phones = await this.resolvePhone(userId);
-    if (!temTelefone && !phones) {
+    if (faltaTelefone && !phones) {
       throw new BadRequestException(
         'Informe um telefone com DDD em Financeiro > Cartao para lances — a ' +
           'operadora exige telefone do titular para autorizar cobrancas.',
       );
     }
 
-    // O PUT da Pagar.me NAO e um patch: sem `name` ele responde 422 ("The name
-    // field is required"). Reenviamos os campos que ja existem no customer,
-    // caindo no nosso cadastro quando o remoto vier vazio.
-    const [user] = await this.db
-      .select({ name: schema.users.name, email: schema.users.email })
-      .from(schema.users)
-      .where(eq(schema.users.id, userId));
+    // O PUT da Pagar.me NAO e um patch: campo omitido nao e preservado. Por
+    // isso o telefone REMOTO e reenviado quando nao temos um local — reparar o
+    // nome nao pode apagar o telefone e quebrar a proxima cobranca.
+    const phonesParaEnviar = phones ?? (faltaTelefone ? null : remoto?.phones);
 
-    await this.pagarme.put(`/customers/${customerId}`, {
-      name: remoto?.name || user?.name || 'Usuario Kolecta',
-      email: remoto?.email || user?.email,
-      type: doc.type,
-      document: doc.document,
-      document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
-      ...(phones ? { phones } : {}),
-    });
+    try {
+      await this.pagarme.put(`/customers/${customerId}`, {
+        // O NOSSO cadastro vem primeiro. Antes era `remoto?.name || user?.name`
+        // — o remoto ganhava, entao um customer que nasceu "Novo Usuario"
+        // reenviava "Novo Usuario" a cada reparo e nunca saia desse estado.
+        name: nomeLocal ?? remoto?.name ?? 'Usuario Kolecta',
+        email: emailLocal ?? remoto?.email,
+        type: doc.type,
+        document: doc.document,
+        document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
+        ...(phonesParaEnviar ? { phones: phonesParaEnviar } : {}),
+        // Mesmo cuidado do telefone: o PUT nao e patch, entao um endereco que
+        // ja exista la e reenviado em vez de sumir.
+        ...(enderecoLocal
+          ? { address: enderecoLocal }
+          : remoto?.address
+            ? { address: remoto.address }
+            : {}),
+      });
+    } catch (err: unknown) {
+      // Best-effort: falhar aqui nao pode derrubar quem so queria dar um lance.
+      // Faltando documento/telefone a cobranca falha adiante com motivo
+      // legivel; a divergencia de nome/e-mail tenta de novo na proxima leitura.
+      this.logger.warn(
+        `Reparo do customer ${customerId} falhou (ignorado): ${motivoPagarme(err)}`,
+      );
+      return 'ok';
+    }
+
     await this.persistCpf(userId, doc.document);
     this.logger.log(
-      `Cadastro completado no customer ${customerId} (user ${userId}).`,
+      `Cadastro ${desatualizado ? 'atualizado' : 'completado'} no customer ` +
+        `${customerId} (user ${userId}).`,
     );
     return 'ok';
   }
@@ -469,13 +571,18 @@ export class CardsService {
       );
     }
 
+    // Endereco ja na criacao: o antifraude pontua com ele, e um customer que
+    // nasce sem obriga um PUT de reparo depois.
+    const endereco = await this.resolveAddress(userId);
+
     const customer = await this.pagarme.post<PagarmeCustomer>('/customers', {
-      name: user.name || 'Usuario Kolecta',
-      email: user.email,
+      name: nomeUtil(user.name) ?? 'Usuario Kolecta',
+      email: emailUtil(user.email),
       type: doc.type,
       document: doc.document,
       document_type: doc.type === 'company' ? 'CNPJ' : 'CPF',
       phones,
+      ...(endereco ? { address: endereco } : {}),
     });
 
     if (!customer?.id) {
@@ -491,7 +598,6 @@ export class CardsService {
 
     return customer.id;
   }
-
 
   /** Best-effort: remove o cartão na Pagar.me (não derruba o fluxo local). */
   private async deleteRemoteCard(
