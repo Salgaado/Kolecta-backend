@@ -14,6 +14,7 @@ import {
   CARTAO_INDISPONIVEL,
 } from '../common/payment-flags';
 import { PagarmeService } from '../pagarme/pagarme.service';
+import { motivoPagarme } from '../pagarme/pagarme-erro';
 
 /** Cartão salvo, já mascarado, pronto para o frontend (sem dado sensível PCI). */
 export interface MaskedCard {
@@ -113,15 +114,13 @@ export class CardsService {
         `/customers/${customerId}/cards`,
         { token: cardToken },
       );
-    } catch (err: any) {
-      // `pagarme.message` entra na lista porque é onde a API põe o motivo quando
-      // não há `errors[]` — o 404 de customer inexistente, por exemplo. Sem ele
-      // a falha chegava ao usuário como "Erro na comunicação com a Pagar.me",
-      // que não diz nada a ninguém.
+    } catch (err: unknown) {
+      // O motivo vem em dois formatos e o encadeamento antigo só lia um deles:
+      // num erro de VALIDAÇÃO a Pagar.me indexa `errors` pelo campo, então a
+      // mensagem degradava para "The request is invalid." — que diz que algo
+      // está errado sem dizer o quê. `motivoPagarme` lê as duas formas.
       const detail =
-        err?.response?.pagarme?.errors?.[0]?.message ||
-        err?.response?.pagarme?.message ||
-        err?.response?.message ||
+        motivoPagarme(err) ||
         'Não foi possível salvar o cartão. Verifique os dados e tente novamente.';
       throw new BadRequestException(detail);
     }
@@ -491,7 +490,6 @@ export class CardsService {
 
     return customer.id;
   }
-
 
   /** Best-effort: remove o cartão na Pagar.me (não derruba o fluxo local). */
   private async deleteRemoteCard(

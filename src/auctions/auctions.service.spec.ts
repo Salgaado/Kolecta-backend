@@ -384,6 +384,36 @@ describe('AuctionsService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
+    /**
+     * O lance sofria do mesmo ponto cego que travou o arremate: o motivo era
+     * lido só na forma de LISTA, e num erro de VALIDAÇÃO a Pagar.me indexa
+     * `errors` pelo campo. A mensagem degradava para o `message` do nosso
+     * embrulho — "Erro na comunicação com a Pagar.me" —, que sugere falha de
+     * rede e manda a pessoa tentar de novo num erro que nunca é transitório.
+     */
+    it('entrega o motivo REAL quando a Pagar.me invalida o request do lance', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([mockAuction])
+        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([mockEndereco]);
+      mockPagarmeService.post.mockReset().mockRejectedValue({
+        response: {
+          message: 'Erro na comunicação com a Pagar.me',
+          pagarme: {
+            message: 'The request is invalid.',
+            errors: { 'customer.document': ['"document" is required'] },
+          },
+        },
+      });
+      service = await buildModule();
+
+      await expect(
+        service.placeBid(mockAuctionId, bidderId, { amountInCents: 6100 }),
+      ).rejects.toThrow('customer.document: "document" is required');
+    });
+
     it('deve registrar lance com sucesso (pré-auth no cartão)', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where

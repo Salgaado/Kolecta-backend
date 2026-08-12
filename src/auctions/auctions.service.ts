@@ -32,6 +32,7 @@ import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
+import { motivoPagarme } from '../pagarme/pagarme-erro';
 import { ShippingService } from '../shipping/shipping.service';
 import {
   CreateAuctionDto,
@@ -65,16 +66,6 @@ const REAUTH_WINDOW_HOURS = parseInt(
   process.env.PAGARME_REAUTH_WINDOW_HOURS ?? '24',
   10,
 );
-
-/**
- * Corpo de erro da Pagar.me, nas duas formas em que ele chega: `errors` como
- * LISTA (recusa da adquirente) ou como OBJETO indexado pelo campo (validação
- * do request). Ver `_motivoPagarme`.
- */
-interface CorpoErroPagarme {
-  message?: string;
-  errors?: { message?: string }[] | Record<string, string | string[]>;
-}
 
 /**
  * Prazo (horas) que o vencedor de um leilão tem para pagar quando a captura da
@@ -695,19 +686,16 @@ export class AuctionsService {
         // Idempotência por lance (valor + bidder + janela do segundo).
         `bid-preauth-${params.auctionId}-${params.bidderId}-${params.amountInCents}-${Math.floor(Date.now() / 1000)}`,
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
       // NÃO engolir o motivo: antes o catch trocava qualquer falha por "tente
       // outro cartão", e um erro de DOCUMENTO ou de endereço virava um problema
       // de cartão aos olhos de quem dava o lance — impossível de diagnosticar
       // sem abrir o log do servidor.
-      const detalhe =
-        err?.response?.pagarme?.errors?.[0]?.message ||
-        err?.response?.errors?.[0]?.message ||
-        err?.response?.message ||
-        err?.message;
+      const detalhe = motivoPagarme(err);
       this.logger.error(
         `Pré-autorização do lance falhou (leilão ${params.auctionId}, ` +
-          `bidder ${params.bidderId}): ${JSON.stringify(err?.response ?? detalhe)}`,
+          `bidder ${params.bidderId}): ` +
+          JSON.stringify((err as { response?: unknown })?.response ?? detalhe),
       );
       throw new BadRequestException(
         detalhe
@@ -735,37 +723,6 @@ export class AuctionsService {
       Date.now() + AUTH_VALIDITY_DAYS * 24 * 60 * 60 * 1000,
     );
     return { orderId: pagarmeOrder.id, chargeId: charge.id, expiresAt };
-  }
-
-  /**
-   * Motivo legível de uma falha da Pagar.me.
-   *
-   * O corpo do erro vem em DUAS formas, e a que interessa aqui é a segunda:
-   * `errors` como LISTA (`[{ message }]`, recusa da adquirente) ou como OBJETO
-   * indexado pelo campo (`{ billing: ['"value" is required'] }`, validação do
-   * request). Ler só a lista devolvia "Erro na comunicação com a Pagar.me" —
-   * que não diz qual campo faltou, justamente no erro em que o campo é a
-   * única informação útil.
-   */
-  private _motivoPagarme(err: unknown): string | null {
-    const resposta = (err as { response?: unknown })?.response;
-    const corpo = ((resposta as { pagarme?: unknown })?.pagarme ?? resposta) as
-      | CorpoErroPagarme
-      | undefined;
-    const errors = corpo?.errors;
-
-    if (Array.isArray(errors)) {
-      const msgs = errors.map((e) => e?.message).filter(Boolean);
-      if (msgs.length) return msgs.join('; ');
-    } else if (errors && typeof errors === 'object') {
-      const partes = Object.entries(errors).map(
-        ([campo, msgs]) =>
-          `${campo}: ${[msgs].flat().filter(Boolean).join(', ')}`,
-      );
-      if (partes.length) return partes.join('; ');
-    }
-
-    return corpo?.message || (err as { message?: string })?.message || null;
   }
 
   /** Cancela (void) uma pré-autorização. Best-effort — não derruba o fluxo. */
@@ -1381,7 +1338,7 @@ export class AuctionsService {
       // escondeu a ausência do `billing_address` acima: o vencedor era mandado
       // trocar de cartão por um erro que não era do cartão, e o servidor não
       // registrava nada.
-      const detalhe = this._motivoPagarme(err);
+      const detalhe = motivoPagarme(err);
       this.logger.error(
         `Cobrança do arremate ${order.id} falhou (comprador ${buyerId}): ` +
           JSON.stringify((err as { response?: unknown })?.response ?? detalhe),
