@@ -20,6 +20,7 @@ import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { ShippingService } from '../shipping/shipping.service';
+import { ConciliacaoService } from '../pagarme/conciliacao.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // Emissor de eventos: só precisamos observar o que foi emitido.
@@ -96,6 +97,15 @@ const authorizedOrder = {
       last_transaction: { status: 'authorized_pending_capture' },
     },
   ],
+};
+
+/**
+ * O portão antes do cancelamento por prazo: nenhum pedido é cancelado sem
+ * perguntar à Pagar.me se foi pago. Default `nao-pago` — os testes que não
+ * falam de conciliação seguem exercitando o cancelamento normal.
+ */
+const mockConciliacaoService = {
+  conciliarPedido: jest.fn().mockResolvedValue({ acao: 'nao-pago' }),
 };
 
 const mockPagarmeService = {
@@ -214,6 +224,7 @@ describe('AuctionsService', () => {
         { provide: CardsService, useValue: mockCardsService },
         { provide: PagarmeService, useValue: mockPagarmeService },
         { provide: ShippingService, useValue: mockShippingService },
+        { provide: ConciliacaoService, useValue: mockConciliacaoService },
         { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
@@ -1343,6 +1354,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([pendingOrder])
         .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
+        // Sem leilao localizado => sem retencao: cai no fallback de cobrar o total.
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]); // anúncio
       mockPagarmeService.post.mockReset().mockResolvedValue({
@@ -1398,6 +1411,8 @@ describe('AuctionsService', () => {
         // Endereço de cobrança: vem do CADASTRO, não do pedido — na retirada
         // em mãos não há endereço de entrega e o cartão exige um do mesmo jeito.
         .mockResolvedValueOnce([mockEndereco])
+        // Sem leilao localizado => sem retencao: cai no fallback de cobrar o total.
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
         .mockResolvedValueOnce([]) // _getActiveBidAuth: sem auth
@@ -1415,6 +1430,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([pendingOrder]) // order
         .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
+        // Sem leilao localizado => sem retencao: cai no fallback de cobrar o total.
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
         .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]) // anúncio
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction por listingId
@@ -1455,6 +1472,243 @@ describe('AuctionsService', () => {
       );
     });
 
+    // ── Captura da retenção (o valor retido É o valor cobrado) ────────────
+    /**
+     * O lance já bloqueou no cartão exatamente o valor da peça. Cobrar de novo
+     * do zero obrigava o comprador a ter o DOBRO do limite: quem desse um lance
+     * de R$500 com R$500 de limite ganhava e não conseguia arrematar.
+     *
+     * Estes testes travam a regra: a peça vira pagamento por CAPTURA, e só o
+     * frete — que a retenção não cobria — vira cobrança nova.
+     */
+    describe('captura da retenção', () => {
+      /** order, endereço, leilão, lance(auth), + as leituras da consolidação. */
+      const encenarCaptura = (over: Record<string, unknown> = {}) => {
+        mockDb = makeDrizzleMock();
+        mockDb.where
+          .mockResolvedValueOnce([{ ...pendingOrder, ...over }])
+          .mockResolvedValueOnce([mockEndereco])
+          .mockResolvedValueOnce([{ id: 'auction_1' }]) // leilão do pedido
+          .mockResolvedValueOnce([
+            { chargeId: 'ch_auth', orderId: 'or_auth', amountInCents: 6000 },
+          ]) // retenção do lance, no valor da peça
+          .mockResolvedValueOnce([{ id: 'auction_1' }]) // _concluir: leilão
+          .mockResolvedValueOnce([
+            { chargeId: 'ch_auth', orderId: 'or_auth', amountInCents: 6000 },
+          ]) // _concluir: auth
+          .mockResolvedValueOnce([{ id: 'auction_1' }]); // _settle: leilão
+      };
+
+      /** Frete aprovado + captura aprovada. */
+      const pagarmeFeliz = () =>
+        mockPagarmeService.post
+          .mockReset()
+          .mockImplementation((rota: string) =>
+            rota.endsWith('/capture')
+              ? Promise.resolve({ id: 'ch_auth', status: 'paid' })
+              : Promise.resolve({
+                  id: 'or_frete',
+                  status: 'paid',
+                  charges: [{ id: 'ch_frete', status: 'paid' }],
+                }),
+          );
+
+      it('CAPTURA a peça em vez de cobrá-la de novo', async () => {
+        encenarCaptura({
+          totalInCents: 6000,
+          shippingInCents: 0,
+          deliveryMethod: 'pickup',
+          shippingServiceId: null,
+        });
+        pagarmeFeliz();
+        service = await buildModule();
+
+        await service.payAuctionOrder(bidderId, 'order_1');
+
+        expect(mockPagarmeService.post).toHaveBeenCalledWith(
+          '/charges/ch_auth/capture',
+          { amount: 6000 },
+          expect.any(String),
+        );
+        // Nenhuma cobrança nova: na retirada em mãos a captura resolve sozinha.
+        const ordersCriadas = mockPagarmeService.post.mock.calls.filter(
+          ([rota]: [string]) => rota === '/orders',
+        );
+        expect(ordersCriadas).toHaveLength(0);
+      });
+
+      it('cobra SÓ o frete à parte, e o frete vai sem split (é da Kolecta)', async () => {
+        encenarCaptura();
+        pagarmeFeliz();
+        service = await buildModule();
+
+        await service.payAuctionOrder(bidderId, 'order_1');
+
+        const [rota, corpo] = mockPagarmeService.post.mock.calls.find(
+          ([r]: [string]) => r === '/orders',
+        );
+        expect(rota).toBe('/orders');
+        expect(corpo.items).toEqual([
+          expect.objectContaining({ amount: 1550 }), // só o frete, não o total
+        ]);
+        expect(corpo.payments[0].credit_card.split).toBeUndefined();
+        // E a peça segue vindo da retenção.
+        expect(mockPagarmeService.post).toHaveBeenCalledWith(
+          '/charges/ch_auth/capture',
+          { amount: 6000 },
+          expect.any(String),
+        );
+      });
+
+      /**
+       * A retenção VIROU o pagamento. Cancelá-la depois desfaria a venda — e o
+       * `_concluirArrematePago` só cancela quando a auth é diferente do charge
+       * consolidado, o que aqui não acontece.
+       */
+      it('NÃO cancela a retenção que acabou de virar pagamento', async () => {
+        encenarCaptura();
+        pagarmeFeliz();
+        service = await buildModule();
+
+        await service.payAuctionOrder(bidderId, 'order_1');
+
+        expect(mockPagarmeService.delete).not.toHaveBeenCalledWith(
+          '/charges/ch_auth',
+        );
+      });
+
+      /**
+       * A ordem é frete → captura porque a recusa provável é a do frete
+       * (limite novo). Falhando primeiro o que tem mais chance de falhar, o
+       * abandono é limpo: a retenção fica intacta e ele tenta de novo.
+       */
+      it('frete recusado NÃO captura a peça', async () => {
+        encenarCaptura();
+        mockPagarmeService.post.mockReset().mockResolvedValue({
+          id: 'or_frete',
+          status: 'failed',
+          charges: [{ id: 'ch_frete', status: 'failed' }],
+        });
+        service = await buildModule();
+
+        await expect(
+          service.payAuctionOrder(bidderId, 'order_1'),
+        ).rejects.toThrow(BadRequestException);
+
+        expect(mockPagarmeService.post).not.toHaveBeenCalledWith(
+          '/charges/ch_auth/capture',
+          expect.anything(),
+          expect.anything(),
+        );
+        expect(mockWalletService.hold).not.toHaveBeenCalled();
+      });
+
+      /** Frete pago e peça não: ele não recebe nada pelo frete. Devolve. */
+      it('ESTORNA o frete se a captura da peça falhar depois', async () => {
+        encenarCaptura();
+        mockPagarmeService.post
+          .mockReset()
+          .mockImplementation((rota: string) =>
+            rota.endsWith('/capture')
+              ? Promise.reject(new Error('captura recusada'))
+              : Promise.resolve({
+                  id: 'or_frete',
+                  status: 'paid',
+                  charges: [{ id: 'ch_frete', status: 'paid' }],
+                }),
+          );
+        service = await buildModule();
+
+        await expect(
+          service.payAuctionOrder(bidderId, 'order_1'),
+        ).rejects.toThrow(BadRequestException);
+
+        expect(mockPagarmeService.delete).toHaveBeenCalledWith(
+          '/charges/ch_frete',
+        );
+        expect(mockWalletService.hold).not.toHaveBeenCalled();
+      });
+
+      /**
+       * Capturar acima do autorizado não é permitido, e capturar a menos
+       * deixaria a diferença sem pagamento. Valor que não bate → cobra do zero.
+       */
+      it('cai no fallback quando o autorizado não cobre a peça', async () => {
+        mockDb = makeDrizzleMock();
+        mockDb.where
+          .mockResolvedValueOnce([pendingOrder])
+          .mockResolvedValueOnce([mockEndereco])
+          .mockResolvedValueOnce([{ id: 'auction_1' }])
+          .mockResolvedValueOnce([
+            { chargeId: 'ch_auth', orderId: 'or_auth', amountInCents: 5000 },
+          ]) // autorizado MENOR que a peça (6000)
+          .mockResolvedValueOnce([
+            { recipientId: 're_seller', canReceive: true },
+          ])
+          .mockResolvedValueOnce([{ title: 'Hot Wheels' }])
+          .mockResolvedValueOnce([{ id: 'auction_1' }])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([{ id: 'auction_1' }]);
+        mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
+        service = await buildModule();
+
+        await service.payAuctionOrder(bidderId, 'order_1');
+
+        expect(mockPagarmeService.post).toHaveBeenCalledWith(
+          '/orders',
+          expect.objectContaining({
+            items: expect.arrayContaining([
+              expect.objectContaining({ amount: 6000 }),
+            ]),
+          }),
+          expect.any(String),
+        );
+        expect(mockPagarmeService.post).not.toHaveBeenCalledWith(
+          '/charges/ch_auth/capture',
+          expect.anything(),
+          expect.anything(),
+        );
+      });
+
+      /**
+       * A dúvida (`null` da consulta) pesa para o lado da CAPTURA: cobrar do
+       * zero com a retenção viva prenderia os dois valores — o problema que
+       * esta mudança existe para acabar. Só a certeza de que sumiu desvia.
+       */
+      it('retenção comprovadamente SUMIDA cai no fallback', async () => {
+        mockDb = makeDrizzleMock();
+        mockDb.where
+          .mockResolvedValueOnce([pendingOrder])
+          .mockResolvedValueOnce([mockEndereco])
+          .mockResolvedValueOnce([{ id: 'auction_1' }])
+          .mockResolvedValueOnce([
+            { chargeId: 'ch_auth', orderId: 'or_auth', amountInCents: 6000 },
+          ])
+          .mockResolvedValueOnce([
+            { recipientId: 're_seller', canReceive: true },
+          ])
+          .mockResolvedValueOnce([{ title: 'Hot Wheels' }])
+          .mockResolvedValueOnce([{ id: 'auction_1' }])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([{ id: 'auction_1' }]);
+        // A retenção não está mais lá.
+        mockPagarmeService.get.mockResolvedValueOnce({
+          status: 'canceled',
+          last_transaction: { status: 'canceled' },
+        });
+        mockPagarmeService.post.mockReset().mockResolvedValue(paidOrder);
+        service = await buildModule();
+
+        await service.payAuctionOrder(bidderId, 'order_1');
+
+        expect(mockPagarmeService.post).toHaveBeenCalledWith(
+          '/orders',
+          expect.anything(),
+          expect.any(String),
+        );
+      });
+    });
+
     /**
      * O antifraude lê a descrição dos itens e o destino. Uma linha só
      * ("Arremate Kolecta #abc123"), sem endereço, chega como um valor solto —
@@ -1466,6 +1720,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([{ ...pendingOrder, addressId: 'addr_1' }])
         .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
+        // Sem leilao localizado => sem retencao: cai no fallback de cobrar o total.
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]) // anúncio
         .mockResolvedValueOnce([
@@ -1509,6 +1765,8 @@ describe('AuctionsService', () => {
           },
         ])
         .mockResolvedValueOnce([mockEndereco])
+        // Sem leilao localizado => sem retencao: cai no fallback de cobrar o total.
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ title: 'Mazda RX7 FD3S' }])
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
@@ -1544,6 +1802,8 @@ describe('AuctionsService', () => {
           { ...pendingOrder, totalInCents: 1550, shippingInCents: 1550 },
         ])
         .mockResolvedValueOnce([mockEndereco])
+        // Sem leilao localizado => sem retencao: cai no fallback de cobrar o total.
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }])
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
@@ -1578,6 +1838,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([pendingOrder])
         .mockResolvedValueOnce([mockEndereco]) // endereço de cobrança
+        // Sem leilao localizado => sem retencao: cai no fallback de cobrar o total.
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ id: 'auction_1' }]) // auction (p/ ler a auth)
         .mockResolvedValueOnce([]) // sem pré-auth de pé
@@ -1640,6 +1902,8 @@ describe('AuctionsService', () => {
       mockDb.where
         .mockResolvedValueOnce([pendingOrder])
         .mockResolvedValueOnce([mockEndereco])
+        // Sem leilao localizado => sem retencao: cai no fallback de cobrar o total.
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([{ title: 'Hot Wheels Sam Walton' }]); // anúncio
       mockPagarmeService.post.mockReset().mockRejectedValue({
@@ -1816,6 +2080,53 @@ describe('AuctionsService', () => {
       expect(result).toEqual({ expired: [], offered: [], reopened: [] });
     });
 
+    /**
+     * O PORTÃO: ninguém é cancelado sem perguntar à Pagar.me.
+     *
+     * Cancelar um pedido já pago é o pior desfecho possível — o item vai ao 2º
+     * colocado com o dinheiro do 1º capturado. Faltou pouco em 12/08: um
+     * arremate pago pelo painel ficou `pending_payment` porque o webhook falhou,
+     * e este cron o cancelaria no dia seguinte.
+     */
+    it('NÃO cancela quando a Pagar.me diz que o pedido está PAGO', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([overdueOrder]);
+      mockConciliacaoService.conciliarPedido
+        .mockReset()
+        .mockResolvedValue({ acao: 'liquidado' });
+      service = await buildModule();
+
+      const result = await service.expireOverduePendingPayments();
+
+      expect(result.expired).toEqual([]);
+      expect(mockConciliacaoService.conciliarPedido).toHaveBeenCalledWith(
+        'order_ov',
+      );
+      mockConciliacaoService.conciliarPedido
+        .mockReset()
+        .mockResolvedValue({ acao: 'nao-pago' });
+    });
+
+    /**
+     * Não saber não autoriza destruir uma venda: se a consulta falhar, o
+     * cancelamento espera a próxima rodada.
+     */
+    it('NÃO cancela quando não deu para conferir na Pagar.me', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([overdueOrder]);
+      mockConciliacaoService.conciliarPedido
+        .mockReset()
+        .mockResolvedValue({ acao: 'erro-consulta', detalhe: 'timeout' });
+      service = await buildModule();
+
+      const result = await service.expireOverduePendingPayments();
+
+      expect(result.expired).toEqual([]);
+      mockConciliacaoService.conciliarPedido
+        .mockReset()
+        .mockResolvedValue({ acao: 'nao-pago' });
+    });
+
     it('REABRE o anúncio quando não há 2º colocado apto', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
@@ -1974,6 +2285,7 @@ describe('AuctionsService — reenviar aviso de arremate', () => {
       mockCardsService as any,
       mockPagarmeService as any,
       mockShippingService as any,
+      mockConciliacaoService as any,
       emitter as any,
     );
     return { service, emitter };

@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { PagarmeService } from './pagarme.service';
@@ -18,6 +19,23 @@ export function eventoDeOrderPaga(metadataType?: string): string {
   return metadataType === 'bid_payment'
     ? 'pagarme.auction.paid'
     : 'pagarme.order.paid';
+}
+
+/** O pedaço da order da Pagar.me que a conciliação precisa ler. */
+interface OrderPagarme {
+  id?: string;
+  status?: string;
+  metadata?: Record<string, unknown> & { type?: string };
+  charges?: { id?: string; status?: string }[];
+}
+
+/** O pedaço da cobrança que a liberação de retenção precisa ler. */
+interface ChargePagarme {
+  status?: string;
+  amount?: number;
+  paid_at?: string | null;
+  paid_amount?: number;
+  last_transaction?: { status?: string };
 }
 
 /** Status de uma cobrança apenas AUTORIZADA (retenção, sem captura). */
@@ -64,13 +82,77 @@ export class ConciliacaoService {
   private readonly logger = new Logger(ConciliacaoService.name);
 
   constructor(
-    @Inject(DATABASE_CONNECTION) private readonly db: any,
+    @Inject(DATABASE_CONNECTION)
+    private readonly db: LibSQLDatabase<typeof schema>,
     private readonly pagarme: PagarmeService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /** Estados em que ainda faz sentido perguntar à Pagar.me. */
   private readonly PENDENTES = ['pending', 'pending_payment'];
+
+  /** Teto de pedidos por varredura — ver `conciliarPendentes`. */
+  private readonly TETO_POR_VARREDURA = 50;
+
+  /**
+   * Varre os pedidos em aberto e concilia cada um contra a Pagar.me.
+   *
+   * Sem cadência por faixa de idade nem contador de tentativas por pedido: a
+   * plataforma inteira tem dezenas de pedidos, e a máquina de estado que eu
+   * havia proposto seria mais peça para dessincronizar do que problema
+   * resolvido — que é exatamente a doença que este serviço trata. Uma varredura
+   * simples cobre tudo, e um pedido criado enquanto o processo estava fora
+   * entra na rodada seguinte sozinho.
+   *
+   * O teto existe para o dia em que o volume mudar; quando ele morder, o log
+   * diz quantos ficaram de fora. Truncar em silêncio faria a varredura parecer
+   * completa sem ser.
+   */
+  async conciliarPendentes(): Promise<{
+    verificados: number;
+    liquidados: string[];
+    semReferencia: string[];
+    errosDeConsulta: string[];
+  }> {
+    const pendentes = await this.db
+      .select({ id: schema.orders.id })
+      .from(schema.orders)
+      .where(inArray(schema.orders.status, this.PENDENTES));
+
+    const liquidados: string[] = [];
+    const semReferencia: string[] = [];
+    const errosDeConsulta: string[] = [];
+    const lote = pendentes.slice(0, this.TETO_POR_VARREDURA);
+
+    if (pendentes.length > lote.length) {
+      this.logger.warn(
+        `Varredura truncada: ${pendentes.length} pedidos em aberto, ` +
+          `${lote.length} conciliados nesta rodada. Os demais entram na próxima.`,
+      );
+    }
+
+    for (const { id } of lote) {
+      try {
+        const r = await this.conciliarPedido(id);
+        if (r.acao === 'liquidado') liquidados.push(id);
+        else if (r.acao === 'sem-referencia') semReferencia.push(id);
+        else if (r.acao === 'erro-consulta') errosDeConsulta.push(id);
+      } catch (err: unknown) {
+        // Um pedido problemático não pode parar a varredura dos outros.
+        errosDeConsulta.push(id);
+        this.logger.error(
+          `Conciliação do pedido ${id} lançou: ${motivoPagarme(err)}`,
+        );
+      }
+    }
+
+    return {
+      verificados: lote.length,
+      liquidados,
+      semReferencia,
+      errosDeConsulta,
+    };
+  }
 
   /**
    * Cancela uma RETENÇÃO (pré-autorização não capturada), devolvendo o limite
@@ -89,9 +171,9 @@ export class ConciliacaoService {
    * isso só age no status de retenção, e recusa qualquer outro.
    */
   async liberarRetencao(chargeId: string): Promise<ResultadoLiberacao> {
-    let charge: any;
+    let charge: ChargePagarme | undefined;
     try {
-      charge = await this.pagarme.get(`/charges/${chargeId}`);
+      charge = await this.pagarme.get<ChargePagarme>(`/charges/${chargeId}`);
     } catch (err: unknown) {
       const detalhe = motivoPagarme(err) ?? 'falha na consulta';
       return {
@@ -215,9 +297,11 @@ export class ConciliacaoService {
       };
     }
 
-    let remoto: any;
+    let remoto: OrderPagarme | undefined;
     try {
-      remoto = await this.pagarme.get(`/orders/${pagarmeOrderId}`);
+      remoto = await this.pagarme.get<OrderPagarme>(
+        `/orders/${pagarmeOrderId}`,
+      );
     } catch (err: unknown) {
       const detalhe = motivoPagarme(err) ?? 'falha na consulta';
       this.logger.error(

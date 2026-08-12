@@ -200,6 +200,59 @@ describe('ConciliacaoService', () => {
     expect((await service.conciliarPedido('nope')).acao).toBe('sem-referencia');
   });
 
+  describe('conciliarPendentes (varredura)', () => {
+    it('concilia cada pedido em aberto e reporta o que divergia', async () => {
+      db.where
+        .mockResolvedValueOnce([{ id: 'order_1' }, { id: 'order_2' }]) // varredura
+        .mockResolvedValueOnce([pedidoPendente]) // order_1
+        .mockResolvedValueOnce([{ ...pedidoPendente, id: 'order_2' }]); // order_2
+      mockPagarme.get
+        .mockResolvedValueOnce({
+          id: 'or_1',
+          status: 'paid',
+          metadata: { type: 'bid_payment' },
+          charges: [{ id: 'ch_1', status: 'paid' }],
+        })
+        .mockResolvedValueOnce({ id: 'or_2', status: 'pending', charges: [] });
+      service = await build();
+
+      const r = await service.conciliarPendentes();
+
+      expect(r.verificados).toBe(2);
+      expect(r.liquidados).toEqual(['order_1']);
+      expect(emitter.emitAsync).toHaveBeenCalledTimes(1);
+    });
+
+    /** Um pedido problemático não pode parar a varredura dos outros. */
+    it('segue varrendo quando um pedido explode', async () => {
+      db.where
+        .mockResolvedValueOnce([{ id: 'order_1' }, { id: 'order_2' }])
+        .mockRejectedValueOnce(new Error('banco caiu'))
+        .mockResolvedValueOnce([{ ...pedidoPendente, id: 'order_2' }]);
+      mockPagarme.get.mockResolvedValueOnce({
+        id: 'or_2',
+        status: 'paid',
+        charges: [{ id: 'ch_2', status: 'paid' }],
+      });
+      service = await build();
+
+      const r = await service.conciliarPendentes();
+
+      expect(r.errosDeConsulta).toContain('order_1');
+      expect(r.liquidados).toEqual(['order_2']);
+    });
+
+    it('não faz nada quando não há pedido em aberto', async () => {
+      db.where.mockResolvedValueOnce([]);
+      service = await build();
+
+      const r = await service.conciliarPendentes();
+
+      expect(r.verificados).toBe(0);
+      expect(mockPagarme.get).not.toHaveBeenCalled();
+    });
+  });
+
   /**
    * A retenção do lance ficava de pé depois do arremate pago: o comprador
    * terminava com o valor cobrado E o valor retido comprometidos ao mesmo

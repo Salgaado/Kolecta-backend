@@ -7,6 +7,7 @@ import { registerPagarmeDiag } from './pagarme-diagnostics';
 import { WalletModule } from '../wallet/wallet.module';
 import { DatabaseModule } from '../database/database.module';
 import { ConciliacaoService } from './conciliacao.service';
+import { ConciliacaoCron } from './conciliacao.cron';
 
 /**
  * Núcleo da integração Pagar.me.
@@ -18,7 +19,12 @@ import { ConciliacaoService } from './conciliacao.service';
  */
 @Module({
   imports: [HttpModule, WalletModule, DatabaseModule],
-  providers: [PagarmeConfigService, PagarmeService, ConciliacaoService],
+  providers: [
+    PagarmeConfigService,
+    PagarmeService,
+    ConciliacaoService,
+    ConciliacaoCron,
+  ],
   controllers: [PagarmeWebhookController],
   exports: [PagarmeService, PagarmeConfigService, ConciliacaoService],
 })
