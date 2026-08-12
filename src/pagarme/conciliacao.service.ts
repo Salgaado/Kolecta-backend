@@ -102,18 +102,37 @@ export class ConciliacaoService {
       };
     }
 
-    const status: string | null = charge?.status ?? null;
-    if (status !== STATUS_RETENCAO) {
+    // O sinal de retenção fica em `last_transaction.status`, NÃO em
+    // `charge.status`: uma cobrança pré-autorizada aparece como `pending` no
+    // charge, e é a TRANSAÇÃO que diz `authorized_pending_capture`. Já estava
+    // documentado em `auctions.service.ts` (ensaio de 31/07) — a primeira
+    // versão desta rota leu o campo errado e recusou as duas retenções presas.
+    const statusCharge: string | null = charge?.status ?? null;
+    const statusTransacao: string | null =
+      charge?.last_transaction?.status ?? null;
+    const status = statusTransacao ?? statusCharge;
+
+    // Redundante de propósito: mesmo que a transação diga retenção, um charge
+    // `paid` significa dinheiro movimentado, e aí o DELETE é estorno. Entre
+    // duas leituras discordantes, vale a mais conservadora.
+    const houvePagamento =
+      statusCharge === 'paid' ||
+      !!charge?.paid_at ||
+      (typeof charge?.paid_amount === 'number' && charge.paid_amount > 0);
+
+    if (status !== STATUS_RETENCAO || houvePagamento) {
       this.logger.warn(
-        `Liberação recusada: ${chargeId} está '${status}', não '${STATUS_RETENCAO}'.`,
+        `Liberação recusada: ${chargeId} — charge '${statusCharge}', ` +
+          `transação '${statusTransacao}'.`,
       );
       return {
         chargeId,
         statusPagarme: status,
         acao: 'nao-e-retencao',
         detalhe:
-          `A cobrança está '${status}'. Só uma retenção ('${STATUS_RETENCAO}') ` +
-          'pode ser liberada — cancelar uma cobrança paga seria um estorno.',
+          `A cobrança está '${statusCharge}' e a transação '${statusTransacao}'. ` +
+          `Só uma retenção ('${STATUS_RETENCAO}') pode ser liberada — ` +
+          'cancelar uma cobrança paga seria um estorno.',
       };
     }
 

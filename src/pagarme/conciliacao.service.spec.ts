@@ -206,11 +206,18 @@ describe('ConciliacaoService', () => {
    * tempo. Corrigido para os próximos; as já criadas precisam ser soltas.
    */
   describe('liberarRetencao', () => {
-    it('cancela a retenção e devolve o limite', async () => {
+    /**
+     * A forma REAL de uma retenção na Pagar.me: o charge aparece como
+     * `pending` e quem diz `authorized_pending_capture` é a TRANSAÇÃO. Ler o
+     * status no charge fez a primeira versão desta rota recusar as duas
+     * retenções presas do comprador de 11/08.
+     */
+    it('cancela a retenção lendo o status da TRANSAÇÃO, não do charge', async () => {
       mockPagarme.get.mockResolvedValueOnce({
         id: 'ch_1',
-        status: 'authorized_pending_capture',
+        status: 'pending',
         amount: 20000,
+        last_transaction: { status: 'authorized_pending_capture' },
       });
       mockPagarme.delete.mockResolvedValueOnce({});
       service = await build();
@@ -220,6 +227,38 @@ describe('ConciliacaoService', () => {
       expect(r.acao).toBe('liberada');
       expect(mockPagarme.delete).toHaveBeenCalledWith('/charges/ch_1');
       expect(r.detalhe).toContain('200.00');
+    });
+
+    it('aceita também quando o status vem no próprio charge', async () => {
+      mockPagarme.get.mockResolvedValueOnce({
+        id: 'ch_1',
+        status: 'authorized_pending_capture',
+        amount: 20000,
+      });
+      mockPagarme.delete.mockResolvedValueOnce({});
+      service = await build();
+
+      expect((await service.liberarRetencao('ch_1')).acao).toBe('liberada');
+    });
+
+    /**
+     * Entre duas leituras discordantes vale a mais conservadora: dinheiro
+     * movimentado nunca é retenção, diga a transação o que disser.
+     */
+    it('recusa se o charge acusa pagamento, mesmo com a transação dizendo retenção', async () => {
+      mockPagarme.get.mockResolvedValueOnce({
+        id: 'ch_x',
+        status: 'paid',
+        amount: 20000,
+        paid_amount: 20000,
+        last_transaction: { status: 'authorized_pending_capture' },
+      });
+      service = await build();
+
+      const r = await service.liberarRetencao('ch_x');
+
+      expect(r.acao).toBe('nao-e-retencao');
+      expect(mockPagarme.delete).not.toHaveBeenCalled();
     });
 
     /**
