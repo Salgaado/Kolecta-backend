@@ -41,26 +41,49 @@ export const CATALOGO_SERVICOS: readonly ServicoEnvio[] = [
     nacional: true,
     aviso: 'Só aceita pacotes de até 300 g e 16×11×3 cm.',
   },
+  // ── Jadlog: fora da plataforma desde 12/08/2026 ────────────────────────────
+  // Ela RECUSA envio não-comercial (sem nota fiscal) partindo de alguns estados,
+  // e todo envio da Kolecta é assim — `non_commercial: true` fixo no carrinho,
+  // porque quem vende aqui é pessoa física.
+  //
+  // O veneno é que a recusa NÃO aparece na cotação: conferido contra a API de
+  // produção em 12/08, o `/shipment/calculate` devolve a Jadlog com preço e
+  // prazo normais (com ou sem `options.non_commercial`), e só o `/cart` responde
+  // "Esta transportadora não aceita envios não-comerciais partindo deste
+  // estado". Ou seja: o comprador escolhe, paga, e a etiqueta é impossível.
+  //
+  // Aconteceu no pedido 0c57df5a (Foz do Iguaçu/PR → Londrina/PR, 11/08): frete
+  // pago, etiqueta `failed`, nada postado. Placar da Jadlog em produção: 1
+  // tentativa, 1 falha.
+  //
+  // Volta ao ar quando o Melhor Envio disser em QUAIS estados a regra vale (aí
+  // vira restrição por UF de origem) ou quando emitirmos com nota fiscal.
   {
     id: 3,
     transportadora: 'Jadlog',
     nome: '.Package',
     nacional: false,
-    aviso: 'Postagem em agência Jadlog. Cobertura menor no Norte.',
+    aviso:
+      'Recusa envio sem nota fiscal partindo de alguns estados (o PR é um ' +
+      'deles) — e a recusa só aparece na hora de emitir a etiqueta.',
   },
   {
     id: 4,
     transportadora: 'Jadlog',
     nome: '.Com',
     nacional: false,
-    aviso: 'Postagem em agência Jadlog. Cobertura menor no Norte.',
+    aviso:
+      'Recusa envio sem nota fiscal partindo de alguns estados (o PR é um ' +
+      'deles) — e a recusa só aparece na hora de emitir a etiqueta.',
   },
   {
     id: 27,
     transportadora: 'Jadlog',
     nome: '.Package Centralizado',
     nacional: false,
-    aviso: 'Postagem em agência Jadlog. Cobertura menor no Norte.',
+    aviso:
+      'Recusa envio sem nota fiscal partindo de alguns estados (o PR é um ' +
+      'deles) — e a recusa só aparece na hora de emitir a etiqueta.',
   },
   {
     id: 31,
@@ -148,9 +171,16 @@ export function nomeDoServico(id: number): string {
  *
  * Vazio (`MELHOR_ENVIO_SERVICOS=`) desliga o corte e volta a mostrar tudo que a
  * conta habilita. É a saída rápida se o filtro deixar alguma região sem opção.
+ *
+ * O padrão perdeu a Jadlog (id 3) em 12/08/2026 — o motivo está no catálogo,
+ * junto da entrada dela. O padrão é o que vale para os 218 vendedores que nunca
+ * abriram as configurações de envio, então tirar daqui é o que realmente
+ * desliga a transportadora.
  */
 export function servicosDaPlataforma(): number[] {
-  return parseServicos(process.env.MELHOR_ENVIO_SERVICOS ?? '1,2,3,17,31,33') ?? [];
+  return (
+    parseServicos(process.env.MELHOR_ENVIO_SERVICOS ?? '1,2,17,31,33') ?? []
+  );
 }
 
 /** CSV de ids ("1,2,17") → lista de números. `null` quando não há nada gravado. */
