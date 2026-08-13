@@ -122,6 +122,10 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
 
   // ─── Perfil público da loja (editável pelo vendedor) ────────────────────────
   storeName: text('store_name'),
+  // URL amigável da loja (kolecta.com.br/<slug>), única. Gerada do store_name no
+  // backfill/ao salvar; editar o handle vira perk de assinatura depois. Ver
+  // docs/loja-personalizada e o ensure-seller-slug.ts.
+  slug: text('slug').unique(),
   // Foto da loja. Upload próprio (R2, via /api/media/upload) ou a imagem do
   // Clerk copiada no primeiro acesso. null = cai nas iniciais no front.
   avatarUrl: text('avatar_url'),
