@@ -34,6 +34,7 @@ import {
   type ConfigLeilao,
 } from './colocar-em-leilao';
 import { montarPatch } from './completar-em-lote';
+import { MAX_DESTAQUES } from './destaques';
 import {
   isInstructionRow,
   validateImportRow,
@@ -721,6 +722,97 @@ export class ListingsService {
     await this.db.batch(updates as any);
     this.logger.log(
       `[reorder] ${ids.length} anúncios reordenados (vendedor ${sellerId}).`,
+    );
+  }
+
+  // ── Destaques da loja ────────────────────────────────────────────────────
+  //
+  // Os poucos anúncios que o vendedor quer numa faixa própria, sempre acima da
+  // grade da loja dele. Não confundir com `reorder` acima: aquele é a ordem de
+  // TODA a vitrine, este é uma vitrine curta que sobrevive à paginação e ao
+  // scroll. Nem com `featuredUntil`, que é destaque de plataforma e expira.
+  //
+  // `ids` chega com a lista COMPLETA de destaques (não é "adicione este"): é o
+  // mesmo formato do reorder e evita o vaivém de um endpoint por item. Lista
+  // vazia limpa todos.
+  //
+  // A ordem do array NÃO define a ordem na faixa — quem define é `position`, a
+  // do arrastar-para-reordenar (ver o ORDER BY em `getSellerListings`). Aqui
+  // `ids` é conjunto, não sequência.
+  async destacar(sellerId: string, ids: string[]): Promise<void> {
+    if (ids.length > MAX_DESTAQUES) {
+      throw new BadRequestException(
+        `No máximo ${MAX_DESTAQUES} anúncios em destaque.`,
+      );
+    }
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('Anúncio repetido na lista de destaques.');
+    }
+
+    // Uma consulta resolve dono e status de todos os ids. O reorder pode se dar
+    // ao luxo de ignorar id de terceiro em silêncio (a ordem dele não muda);
+    // aqui não: o vendedor precisa saber que aquele item NÃO ficou destacado,
+    // senão ele sai da tela achando que fixou e a loja não mostra nada.
+    const encontrados = ids.length
+      ? await this.db
+          .select({
+            id: schema.listings.id,
+            status: schema.listings.status,
+            storePinnedAt: schema.listings.storePinnedAt,
+          })
+          .from(schema.listings)
+          .where(
+            and(
+              eq(schema.listings.sellerId, sellerId),
+              inArray(schema.listings.id, ids),
+            ),
+          )
+      : [];
+
+    if (encontrados.length !== ids.length) {
+      throw new BadRequestException(
+        'Algum anúncio não existe ou não é desta loja.',
+      );
+    }
+    if (encontrados.some((l) => l.status !== 'active')) {
+      throw new BadRequestException(
+        'Só anúncio ativo pode ficar em destaque na loja.',
+      );
+    }
+
+    // Preserva o instante de quem JÁ estava destacado. Sem isso, salvar a lista
+    // depois de acrescentar um item daria o mesmo `now()` a todos e embaralharia
+    // a ordem dos que já estavam lá — o vendedor mexe em um e a faixa inteira
+    // se reorganiza sozinha.
+    const agora = new Date();
+    const anterior = new Map(encontrados.map((l) => [l.id, l.storePinnedAt]));
+
+    const updates = [
+      // Limpa o que saiu da lista. Vem primeiro porque o batch roda em ordem, e
+      // um item que continua na lista é regravado logo em seguida.
+      this.db
+        .update(schema.listings)
+        .set({ storePinnedAt: null })
+        .where(eq(schema.listings.sellerId, sellerId)),
+      ...ids.map((id) =>
+        this.db
+          .update(schema.listings)
+          .set({ storePinnedAt: anterior.get(id) ?? agora })
+          .where(
+            and(
+              eq(schema.listings.id, id),
+              eq(schema.listings.sellerId, sellerId),
+            ),
+          ),
+      ),
+    ];
+    // `updatedAt` de propósito intocado: destacar não é editar o anúncio, e
+    // marcar a loja inteira como "atualizada agora" mentiria para quem lê esse
+    // campo (a fila de moderação, entre outros).
+    await this.db.batch(updates as any);
+
+    this.logger.log(
+      `[destaques] ${ids.length} anúncios em destaque (vendedor ${sellerId}).`,
     );
   }
 

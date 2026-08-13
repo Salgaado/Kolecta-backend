@@ -11,6 +11,7 @@ import {
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { MAX_DESTAQUES } from '../destaques';
 
 export class CreateListingDto {
   @IsString()
@@ -243,6 +244,16 @@ export class ReorderListingsDto {
   @IsArray()
   @ArrayNotEmpty()
   @ArrayMaxSize(2000)
+  @IsString({ each: true })
+  ids: string[];
+}
+
+// Destaques da loja: a lista COMPLETA de anúncios fixados no topo, na ordem em
+// que o vendedor os fixou. Lista vazia é válida e significa "nenhum destaque" —
+// é como o vendedor limpa a faixa, então nada de @ArrayNotEmpty aqui.
+export class DestacarListingsDto {
+  @IsArray()
+  @ArrayMaxSize(MAX_DESTAQUES)
   @IsString({ each: true })
   ids: string[];
 }

@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -196,6 +197,18 @@ export class AdminController {
     @Body('verified') verified: boolean,
   ) {
     return { data: await this.adminService.verifySeller(id, verified) };
+  }
+
+  // ── DELETE /api/admin/sellers/:id/cover ─────────────────────────────────
+  //
+  // Derruba a capa da loja. A capa é a única imagem pública da plataforma que
+  // NÃO passa pela fila de moderação (anúncio passa), e `/vendedor/:slug` é
+  // página aberta e indexável. Sem esta rota, tirar do ar uma capa imprópria
+  // exigiria mexer no banco na mão.
+  @Delete('sellers/:id/cover')
+  @HttpCode(HttpStatus.OK)
+  async removeSellerCover(@Param('id') id: string) {
+    return { data: await this.adminService.removeSellerCover(id) };
   }
 
   // ── GET /api/admin/disputes ──────────────────────────────────────────────
