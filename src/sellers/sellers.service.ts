@@ -8,6 +8,7 @@ import { eq, and, sql, inArray, getTableColumns } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { slugUnico } from '../common/slug';
+import { nomeDeExibicaoDoVendedor } from '../common/nome-do-vendedor';
 import {
   users,
   sellerProfiles,
@@ -49,7 +50,13 @@ export class SellersService {
     const profile = await this.db
       .select({
         id: users.id,
-        name: users.name,
+        // Nome da LOJA, não o do Clerk. Esta era a única tela pública que lia
+        // `users.name` cru: a vitrine e o leilão já resolviam pelo store_name,
+        // então "Culture TCG" no card virava o nome pessoal do dono ao clicar
+        // — inclusive no `<title>` indexado e na URL, que sai do store_name.
+        // `storeName` continua vindo separado logo abaixo, para quem precisar
+        // saber se a loja tem nome próprio (é o que o front usa no aviso).
+        name: nomeDeExibicaoDoVendedor(),
         email: users.email,
         bio: sellerProfiles.bio,
         avatarUrl: sellerProfiles.avatarUrl,

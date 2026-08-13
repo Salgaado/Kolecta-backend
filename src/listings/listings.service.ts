@@ -19,6 +19,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
+import { nomeDeExibicaoDoVendedor } from '../common/nome-do-vendedor';
 import * as Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
@@ -100,17 +101,10 @@ export class ListingsService {
    */
   /**
    * Nome do vendedor na vitrine: o da LOJA quando existir, senão o pessoal.
-   *
-   * Quem vende como loja ("Culture TCG", "Safari TCG") cadastra o nome em
-   * `seller_profiles.store_name`, mas a vitrine mostrava sempre `users.name` —
-   * que para quem entrou só com e-mail e senha é a parte local do endereço.
-   * O NULLIF trata string vazia como ausente: nome em branco é o mesmo que não
-   * ter nome, e sem ele o COALESCE devolveria '' e o card ficaria sem vendedor.
+   * A regra e o porquê moram em `common/nome-do-vendedor.ts`, compartilhados
+   * com o leilão e com o perfil público da loja.
    */
-  private readonly sellerDisplayNameExpr = sql<string | null>`COALESCE(
-    NULLIF(TRIM(${schema.sellerProfiles.storeName}), ''),
-    NULLIF(TRIM(${schema.users.name}), '')
-  )`;
+  private readonly sellerDisplayNameExpr = nomeDeExibicaoDoVendedor();
 
   /**
    * A versão com apelido serve só ao SELECT. No WHERE ela vira a referência

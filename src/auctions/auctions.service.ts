@@ -26,6 +26,7 @@ import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { CARTAO_HABILITADO, LANCE_INDISPONIVEL } from '../common/payment-flags';
+import { nomeDeExibicaoDoVendedor } from '../common/nome-do-vendedor';
 import { calcGatewayFeeInCents } from '../common/gateway-fees';
 import { WalletService } from '../wallet/wallet.service';
 import { FounderService } from '../founder/founder.service';
@@ -149,20 +150,16 @@ export class AuctionsService {
   ) {}
 
   /**
-   * Nome de exibição do vendedor, na mesma régua da vitrine
-   * (`listings.service.ts`): quem vende como loja cadastra o nome em
-   * `seller_profiles.store_name`, e é ele que deve aparecer — cair em
-   * `users.name` mostraria a parte local do e-mail de quem entrou sem loja.
+   * Nome de exibição do vendedor, na mesma régua da vitrine — a regra mora em
+   * `common/nome-do-vendedor.ts`.
    *
    * O leilão não trazia nome nenhum: o select tinha só `sellerId`, e a página
    * de lance chumbava "Vendedor Kolecta" no lugar. Duas lojas diferentes
    * apareciam com o mesmo nome, e o comprador não sabia de quem estava
    * comprando na hora de dar lance.
    */
-  private readonly sellerDisplayName = sql<string | null>`COALESCE(
-    NULLIF(TRIM(${schema.sellerProfiles.storeName}), ''),
-    NULLIF(TRIM(${schema.users.name}), '')
-  )`.as('seller_name');
+  private readonly sellerDisplayName =
+    nomeDeExibicaoDoVendedor().as('seller_name');
 
   private readonly auctionListingSelect = {
     pausedAt: schema.auctions.pausedAt,
