@@ -5,6 +5,12 @@ import { SellersService } from './sellers.service';
 export class SellersController {
   constructor(private readonly sellersService: SellersService) {}
 
+  // Antes de `:id` de propósito: senão "by-slug" seria capturado como um id.
+  @Get('by-slug/:slug')
+  async getProfileBySlug(@Param('slug') slug: string) {
+    return this.sellersService.getSellerBySlug(slug);
+  }
+
   @Get(':id')
   async getProfile(@Param('id') id: string) {
     return this.sellersService.getSellerProfile(id);

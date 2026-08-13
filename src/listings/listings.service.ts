@@ -59,6 +59,8 @@ export { CreateListingDto, UpdateListingDto };
 
 export type ListingRecord = typeof schema.listings.$inferSelect & {
   sellerName?: string | null;
+  /** Slug público da loja do vendedor (vanity URL). Pode ser null em lojas antigas. */
+  sellerSlug?: string | null;
 };
 
 /** Filtros da vitrine pública. Tudo opcional; ausente = não restringe. */
@@ -160,6 +162,8 @@ export class ListingsService {
       .select({
         ...getTableColumns(schema.listings),
         sellerName: this.sellerDisplayName,
+        // Slug da loja: deixa o card linkar direto pra vitrine (kolecta.com.br/loja).
+        sellerSlug: schema.sellerProfiles.slug,
         // Número do Fundador junto do anúncio, como o nome do vendedor. Sem
         // isto o front buscava o perfil de cada vendedor só para saber se
         // mostra o selo: numa lista de 20 itens, 20 requisições de ~3s.
@@ -288,6 +292,8 @@ export class ListingsService {
         .select({
           ...getTableColumns(schema.listings),
           sellerName: this.sellerDisplayName,
+          // Slug da loja: deixa o card linkar direto pra vitrine (kolecta.com.br/loja).
+          sellerSlug: schema.sellerProfiles.slug,
           // Número do Fundador junto do anúncio, como o nome do vendedor. Sem
           // isto o front buscava o perfil de cada vendedor só para saber se
           // mostra o selo: numa lista de 20 itens, 20 requisições de ~3s.

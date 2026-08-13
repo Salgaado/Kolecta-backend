@@ -7,6 +7,7 @@ import {
 import { eq, and, sql, inArray, getTableColumns } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { slugUnico } from '../common/slug';
 import {
   users,
   sellerProfiles,
@@ -31,6 +32,19 @@ export class SellersService {
     @Inject(DATABASE_CONNECTION) private readonly db: LibSQLDatabase<any>,
   ) {}
 
+  /** Resolve a loja pela URL amigável (kolecta.com.br/<slug>). */
+  async getSellerBySlug(slug: string) {
+    const row = await this.db
+      .select({ userId: sellerProfiles.userId })
+      .from(sellerProfiles)
+      .where(eq(sellerProfiles.slug, slug))
+      .get();
+    if (!row) {
+      throw new NotFoundException('Loja não encontrada');
+    }
+    return this.getSellerProfile(row.userId);
+  }
+
   async getSellerProfile(id: string) {
     const profile = await this.db
       .select({
@@ -40,6 +54,8 @@ export class SellersService {
         bio: sellerProfiles.bio,
         avatarUrl: sellerProfiles.avatarUrl,
         isVerified: sellerProfiles.isVerified,
+        storeName: sellerProfiles.storeName,
+        slug: sellerProfiles.slug,
         createdAt: users.createdAt,
       })
       .from(users)
@@ -64,7 +80,11 @@ export class SellersService {
       .where(
         and(
           eq(orders.sellerId, id),
-          inArray(orders.status, ['paid', 'shipped', 'delivered']),
+          // 'completed' faltava: é o estado FINAL da venda (saldo liberado ao
+          // vendedor, pós-entrega), justamente a venda mais concluída que não
+          // contava. Vendedor com 6 'completed' + 1 'delivered' via "1 venda" no
+          // perfil. Mesma lista canônica de pedido bem-sucedido do messages.service.
+          inArray(orders.status, ['paid', 'shipped', 'delivered', 'completed']),
         ),
       )
       .get();
@@ -142,6 +162,7 @@ export class SellersService {
 
     return {
       storeName: profile?.storeName ?? null,
+      slug: (profile as { slug?: string | null })?.slug ?? null,
       avatarUrl: profile?.avatarUrl ?? null,
       bio: profile?.bio ?? null,
       city: profile?.city ?? null,
@@ -223,6 +244,26 @@ export class SellersService {
     if (dto.website !== undefined) patch.website = dto.website;
     if (dto.categories !== undefined)
       patch.categories = JSON.stringify(dto.categories);
+
+    // Gera o slug da loja na PRIMEIRA vez que um nome é definido. Não muda depois
+    // (mudar quebraria links já compartilhados; editar o handle vira perk de
+    // assinatura). Único contra os slugs já ocupados e as palavras reservadas.
+    if (dto.storeName && dto.storeName.trim()) {
+      const atual = await this.db
+        .select({ slug: sellerProfiles.slug })
+        .from(sellerProfiles)
+        .where(eq(sellerProfiles.userId, userId))
+        .get();
+      if (!atual?.slug) {
+        const rows = await this.db
+          .select({ slug: sellerProfiles.slug })
+          .from(sellerProfiles);
+        const usados = new Set(
+          rows.map((r) => r.slug).filter((s): s is string => !!s),
+        );
+        patch.slug = slugUnico(dto.storeName, usados);
+      }
+    }
 
     if (Object.keys(patch).length > 0) {
       await this.db
