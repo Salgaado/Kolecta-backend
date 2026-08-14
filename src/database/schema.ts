@@ -854,8 +854,16 @@ export const withdrawalRequests = sqliteTable('withdrawal_requests', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
 
-  // Valor solicitado em centavos (mínimo: R$50,00 = 5000 centavos)
+  // Valor solicitado em centavos (mínimo: R$50,00 = 5000 centavos).
+  // É o LÍQUIDO: o que cai na conta do vendedor. A taxa vem por cima.
   amountInCents: integer('amount_in_cents').notNull(),
+
+  // Taxa de saque da Pagar.me (R$ 3,67 fixos), debitada da carteira JUNTO com
+  // o valor. Guardada por linha para o histórico não mentir sobre o que saiu:
+  // total debitado = amount_in_cents + fee_in_cents.
+  // 0 nas linhas anteriores a 13/08/2026, quando a taxa não era cobrada aqui
+  // (e por isso a carteira divergia do recebedor — ver docs/PLAN-taxa-de-saque.md).
+  feeInCents: integer('fee_in_cents').notNull().default(0),
 
   // requested | processing | paid | failed | cancelled
   status: text('status').notNull().default('requested'),

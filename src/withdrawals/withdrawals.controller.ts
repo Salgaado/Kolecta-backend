@@ -30,6 +30,22 @@ export class WithdrawalsController {
     return { data: withdrawals };
   }
 
+  // ── GET /api/withdrawals/limits — Quanto dá para sacar de verdade ────────
+
+  /**
+   * Mínimo, taxa e MÁXIMO REAL do saque.
+   *
+   * Existe porque o front não tem como calcular isso: o teto não é o saldo da
+   * carteira, é o saldo menos a taxa da Pagar.me — e, quando a consulta de
+   * saldo responde, limitado também pelo disponível real do recebedor.
+   */
+  @Get('limits')
+  @Roles('user', 'admin')
+  async limits(@Req() req: Request) {
+    const userId = (req as any).auth.userId as string;
+    return { data: await this.withdrawalsService.getLimits(userId) };
+  }
+
   // ── POST /api/withdrawals — Solicitar saque ──────────────────────────────
 
   @Post()

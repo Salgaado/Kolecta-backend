@@ -39,12 +39,21 @@ export class PagarmeService {
     });
   }
 
-  async get<T = any>(path: string, params?: Record<string, any>): Promise<T> {
+  /**
+   * @param timeoutMs opcional — para consultas que rodam no caminho de uma tela
+   *        e precisam desistir antes dos 15s do padrão.
+   */
+  async get<T = any>(
+    path: string,
+    params?: Record<string, any>,
+    timeoutMs?: number,
+  ): Promise<T> {
     return this.request<T>({
       method: 'GET',
       url: this.buildUrl(path),
       params,
       headers: this.buildHeaders(),
+      ...(timeoutMs ? { timeout: timeoutMs } : {}),
     });
   }
 
