@@ -191,7 +191,7 @@ Registro central da transação:
 - tracking;
 - serviço/carrinho/PDF/status/erro da etiqueta;
 - líquido do vendedor e taxas;
-- composição wallet/externa;
+- composição wallet/externa legada;
 - instrumento e parcelas;
 - juros;
 - marcos de entrega, confirmação, liberação e conclusão.
@@ -211,6 +211,14 @@ qualquer fluxo elegível -> refunded/chargeback conforme integração
 ```
 
 Como a coluna é texto sem enum, o service é a autoridade das transições.
+
+Em pedidos novos, `paymentMethod` fica `external` e `paymentInstrument` distingue
+`pix|credit_card`; `walletAmountInCents` permanece zero. Valores
+`wallet|hybrid` continuam necessários para ler o histórico. O campo
+`platformFeeInCents` também tem duas eras: em pedidos atuais guarda comissão +
+frete que transita pela Kolecta; em pedidos antigos podia guardar apenas a
+comissão. `gatewayFeeInCents` é um espelho estimado da taxa Pagar.me, não a
+operação conciliada do provedor.
 
 ### `favorites`
 
@@ -264,6 +272,10 @@ Uma carteira por usuário:
 
 `userId` é único.
 
+A existência de saldo não implica que ele possa pagar uma compra: desde
+31/07/2026 o checkout ignora `useWalletBalance`. A tabela segue sendo usada para
+depósito, retenção/liberação do vendedor e saque.
+
 ### `wallet_transactions`
 
 Ledger:
@@ -295,11 +307,22 @@ Durante a migração, eventos Pagar.me ainda podem usar o campo de nome Stripe.
 
 Solicitação de saque:
 
-- usuário e valor;
+- usuário e valor (`amount_in_cents` é o **líquido** que cai no banco);
+- `fee_in_cents` — taxa de saque da Pagar.me cobrada nesta transferência;
+  o total debitado da carteira é `amount_in_cents + fee_in_cents`;
 - status `requested|processing|paid|failed|cancelled`;
 - IDs Stripe legados;
 - IDs transfer/recipient Pagar.me;
 - motivo de falha.
+
+`fee_in_cents` entrou em 13/08/2026 (`scripts/add-withdrawal-fee.ts`) e vale 0
+nas linhas anteriores: até então a taxa não passava pela carteira, e era
+exatamente essa a origem da divergência com o saldo do recebedor.
+
+⚠️ `pagarme_transfer_id` é `text` no schema, mas a Pagar.me devolve o id do
+transfer como **número** (`539696597`) e o SQLite gravou como REAL —
+`539696597.0`. O lookup do webhook compara com a string do payload, então não
+casa. Corrigir a normalização antes de confiar no webhook `transfer.*`.
 
 ## Integração e importação
 
@@ -417,4 +440,3 @@ Garantias apenas de aplicação:
 - consistência dos contadores da comunidade.
 
 Esses pontos são candidatos a índices/restrições futuras, desde que uma auditoria de duplicados seja feita antes.
-
