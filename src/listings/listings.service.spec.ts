@@ -302,10 +302,27 @@ describe('ListingsService', () => {
 
   // ── remove ─────────────────────────────────────────────────────────────────
   describe('remove', () => {
-    it('deve deletar quando o sellerId bate', async () => {
-      selectChain.limit.mockResolvedValueOnce([fakeListing]);
+    it('sem venda: hard-delete (apaga a linha)', async () => {
+      selectChain.limit
+        .mockResolvedValueOnce([fakeListing]) // findById
+        .mockResolvedValueOnce([]); // orders: nenhuma venda
       await service.remove('listing_001', 'user_seller');
+      // Desvincula posts da comunidade antes de apagar (FK sem cascade).
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ listingId: null }),
+      );
       expect(deleteChain.where).toHaveBeenCalled();
+    });
+
+    it('com venda: soft-delete (status=removed, não apaga a linha)', async () => {
+      selectChain.limit
+        .mockResolvedValueOnce([fakeListing]) // findById
+        .mockResolvedValueOnce([{ id: 'order_001' }]); // orders: tem venda
+      await service.remove('listing_001', 'user_seller');
+      expect(updateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'removed' }),
+      );
+      expect(deleteChain.where).not.toHaveBeenCalled();
     });
 
     it('deve lançar ForbiddenException se sellerId não bate', async () => {
