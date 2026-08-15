@@ -9,6 +9,7 @@ import {
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import {
   eq,
+  ne,
   desc,
   and,
   inArray,
@@ -375,7 +376,14 @@ export class ListingsService {
       })
       .from(schema.listings)
       .leftJoin(schema.users, eq(schema.listings.sellerId, schema.users.id))
-      .where(eq(schema.listings.sellerId, sellerId))
+      // 'removed' = anúncio excluído com venda no histórico (soft-delete). Some
+      // da loja do vendedor, mas a linha fica para o pedido não quebrar.
+      .where(
+        and(
+          eq(schema.listings.sellerId, sellerId),
+          ne(schema.listings.status, 'removed'),
+        ),
+      )
       .orderBy(desc(schema.listings.createdAt));
   }
 
@@ -740,6 +748,33 @@ export class ListingsService {
       throw new ForbiddenException(
         'Você não tem permissão para remover este anúncio.',
       );
+    }
+
+    // Post da comunidade que aponta pro anúncio (FK sem cascade): desvincula,
+    // o post continua vivo, só perde o link do produto. Sem isto o DELETE
+    // abaixo estoura violação de chave estrangeira (500 "Internal server error").
+    await this.db
+      .update(schema.communityPosts)
+      .set({ listingId: null })
+      .where(eq(schema.communityPosts.listingId, id));
+
+    // Anúncio já vendido tem pedido ligado (orders.listing_id é NOT NULL e sem
+    // cascade — apagar a linha apagaria o histórico financeiro, que não pode).
+    // Nesse caso, soft-delete: some da loja do vendedor e do site (a vitrine já
+    // filtra status='active'), mas a linha permanece para o pedido não quebrar.
+    const [pedido] = await this.db
+      .select({ id: schema.orders.id })
+      .from(schema.orders)
+      .where(eq(schema.orders.listingId, id))
+      .limit(1);
+
+    if (pedido) {
+      await this.db
+        .update(schema.listings)
+        .set({ status: 'removed', updatedAt: new Date() })
+        .where(eq(schema.listings.id, id));
+      this.logger.log(`[remove] Anúncio ${id} tem venda: soft-delete (removed)`);
+      return;
     }
 
     await this.db.delete(schema.listings).where(eq(schema.listings.id, id));
