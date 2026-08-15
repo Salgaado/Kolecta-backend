@@ -8,6 +8,8 @@ import { eq, and, sql, inArray, getTableColumns } from 'drizzle-orm';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { slugUnico } from '../common/slug';
+import { montarCapa, urlDeCapaAceita } from './capa';
+import { nomeDeExibicaoDoVendedor } from '../common/nome-do-vendedor';
 import {
   users,
   sellerProfiles,
@@ -49,10 +51,19 @@ export class SellersService {
     const profile = await this.db
       .select({
         id: users.id,
-        name: users.name,
+        // Nome da LOJA, não o do Clerk. Esta era a única tela pública que lia
+        // `users.name` cru: a vitrine e o leilão já resolviam pelo store_name,
+        // então "Culture TCG" no card virava o nome pessoal do dono ao clicar
+        // — inclusive no `<title>` indexado e na URL, que sai do store_name.
+        // `storeName` continua vindo separado logo abaixo, para quem precisar
+        // saber se a loja tem nome próprio (é o que o front usa no aviso).
+        name: nomeDeExibicaoDoVendedor(),
         email: users.email,
         bio: sellerProfiles.bio,
         avatarUrl: sellerProfiles.avatarUrl,
+        coverUrl: sellerProfiles.coverUrl,
+        coverFocalY: sellerProfiles.coverFocalY,
+        coverOverlay: sellerProfiles.coverOverlay,
         isVerified: sellerProfiles.isVerified,
         storeName: sellerProfiles.storeName,
         slug: sellerProfiles.slug,
@@ -98,8 +109,13 @@ export class SellersService {
       .where(eq(reviews.targetId, id))
       .get();
 
+    // As três colunas cruas saem daqui e viram um bloco `cover` já resolvido
+    // (defaults e piso aplicados), para o front não repetir a regra.
+    const { coverUrl, coverFocalY, coverOverlay, ...resto } = profile;
+
     return {
-      ...profile,
+      ...resto,
+      cover: montarCapa({ coverUrl, coverFocalY, coverOverlay }),
       totalActiveListings: activeListingsResult?.count || 0,
       totalSales: salesResult?.count || 0,
       totalReviews: reviewsResult?.count || 0,
@@ -164,6 +180,7 @@ export class SellersService {
       storeName: profile?.storeName ?? null,
       slug: (profile as { slug?: string | null })?.slug ?? null,
       avatarUrl: profile?.avatarUrl ?? null,
+      cover: montarCapa(profile ?? {}),
       bio: profile?.bio ?? null,
       city: profile?.city ?? null,
       state: profile?.state ?? null,
@@ -226,6 +243,9 @@ export class SellersService {
     dto: {
       storeName?: string;
       avatarUrl?: string;
+      coverUrl?: string;
+      coverFocalY?: number;
+      coverOverlay?: number;
       bio?: string;
       city?: string;
       state?: string;
@@ -238,6 +258,20 @@ export class SellersService {
     if (dto.storeName !== undefined) patch.storeName = dto.storeName;
     // String vazia = remover a foto (volta para as iniciais)
     if (dto.avatarUrl !== undefined) patch.avatarUrl = dto.avatarUrl || null;
+
+    // Capa: mesma convenção da foto — string vazia remove. A URL precisa ser do
+    // nosso R2 (ver `urlDeCapaAceita`); o recorte e o escurecimento o DTO já
+    // validou na faixa certa.
+    if (dto.coverUrl !== undefined) {
+      if (dto.coverUrl && !urlDeCapaAceita(dto.coverUrl)) {
+        throw new BadRequestException(
+          'A capa precisa ser uma imagem enviada pela própria Kolecta.',
+        );
+      }
+      patch.coverUrl = dto.coverUrl || null;
+    }
+    if (dto.coverFocalY !== undefined) patch.coverFocalY = dto.coverFocalY;
+    if (dto.coverOverlay !== undefined) patch.coverOverlay = dto.coverOverlay;
     if (dto.bio !== undefined) patch.bio = dto.bio;
     if (dto.city !== undefined) patch.city = dto.city;
     if (dto.state !== undefined) patch.state = dto.state;
@@ -427,12 +461,25 @@ export class SellersService {
       .from(listings)
       .leftJoin(auctions, eq(auctions.listingId, listings.id))
       .where(whereClause)
-      // Ordem escolhida pelo vendedor (arrastar para reordenar): quem tem
-      // `position` vem primeiro, do menor para o maior; quem ainda não foi
-      // ordenado cai no fim, na ordem padrão por data. Só a vitrine da loja usa
-      // isto — a home e a busca seguem por data.
+      // Destaque primeiro; dentro de cada bloco, a ordem escolhida pelo vendedor.
+      //
+      // Ordenar o destaque AQUI, e não só no front, é o que faz o "sempre em
+      // primeiro" valer também na paginação: senão um destaque poderia cair na
+      // página 3 e a faixa da loja ficaria vazia para quem consome a rota
+      // direto.
+      //
+      // Entre os destaques vale `position`, a mesma do arrastar-para-reordenar
+      // — e não o instante em que foram fixados. `storePinnedAt` é gravado em
+      // segundos, então quatro destaques salvos de uma vez empatariam e o
+      // desempate seria sorte. O instante entra só como critério final, para a
+      // ordem nunca depender do acaso.
+      //
+      // Depois vale a mesma `position` para o resto: quem tem vem antes, do
+      // menor para o maior; quem ainda não foi ordenado cai no fim, na ordem
+      // padrão por data. Só a vitrine da loja usa isto — a home e a busca
+      // seguem por data.
       .orderBy(
-        sql`(${listings.position} IS NULL) ASC, ${listings.position} ASC, ${listings.createdAt} DESC`,
+        sql`(${listings.storePinnedAt} IS NULL) ASC, (${listings.position} IS NULL) ASC, ${listings.position} ASC, ${listings.storePinnedAt} ASC, ${listings.createdAt} DESC`,
       )
       .limit(limit)
       .offset(offset);

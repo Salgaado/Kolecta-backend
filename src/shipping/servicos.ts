@@ -41,26 +41,49 @@ export const CATALOGO_SERVICOS: readonly ServicoEnvio[] = [
     nacional: true,
     aviso: 'Só aceita pacotes de até 300 g e 16×11×3 cm.',
   },
+  // ── Jadlog: fora da plataforma desde 12/08/2026 ────────────────────────────
+  // Ela RECUSA envio não-comercial (sem nota fiscal) partindo de alguns estados,
+  // e todo envio da Kolecta é assim — `non_commercial: true` fixo no carrinho,
+  // porque quem vende aqui é pessoa física.
+  //
+  // O veneno é que a recusa NÃO aparece na cotação: conferido contra a API de
+  // produção em 12/08, o `/shipment/calculate` devolve a Jadlog com preço e
+  // prazo normais (com ou sem `options.non_commercial`), e só o `/cart` responde
+  // "Esta transportadora não aceita envios não-comerciais partindo deste
+  // estado". Ou seja: o comprador escolhe, paga, e a etiqueta é impossível.
+  //
+  // Aconteceu no pedido 0c57df5a (Foz do Iguaçu/PR → Londrina/PR, 11/08): frete
+  // pago, etiqueta `failed`, nada postado. Placar da Jadlog em produção: 1
+  // tentativa, 1 falha.
+  //
+  // Volta ao ar quando o Melhor Envio disser em QUAIS estados a regra vale (aí
+  // vira restrição por UF de origem) ou quando emitirmos com nota fiscal.
   {
     id: 3,
     transportadora: 'Jadlog',
     nome: '.Package',
     nacional: false,
-    aviso: 'Postagem em agência Jadlog. Cobertura menor no Norte.',
+    aviso:
+      'Recusa envio sem nota fiscal partindo de alguns estados (o PR é um ' +
+      'deles) — e a recusa só aparece na hora de emitir a etiqueta.',
   },
   {
     id: 4,
     transportadora: 'Jadlog',
     nome: '.Com',
     nacional: false,
-    aviso: 'Postagem em agência Jadlog. Cobertura menor no Norte.',
+    aviso:
+      'Recusa envio sem nota fiscal partindo de alguns estados (o PR é um ' +
+      'deles) — e a recusa só aparece na hora de emitir a etiqueta.',
   },
   {
     id: 27,
     transportadora: 'Jadlog',
     nome: '.Package Centralizado',
     nacional: false,
-    aviso: 'Postagem em agência Jadlog. Cobertura menor no Norte.',
+    aviso:
+      'Recusa envio sem nota fiscal partindo de alguns estados (o PR é um ' +
+      'deles) — e a recusa só aparece na hora de emitir a etiqueta.',
   },
   {
     id: 31,
@@ -131,6 +154,55 @@ export const CATALOGO_SERVICOS: readonly ServicoEnvio[] = [
   },
 ];
 
+/**
+ * Serviços que EXIGEM nota fiscal, de `GET /me/shipment/services` →
+ * `requirements` (conferido em 12/08/2026 na conta de produção).
+ *
+ * Todo envio da Kolecta vai `non_commercial: true`, sem nota — então estes são
+ * impossíveis para nós, e mostrá-los na cotação é vender um frete que não vira
+ * etiqueta. Não tem a ver com o vendedor ser PF ou PJ: a Rock Wheels tem CNPJ e
+ * a Jadlog recusou do mesmo jeito, porque quem não tem nota é o ENVIO.
+ *
+ * DECISÃO DO DONO (12/08/2026), para ninguém "consertar" isto depois: a Kolecta
+ * despacha com DECLARAÇÃO DE CONTEÚDO, e é o suficiente. Exigir nota fiscal do
+ * vendedor para liberar uma transportadora a mais é burocracia que não se paga,
+ * havendo transportadora que aceita sem. Esta lista não sai daqui enquanto essa
+ * for a regra — o que muda, se mudar, é a Kolecta passar a emitir nota.
+ *
+ * É a lista de reserva: o normal é ler `requirements` da API, que se atualiza
+ * sozinha se uma transportadora mudar de regra. Isto aqui é o que vale quando a
+ * chamada falha — a cotação não pode cair junto.
+ */
+export const EXIGEM_NOTA_FISCAL: readonly number[] = [3, 4, 12, 15, 16, 22, 27];
+
+/**
+ * Este serviço exige nota fiscal? Lê o `requirements` como o Melhor Envio o
+ * devolve, que vem em DUAS formas:
+ *
+ * - lista de rótulos: `["names","addresses","documents","invoice"]`;
+ * - objeto de regras estilo Laravel (a Total Express é assim hoje), em que a
+ *   nota aparece como `options.invoice.key: ["required_if:options.non_commercial,false"]`
+ *   — ou seja, obrigatória só quando o envio se declara COMERCIAL. Para nós,
+ *   que declaramos o contrário, não é exigência nenhuma.
+ *
+ * Ler só a primeira forma trataria a segunda como "não exige" por acidente. Aqui
+ * é por decisão, e a diferença está escrita.
+ */
+export function exigeNotaFiscal(requirements: unknown): boolean {
+  if (Array.isArray(requirements)) {
+    return requirements.some((r) => String(r).toLowerCase() === 'invoice');
+  }
+  const regras = (requirements as any)?.rules;
+  if (!regras || typeof regras !== 'object') return false;
+  return Object.entries(regras).some(([campo, condicoes]) => {
+    if (!campo.includes('invoice')) return false;
+    const lista = Array.isArray(condicoes) ? condicoes.map(String) : [];
+    // `required` seco exige sempre; `required_if:options.non_commercial,false`
+    // só exige de quem manda nota — que não é o nosso caso.
+    return lista.includes('required');
+  });
+}
+
 const POR_ID = new Map(CATALOGO_SERVICOS.map((s) => [s.id, s]));
 
 export function servicoPorId(id: number): ServicoEnvio | undefined {
@@ -148,9 +220,16 @@ export function nomeDoServico(id: number): string {
  *
  * Vazio (`MELHOR_ENVIO_SERVICOS=`) desliga o corte e volta a mostrar tudo que a
  * conta habilita. É a saída rápida se o filtro deixar alguma região sem opção.
+ *
+ * O padrão perdeu a Jadlog (id 3) em 12/08/2026 — o motivo está no catálogo,
+ * junto da entrada dela. O padrão é o que vale para os 218 vendedores que nunca
+ * abriram as configurações de envio, então tirar daqui é o que realmente
+ * desliga a transportadora.
  */
 export function servicosDaPlataforma(): number[] {
-  return parseServicos(process.env.MELHOR_ENVIO_SERVICOS ?? '1,2,3,17,31,33') ?? [];
+  return (
+    parseServicos(process.env.MELHOR_ENVIO_SERVICOS ?? '1,2,17,31,33') ?? []
+  );
 }
 
 /** CSV de ids ("1,2,17") → lista de números. `null` quando não há nada gravado. */

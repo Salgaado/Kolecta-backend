@@ -36,8 +36,16 @@ Comandos:
 | `npm run test:watch` | watch de testes |
 | `npm run test:cov` | cobertura |
 | `npm run test:e2e` | E2E Nest |
+| `npm run test:all` | unitários + E2E (é o que o CI roda) |
 | `npm run lint` | ESLint com fix |
 | `npm run format` | Prettier em src/test |
+
+`npm test` inclui `src/app.module.spec.ts`, que compila o grafo de injeção do
+`AppModule` inteiro em ~1,5s. Existe porque erro de injeção derruba a API na
+**subida**, não na rota: em 06/08/2026 um módulo sem `imports: [AuthModule]`
+usando `RolesGuard` deixou a produção em crash loop, e nada pegava — `build`
+compila TypeScript sem montar o grafo, e os unitários instanciam classe por
+classe.
 
 ### Frontend
 
@@ -93,9 +101,9 @@ O repositório possui locks npm e Bun, mas os comandos declarados usam npm. Esco
 | `PAGARME_BASE_URL` | default `https://api.pagar.me/core/v5` |
 | `PAGARME_WEBHOOK_USER` | Basic Auth do webhook |
 | `PAGARME_WEBHOOK_PASSWORD` | Basic Auth do webhook |
-| `PAGARME_PLATFORM_RECIPIENT_ID` | recebedor Kolecta para split; sem ele o split externo é pulado |
-| `PAGARME_GATEWAY_FEE_PERCENT` | bookkeeping geral; default 0 |
-| `PAGARME_CARD_FEE_PERCENT` | bookkeeping de cartão; default 0 |
+| `PAGARME_PLATFORM_RECIPIENT_ID` | obrigatório para compra/lance; sem ele a operação retorna 503 antes da cobrança |
+| `PAGARME_GATEWAY_FEE_PERCENT` | espelho percentual de PIX; default 0; contrato atual 1,09 |
+| `PAGARME_CARD_FEE_PERCENT` | espelho percentual de cartão; default 0; contrato atual 3,89 |
 | `PAGARME_INSTALLMENT_INTEREST` | default `on`; `off` zera acréscimo de parcelamento |
 | `PAGARME_PREAUTH_VALIDITY_DAYS` | default 5 |
 | `PAGARME_REAUTH_WINDOW_HOURS` | default 24 |
@@ -104,6 +112,9 @@ O repositório possui locks npm e Bun, mas os comandos declarados usam npm. Esco
 | `ENFORCE_SELLER_KYC` | publicação/venda exige KYC quando exatamente `true` |
 
 O host Pagar.me é o mesmo para sandbox e produção; a chave define o ambiente.
+Percentuais aceitam ponto ou vírgula decimal e valor inválido degrada para 0 com
+aviso. O cálculo não inclui os custos fixos atuais de gateway e antifraude (R$
+0,55 + R$ 0,44 por transação), portanto ainda não é uma conciliação exata.
 
 ### Taxas e financeiro
 
@@ -111,6 +122,11 @@ O host Pagar.me é o mesmo para sandbox e produção; a chave define o ambiente.
 |---|---|
 | `PLATFORM_FEE_PERCENT` | comissão base; default 11 |
 | `WITHDRAWAL_MIN_AMOUNT_CENTS` | mínimo de saque; default 5000 |
+| `WITHDRAWAL_FEE_CENTS` | taxa de saque da Pagar.me; default 367 |
+
+`WITHDRAWAL_FEE_CENTS` espelha a "Taxa de saque" das condições da conta. Se o
+contrato mudar e o valor aqui não acompanhar, a carteira volta a divergir do
+saldo do recebedor e os saques de valor cheio passam a ser recusados.
 
 Fundador ativo pode receber percentual próprio calculado pelo `FounderService`.
 
@@ -122,6 +138,7 @@ Parcelamento usa uma tabela CET fixa no código para 1x a 12x. Mudança contratu
 |---|---|
 | `MELHOR_ENVIO_API_URL` | host da API |
 | `MELHOR_ENVIO_TOKEN` | autenticação |
+| `MELHOR_ENVIO_SERVICOS` | IDs permitidos; default `1,2,3,17,31,33`; string vazia aceita todos |
 | `SHIPPING_ORIGIN_CEP` | origem de fallback |
 | `SHIPPING_FALLBACK_PHONE` | telefone quando cadastro não possui |
 | `SHIPPING_DEFAULT_WEIGHT_KG` | default final 0,3 kg |
@@ -280,8 +297,51 @@ id casa e o script termina sem fazer nada — o resumo do dry-run mostra isso co
 ### Integração
 
 - `test-recipient-sandbox.ts`.
+- `src/pagarme/ensaio-sandbox.ts` — cria recebedores de teste, compra com split,
+  recusa, pré-autorização e cancelamento. Exige `sk_test_` e aborta ao detectar
+  `sk_live_`; apesar da trava, cria objetos e cobranças no sandbox.
+
+Após `npm run build`, o diagnóstico `__pagarmeDiag()` pode ser chamado no
+console do processo para conferir tipo/tamanho da chave, base URL, Basic Auth do
+webhook, flag de cartão e `NODE_ENV`, sem imprimir o secret.
 
 Trate qualquer script que altere banco como operação destrutiva: leia o código, confirme ambiente e alvo, execute dry-run quando disponível e capture o resultado.
+
+## CI/CD (GitHub Actions)
+
+Criado em 06/08/2026, depois de um módulo quebrado chegar em produção e derrubar
+a API inteira no boot. Até então **nada verificava os repos**: Render e Vercel
+escutavam o push e subiam direto, rodando só `build`.
+
+Workflow em `.github/workflows/ci.yml` nos dois repos, com dois jobs:
+
+| Job | Roda | Quando |
+|---|---|---|
+| `test` | backend: `npm ci` → `build` → `test:all`<br>frontend: `npm ci` → `build` (inclui `tsc --noEmit`) → `test` | toda branch, todo PR |
+| `deploy` | dispara o Deploy Hook (Render / Vercel) | só push na `main`, e só com o `test` verde |
+
+Não há `.env` no runner, de propósito — nenhuma credencial real entra no CI. O
+`test/setup-env.ts` preenche chaves de fachada para o E2E.
+
+**Lint fica fora do gate**: backend tem ~3.900 erros de ESLint acumulados e
+frontend 118. CI que vive vermelho ensina a ignorar o sinal — foi assim que a
+suíte E2E passou meses quebrada sem ninguém notar.
+
+### ⚠️ Configuração de painel ainda pendente
+
+Sem estes passos o gate **não vale**. Detalhes em `docs/PENDENCIAS-ci-cd.md`:
+
+1. **Ligar o GitHub Actions** nos dois repos (Settings → Actions → General).
+   Os workflows estão publicados e registrados como `active`, mas com zero
+   execuções — provavelmente desligado no nível do repositório.
+2. Criar os Deploy Hooks e guardar como segredos `RENDER_DEPLOY_HOOK_URL` e
+   `VERCEL_DEPLOY_HOOK_URL`.
+3. **Desligar o auto-deploy** no Render (Settings → Build & Deploy →
+   Auto-Deploy = No) e na Vercel. Sem isso eles continuam subindo em paralelo
+   ao workflow, verde ou vermelho.
+
+Enquanto os segredos não existirem, o passo de deploy apenas avisa e não falha a
+rodada.
 
 ## Deploy do backend
 
@@ -305,7 +365,9 @@ Checklist:
 - Turso aponta para a base correta;
 - webhook URLs públicas estão cadastradas;
 - secrets não têm espaços/quebras;
-- `PAGARME_PLATFORM_RECIPIENT_ID` configurado se split externo estiver ativo;
+- `PAGARME_PLATFORM_RECIPIENT_ID` configurado e pertencente à conta ativa;
+- `PAGARME_GATEWAY_FEE_PERCENT=1.09` e `PAGARME_CARD_FEE_PERCENT=3.89`, ou valores vigentes do contrato;
+- allowlist de IP da conta Pagar.me contém a saída usada por `POST /transfers`;
 - flags de cartão iguais no front/back;
 - token e saldo Melhor Envio verificados;
 - domínio R2 e remetente Resend validados;
@@ -364,6 +426,20 @@ Monitore:
 
 Nunca registre CPF, documento KYC, token OAuth, secret, card token ou payload bancário completo.
 
+### Broadcast administrativo
+
+`POST /api/admin/broadcast` é dry-run quando `dryRun` está ausente ou não é
+`false`. A sequência operacional segura é:
+
+1. rodar dry-run e conferir `total`/`amostra`;
+2. enviar para `apenasPara` com `dryRun:false`;
+3. disparar lotes pequenos com `limite` e manter a mesma `campanha`;
+4. acompanhar `email_log` por `sent|failed|skipped` antes do lote seguinte.
+
+O envio ocorre dentro da requisição HTTP. Não use um lote cujo tempo estimado
+(`limite × pausaMs`) exceda o timeout do proxy; a retomada com a mesma campanha
+elimina destinatários já enviados.
+
 ## Backup e recuperação
 
 Antes de mudanças:
@@ -375,4 +451,3 @@ Antes de mudanças:
 - plano de rollback de schema e deploy.
 
 Campos financeiros e ledger não devem ser “corrigidos” com update manual sem uma transação compensatória e trilha de auditoria.
-

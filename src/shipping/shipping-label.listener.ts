@@ -95,6 +95,68 @@ export class ShippingLabelListener {
     }
   }
 
+  /**
+   * A transportadora escolhida recusou e a etiqueta saiu por outra.
+   *
+   * Avisa o COMPRADOR: ele escolheu e pagou um serviço específico, e descobrir
+   * a troca só pelo rastreio parece erro nosso. O vendedor fica sabendo pelo
+   * e-mail da etiqueta, que já sai com o nome novo (o pedido é atualizado antes
+   * da emissão) — e é o nome que importa para ele, porque define o balcão em que
+   * vai postar.
+   *
+   * Best-effort como todo aviso: e-mail que falha não pode derrubar a emissão,
+   * que a esta altura já gastou dinheiro da carteira do Melhor Envio.
+   */
+  @OnEvent('shipping.carrier.changed')
+  async aoTrocarTransportadora(evento: {
+    orderId: string;
+    de: string;
+    para: string;
+  }): Promise<void> {
+    try {
+      const order = await this.db.query.orders.findFirst({
+        where: eq(schema.orders.id, evento.orderId),
+      });
+      if (!order) return;
+
+      const [comprador] = await this.db
+        .select({ name: schema.users.name, email: schema.users.email })
+        .from(schema.users)
+        .where(eq(schema.users.id, order.buyerId));
+      if (!comprador?.email) {
+        this.logger.warn(
+          `Transportadora trocada no pedido ${evento.orderId}, mas o comprador ` +
+            `${order.buyerId} não tem e-mail.`,
+        );
+        return;
+      }
+
+      const listing = order.listingId
+        ? await this.db.query.listings.findFirst({
+            where: eq(schema.listings.id, order.listingId),
+          })
+        : null;
+
+      await this.mail.send({
+        to: comprador.email,
+        template: 'shipping-carrier-changed',
+        refId: evento.orderId,
+        data: {
+          buyerName: comprador.name,
+          orderId: evento.orderId,
+          listingTitle: listing?.title ?? 'Item Kolecta',
+          de: evento.de,
+          para: evento.para,
+        },
+      });
+    } catch (err: any) {
+      this.logger.error(
+        `Falha ao avisar a troca de transportadora do pedido ${evento.orderId}: ` +
+          `${err?.message ?? err}`,
+      );
+    }
+  }
+
   private async emitir(orderId: string, origem: string): Promise<void> {
     try {
       await this.shipping.emitirEtiquetaDoPedido(orderId);
@@ -207,9 +269,7 @@ export class ShippingLabelListener {
         semAnexo: !pdf,
         comDeclaracao,
       },
-      attachments: pdf
-        ? [{ filename: nomeDoAnexo, content: pdf }]
-        : undefined,
+      attachments: pdf ? [{ filename: nomeDoAnexo, content: pdf }] : undefined,
     });
   }
 

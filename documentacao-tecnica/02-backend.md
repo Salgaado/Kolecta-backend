@@ -2,7 +2,7 @@
 
 ## Resumo
 
-`kolecta-backend` é uma aplicação NestJS 11 em TypeScript. Ela expõe 132 operações HTTP distribuídas em 30 controllers, usa validação global com `class-validator`, persiste 31 tabelas por Drizzle ORM sobre libSQL/Turso e coordena integrações externas por services, webhooks, eventos internos e cron jobs.
+`kolecta-backend` é uma aplicação NestJS 11 em TypeScript. Ela expõe 133 operações HTTP distribuídas em 30 controllers, usa validação global com `class-validator`, persiste 31 tabelas por Drizzle ORM sobre libSQL/Turso e coordena integrações externas por services, webhooks, eventos internos e cron jobs.
 
 ## Stack
 
@@ -122,6 +122,7 @@ O EventEmitter desacopla fatos de negócio de efeitos secundários:
 | `payout.released` | WalletService | aviso financeiro |
 | `recipient.kyc.approved` | RecipientsService | e-mail de aprovação |
 | `recipient.kyc.action_needed` | RecipientsService | e-mail de ação |
+| `seller.apto-a-receber` | RecipientsService | retoma leilões pausados do vendedor |
 | `shipping.label.ready` | ShippingService | e-mail com etiqueta |
 | `pagarme.order.paid` | webhook Pagar.me | confirmação do pedido |
 | `pagarme.order.failed` | webhook Pagar.me | falha/cancelamento |
@@ -185,6 +186,7 @@ Gerencia:
 - encerramento manual/autorizado;
 - encerramento automático;
 - pré-autorização e reautorização de cartão;
+- consulta da retenção real na Pagar.me para líderes fora da janela de reauth;
 - captura do vencedor;
 - pedido pendente quando captura falha;
 - expiração do prazo de pagamento.
@@ -196,6 +198,8 @@ Regras importantes:
 - leilão pausado continua `active`, porém não recebe lance nem encerra;
 - anti-sniper estende o relógio;
 - o lance líder guarda referências Pagar.me e validade da autorização;
+- vendedor e plataforma precisam ter recebedores aptos; sem split, lance e pagamento são recusados antes da cobrança;
+- webhook de recebedor ativo retoma leilões pausados com o tempo que ainda faltava;
 - término sem sucesso de captura não deve perder rastreabilidade: cria `pending_payment`.
 
 ### `orders`
@@ -203,7 +207,7 @@ Regras importantes:
 É o maior agregado transacional. Faz:
 
 - criação simples de pedidos;
-- checkout com wallet/Pagar.me;
+- checkout externo por PIX/cartão Pagar.me;
 - cálculo de preço, frete, comissão, juros e split;
 - simulação de parcelas;
 - consultas de compras e vendas;
@@ -215,9 +219,15 @@ Regras importantes:
 - chargeback;
 - liberação de saldo.
 
-O DTO aceita um ou mais `listingId`, endereço salvo ou novo, frete, serviço, retirada, uso de wallet, PIX/cartão, token, parcelas, CPF e telefone.
+O DTO aceita um ou mais `listingId`, endereço salvo ou novo, frete, serviço, retirada, PIX/cartão, token, parcelas, CPF e telefone. `useWalletBalance` permanece apenas por compatibilidade com bundles antigos: é aceito, gera aviso no log quando verdadeiro e não altera o valor cobrado.
 
-O backend relê preços e recalcula tudo. `paymentMethod` no DTO representa o instrumento externo; no banco, `paymentMethod` representa composição `wallet|external|hybrid`, enquanto `paymentInstrument` registra `pix|credit_card`.
+O backend relê o preço do item e recalcula comissão, juros e split. O valor de frete ainda vem do cliente sem reconciliação com uma cotação assinada. `paymentMethod` no DTO representa o instrumento externo; no banco, `paymentMethod` ainda preserva o vocabulário legado `wallet|external|hybrid`, embora novos checkouts sejam externos, enquanto `paymentInstrument` registra `pix|credit_card`.
+
+Compra e lance falham de forma fechada quando falta recebedor ativo do vendedor
+ou `PAGARME_PLATFORM_RECIPIENT_ID`. O pedido não é criado antes dessa
+verificação. A taxa percentual do gateway é calculada por
+`common/gateway-fees.ts` para compra e leilão; o modelo ainda não inclui os
+custos fixos por transação do contrato.
 
 Cada pedido liga um comprador, um vendedor e um anúncio. Um carrinho com vendedores diferentes produz pedidos separados.
 
@@ -239,15 +249,38 @@ para `sold`.
 
 Possui operações de crédito, débito, retenção, liberação e ciclo de hold para lances.
 
+Desde 31/07 a wallet não pode pagar nem abater compras. Depósito PIX e saque
+continuam ativos; a manutenção da UI de depósito, especialmente para comprador
+sem recebedor apto a sacar, é uma divergência crítica.
+
 `deposits` cria depósito PIX pela Pagar.me em `/api/wallet/deposit`.
 
 `withdrawals` valida valor mínimo e capacidade do recebedor, reserva saldo, cria transferência Pagar.me e atualiza/estorna conforme webhook.
 
+Desde 13/08/2026 ele também cobra a **taxa de saque** da Pagar.me (R$ 3,67
+fixos, `common/withdrawal-fees.ts`): a carteira debita `valor + taxa` e o
+estorno devolve o total, enquanto o `POST /transfers` continua levando só o
+valor — quem cobra a taxa é a Pagar.me, do saldo do recebedor. Antes disso a
+carteira debitava apenas o principal e ficava R$ 3,67 acima da realidade a cada
+saque, com o erro acumulando; na prática, "sacar tudo" nunca funcionava.
+
+A invariante que o módulo protege é:
+
+```
+saldo do recebedor na Pagar.me  ==  wallet.disponível + wallet.retido
+```
+
+O retido conta porque a retenção de 48h é regra **nossa**: na Pagar.me esse
+dinheiro já está disponível. Por isso a carteira nunca é sobrescrita com o saldo
+do recebedor — isso liberaria saque de venda ainda não entregue. O saldo real
+entra como **teto** (`GET /recipients/{id}/balance`, com degradação para o
+ledger se falhar) e como alerta de divergência no log.
+
 ### `pagarme`, `recipients` e `cards`
 
-`pagarme` encapsula requests Core v5, autenticação Basic, tratamento de erros, split e webhook.
+`pagarme` encapsula requests Core v5, autenticação Basic, tratamento de erros, split e webhook. O módulo registra `__pagarmeDiag()` no processo para mostrar ambiente da chave, URL, configuração do webhook e flag de cartão sem imprimir o secret.
 
-`recipients` cadastra pessoa física ou jurídica, conta bancária, endereço e sócios; consulta status, gera link KYC e sincroniza flags de recebimento/saque.
+`recipients` cadastra pessoa física ou jurídica, conta bancária, endereço e sócios; consulta status, gera link KYC, sincroniza flags de recebimento/saque e emite `seller.apto-a-receber` quando o webhook confirma estado operacional.
 
 `cards` guarda somente:
 
@@ -279,6 +312,12 @@ Integra Melhor Envio para:
 - retry;
 - proxy/download de PDF.
 
+A cotação filtra por padrão os serviços `1,2,3,17,31,33`; a variável
+`MELHOR_ENVIO_SERVICOS` substitui a lista e um valor vazio desliga o filtro. A
+etiqueta procura o documento do remetente primeiro no request/usuário e depois
+em `seller_profiles.document_number`. O e-mail usa a página autenticada do
+pedido como CTA e anexa o PDF quando disponível.
+
 Valida que pedido está pago, é de envio, pertence ao vendedor e possui origem/destino válidos. Persiste etapas e ID do carrinho para evitar cobrança/etiqueta duplicada.
 
 ### `notifications`
@@ -297,6 +336,13 @@ Templates encontrados:
 - disputa aberta;
 - repasse liberado;
 - KYC aprovado ou com ação necessária.
+- comunicado temporário sobre meios de pagamento;
+- recadastro de recebedor na troca da conta Pagar.me.
+
+O admin pode disparar templates manualmente pelo `BroadcastService`. O fluxo é
+dry-run por padrão, filtra endereços de teste, aceita audiência total ou apenas
+recebedores a recadastrar, limita lotes e usa `template + campanha + e-mail`
+para retomar sem duplicar envios bem-sucedidos.
 
 `MAIL_ENABLED` controla envio; ausência de configuração deve resultar em skip controlado, não em queda do fluxo principal.
 
@@ -368,7 +414,8 @@ Oferece:
 - disputas;
 - fila/moderação de anúncios;
 - candidatos e concessão de fundador;
-- envio de e-mail de teste.
+- envio de e-mail de teste e broadcast manual;
+- receita por comissão separada do frete que apenas transita pela plataforma.
 
 ### `media`
 
@@ -407,8 +454,8 @@ O raw body é habilitado globalmente. Eventos financeiros usam `webhook_events` 
 
 Estado verificado:
 
-- 29 suítes unitárias;
-- 325 testes passando;
+- 48 suítes unitárias;
+- 559 testes passando;
 - build Nest concluído.
 
 Cobertura funcional visível inclui autenticação, usuários, anúncios, publicação/importação, pedidos, split de frete, parcelas, leilões, Pagar.me, wallet, saques, frete, comunidade, fundador, admin, favoritos, endereços, mensagens, reviews e webhooks.

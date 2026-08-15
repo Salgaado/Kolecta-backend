@@ -1,5 +1,11 @@
-import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
-import { eq, count, sum, desc, and, inArray } from 'drizzle-orm';
+import {
+  Injectable,
+  Inject,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { eq, or, count, sum, desc, and, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -23,6 +29,8 @@ export class AdminService {
     private readonly founderService: FounderService,
     private readonly mailService: MailService,
   ) {}
+
+  private readonly logger = new Logger(AdminService.name);
 
   /** Alias da tabela `users` para o moderador (users já é usado p/ o vendedor). */
   private readonly moderatorAlias = alias(schema.users, 'moderator_user');
@@ -169,6 +177,46 @@ export class AdminService {
       .where(eq(schema.sellerProfiles.id, sellerProfileId))
       .returning();
 
+    return updated;
+  }
+
+  // ── DELETE /api/admin/sellers/:id/cover ─────────────────────────────────
+
+  /**
+   * Remove a capa (banner) da loja e volta o perfil ao cabeçalho padrão.
+   *
+   * Aceita tanto o id do perfil quanto o id do usuário: quem usa isto está
+   * apagando conteúdo impróprio de uma página pública, muitas vezes com o link
+   * `/vendedor/:slug` na mão (que carrega o userId), e errar de id neste
+   * momento custa tempo à toa.
+   */
+  async removeSellerCover(id: string) {
+    const [profile] = await this.db
+      .select()
+      .from(schema.sellerProfiles)
+      .where(
+        or(
+          eq(schema.sellerProfiles.id, id),
+          eq(schema.sellerProfiles.userId, id),
+        ),
+      );
+
+    if (!profile) throw new NotFoundException('Perfil de vendedor não encontrado');
+
+    const [updated] = await this.db
+      .update(schema.sellerProfiles)
+      .set({
+        coverUrl: null,
+        coverFocalY: null,
+        coverOverlay: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.sellerProfiles.id, profile.id))
+      .returning();
+
+    this.logger.warn(
+      `[admin] Capa da loja removida (perfil ${profile.id}, vendedor ${profile.userId}).`,
+    );
     return updated;
   }
 

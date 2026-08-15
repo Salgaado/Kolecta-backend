@@ -129,6 +129,22 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
   // Foto da loja. Upload próprio (R2, via /api/media/upload) ou a imagem do
   // Clerk copiada no primeiro acesso. null = cai nas iniciais no front.
   avatarUrl: text('avatar_url'),
+
+  // ─── Capa da loja (banner) ──────────────────────────────────────────────────
+  // Faixa no topo do perfil, no formato de LinkedIn/Twitter. Upload próprio no
+  // R2 (via /api/media/upload), nunca URL de fora: capa apontando para servidor
+  // do vendedor poderia trocar de imagem depois de aprovada e ainda medir quem
+  // visita a loja. null = perfil como sempre foi (sem faixa).
+  coverUrl: text('cover_url'),
+  // Recorte vertical, 0 = topo, 100 = base. É o que impede a capa de cortar
+  // justamente a cabeça do boneco. null = 50 (centro).
+  coverFocalY: integer('cover_focal_y'),
+  // Escurecimento sobre a imagem, em %. O nome da loja e o selo vivem em cima
+  // da capa, e foto clara apagava os dois. O vendedor escolhe a IMAGEM, não
+  // escolhe se dá para ler: o piso de 35 é validado no DTO e reaplicado no
+  // front. null = 55.
+  coverOverlay: integer('cover_overlay'),
+
   city: text('city'),
   state: text('state'),
   website: text('website'),
@@ -331,6 +347,24 @@ export const listings = sqliteTable('listings', {
   // e cai para o fim na ordem padrão por data. Só afeta a vitrine da loja, não
   // a vitrine geral nem a busca.
   position: integer('position'),
+
+  // ── Destaque da LOJA (escolha do vendedor) ──
+  // Os poucos itens (no máximo 4) que o vendedor quer sempre no topo da página
+  // dele, numa faixa própria acima da grade.
+  //
+  // Distinto de `featuredUntil` acima, que é destaque de PLATAFORMA (crédito de
+  // fundador, vitrine geral) e expira. Misturar os dois faria o crédito do
+  // fundador mexer na loja e o vendedor mexer na home. Este aqui não expira e
+  // só afeta a loja do próprio vendedor.
+  //
+  // Guarda o INSTANTE em que foi fixado, e não um booleano, para responder
+  // "destacado desde quando" sem uma tabela de histórico. null = não destacado.
+  //
+  // A ORDEM entre os destaques NÃO sai daqui: sai de `position`, a mesma que o
+  // vendedor arrasta logo acima. O instante é gravado em segundos, então tudo
+  // que for fixado na mesma chamada empataria e o desempate seria sorte —
+  // enquanto `position` é escolha explícita dele e já tem tela.
+  storePinnedAt: integer('store_pinned_at', { mode: 'timestamp' }),
 
   ...timestamps,
 }, (t) => ({
@@ -820,8 +854,16 @@ export const withdrawalRequests = sqliteTable('withdrawal_requests', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
 
-  // Valor solicitado em centavos (mínimo: R$50,00 = 5000 centavos)
+  // Valor solicitado em centavos (mínimo: R$50,00 = 5000 centavos).
+  // É o LÍQUIDO: o que cai na conta do vendedor. A taxa vem por cima.
   amountInCents: integer('amount_in_cents').notNull(),
+
+  // Taxa de saque da Pagar.me (R$ 3,67 fixos), debitada da carteira JUNTO com
+  // o valor. Guardada por linha para o histórico não mentir sobre o que saiu:
+  // total debitado = amount_in_cents + fee_in_cents.
+  // 0 nas linhas anteriores a 13/08/2026, quando a taxa não era cobrada aqui
+  // (e por isso a carteira divergia do recebedor — ver docs/PLAN-taxa-de-saque.md).
+  feeInCents: integer('fee_in_cents').notNull().default(0),
 
   // requested | processing | paid | failed | cancelled
   status: text('status').notNull().default('requested'),

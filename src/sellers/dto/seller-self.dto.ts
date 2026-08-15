@@ -9,6 +9,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { COVER_OVERLAY_MAX, COVER_OVERLAY_MIN } from '../capa';
 
 /** PUT /api/seller/profile — dados públicos da loja. */
 export class UpdateSellerProfileDto {
@@ -42,6 +43,31 @@ export class UpdateSellerProfileDto {
   @IsOptional()
   @MaxLength(500)
   avatarUrl?: string;
+
+  /** URL da capa (banner) da loja. String vazia remove. Só aceita URL do nosso
+   *  R2 — a checagem do domínio fica no service, que é quem conhece o env. */
+  @IsString()
+  @IsOptional()
+  @MaxLength(500)
+  coverUrl?: string;
+
+  /** Recorte vertical da capa: 0 = topo, 100 = base. */
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  @IsOptional()
+  coverFocalY?: number;
+
+  /**
+   * Escurecimento da capa em %. O mínimo de 35 é regra de legibilidade, não
+   * estética: o nome da loja fica em cima da imagem, e sem piso a primeira foto
+   * clara apaga o nome. Está aqui no DTO para que nem um request na mão passe.
+   */
+  @IsInt()
+  @Min(COVER_OVERLAY_MIN)
+  @Max(COVER_OVERLAY_MAX)
+  @IsOptional()
+  coverOverlay?: number;
 
   @IsArray()
   @IsString({ each: true })

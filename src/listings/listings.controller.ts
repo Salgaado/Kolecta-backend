@@ -23,6 +23,7 @@ import {
   CreateListingDto,
   UpdateListingDto,
   ReorderListingsDto,
+  DestacarListingsDto,
 } from './dto/listing.dto';
 import { ColocarEmLeilaoDto } from './dto/colocar-em-leilao.dto';
 import { CompletarEmLoteDto } from './dto/completar-em-lote.dto';
@@ -151,6 +152,19 @@ export class ListingsController {
   async reorder(@Req() req: Request, @Body() dto: ReorderListingsDto) {
     const sellerId = (req as any).auth.userId as string;
     await this.listingsService.reorder(sellerId, dto.ids);
+    return { data: { ok: true } };
+  }
+
+  // ── PATCH /api/listings/destaques — Vendedor: itens fixos no topo da loja ─
+  //
+  // Mesma pegadinha da rota acima: estática antes de `@Patch(':id')`, senão
+  // "destaques" seria lido como id de anúncio.
+  @Patch('destaques')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('user', 'admin')
+  async destacar(@Req() req: Request, @Body() dto: DestacarListingsDto) {
+    const sellerId = (req as any).auth.userId as string;
+    await this.listingsService.destacar(sellerId, dto.ids);
     return { data: { ok: true } };
   }
 

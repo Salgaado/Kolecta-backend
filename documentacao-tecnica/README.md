@@ -1,9 +1,11 @@
 # Documentação técnica da Kolecta
 
-Fotografia original de **25 de julho de 2026**, atualizada em **27 de julho de
-2026** (vitrine filtrada no servidor, foto do vendedor na API, baixa de estoque
-na venda e faixa da concessão de fundador — ver
-[Estado, riscos e divergências](./07-estado-riscos.md)).
+Fotografia original de **25 de julho de 2026**, atualizada em **31 de julho de
+2026**. A revisão atual cobre, entre outras mudanças, o fechamento seguro do
+split Pagar.me, a retirada do saldo da carteira como meio de compra, a nova
+regra de taxas, a retomada automática de leilões após KYC, os ajustes de frete e
+o broadcast administrativo — ver
+[Estado, riscos e divergências](./07-estado-riscos.md).
 
 Descreve o estado do código dos projetos:
 
@@ -32,6 +34,12 @@ somente-leitura do **banco de produção** (contagem de anúncios por status,
 fundadores concedidos, índices existentes) e medição do endpoint público em
 produção. Onde este texto cita número de produção, ele foi lido, não estimado.
 
+A atualização de 31/07 comparou a documentação de 27/07 com os diffs e o código
+atual dos dois projetos, e repetiu testes e builds locais. Os HEADs analisados
+foram `8fe96f1` no backend e `bf9241e` no frontend. Os relatórios Graphify ainda
+representam commits anteriores e continuam sendo apenas um mapa de navegação,
+não evidência de que o comportamento atual esteja documentado neles.
+
 ## Índice
 
 1. [Visão integrada](./01-visao-integrada.md)
@@ -46,9 +54,9 @@ produção. Onde este texto cita número de produção, ele foi lido, não estim
 
 | Projeto | Verificação | Resultado |
 |---|---|---|
-| Backend | `npm test` | 29 suítes e 325 testes passando |
+| Backend | `npm test` | 48 suítes e 559 testes passando |
 | Backend | `npm run build` | concluído |
-| Frontend | `npm test` | 38 arquivos e 390 testes passando |
+| Frontend | `npm test` | 69 arquivos e 879 testes passando |
 | Frontend | `npm run build` | concluído, com avisos não bloqueantes |
 
 Os testes E2E do Nest e do Playwright existem, mas não foram executados nesta fotografia porque dependem de ambiente e/ou serviços externos. Consulte [Operação](./06-operacao.md).
@@ -61,4 +69,3 @@ Para entender o sistema em poucos minutos:
 2. consulte [Estado, riscos e divergências](./07-estado-riscos.md);
 3. abra o documento específico do projeto em que vai trabalhar;
 4. use a [referência da API](./03-api-backend.md) e o [modelo de dados](./04-modelo-de-dados.md) durante a implementação.
-

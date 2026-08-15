@@ -177,7 +177,7 @@ O cartão usado pelo lance é o cartão salvo do usuário; o endpoint não receb
 | Método | Path | Acesso | Finalidade |
 |---|---|---|---|
 | POST | `/api/orders` | User/Admin | cria pedidos sem iniciar o checkout externo |
-| POST | `/api/orders/checkout` | User/Admin | cria pedidos e inicia wallet/PIX/cartão/híbrido |
+| POST | `/api/orders/checkout` | User/Admin | cria pedido e inicia PIX ou cartão Pagar.me |
 | GET | `/api/orders/installments-simulation` | User/Admin | simula parcelas; query `amount` em centavos |
 | GET | `/api/orders/my/purchases` | User/Admin | compras do usuário |
 | GET | `/api/orders/my/sales` | User/Admin | vendas do usuário |
@@ -208,7 +208,7 @@ Checkout:
   shippingServiceId?: number;
   shippingServiceName?: string;
   deliveryMethod?: "shipping" | "pickup";
-  useWalletBalance?: boolean;
+  useWalletBalance?: boolean; // legado: aceito e ignorado desde 31/07
   paymentMethod?: "pix" | "credit_card";
   cardToken?: string;
   installments?: number; // 1..12
@@ -217,7 +217,16 @@ Checkout:
 }
 ```
 
-O endpoint recalcula preço, taxa, juros e split. Endereço salvo tem prioridade sobre `shippingAddress`.
+O endpoint relê o preço do anúncio e recalcula comissão, juros e split. Endereço
+salvo tem prioridade sobre `shippingAddress`. O frete informado ainda não é
+reconciliado com uma cotação assinada pelo backend. Novos checkouts não usam
+saldo da wallet: quando um cliente antigo envia `useWalletBalance=true`, o valor
+é ignorado e a cobrança externa continua pelo total.
+
+Antes de criar o pedido, o endpoint exige recebedor ativo do vendedor e
+`PAGARME_PLATFORM_RECIPIENT_ID`. A ausência do primeiro retorna erro de domínio;
+a ausência do recebedor da plataforma retorna 503 para impedir cobrança sem
+split.
 
 ## Wallet, depósito e saque
 
@@ -227,7 +236,13 @@ O endpoint recalcula preço, taxa, juros e split. Endereço salvo tem prioridade
 | GET | `/api/wallet/transactions` | User/Admin | ledger do usuário |
 | POST | `/api/wallet/deposit` | User/Admin | cria depósito PIX |
 | GET | `/api/withdrawals/me` | User/Admin | solicitações de saque do usuário |
+| GET | `/api/withdrawals/limits` | User/Admin | mínimo, taxa e máximo sacável real |
 | POST | `/api/withdrawals` | User/Admin | solicita saque Pagar.me |
+
+Desde 31/07, saldo da wallet não é aceito no checkout. O endpoint de depósito
+continua operacional, mas o comprador comum não possui saque sem perfil de
+vendedor/recebedor; por isso ele não deve ser oferecido enquanto a divergência
+descrita em [Estado e riscos](./07-estado-riscos.md) não for resolvida.
 
 Depósito:
 
@@ -240,6 +255,37 @@ Saque:
 ```ts
 { amountInCents: number }
 ```
+
+`amountInCents` é o **líquido**: o que cai na conta bancária do vendedor. A taxa
+de saque da Pagar.me (R$ 3,67 fixos) é debitada **por cima**, então a carteira
+perde `amountInCents + fee` e a transferência enviada à Pagar.me leva apenas
+`amountInCents`.
+
+Por isso `GET /api/withdrawals/limits` existe: o cliente não tem como calcular o
+teto sozinho.
+
+```ts
+{
+  balanceInCents: number;          // disponível na carteira
+  pendingInCents: number;          // retido nas 48h, ainda não sacável
+  feeInCents: number;              // taxa fixa por saque
+  minInCents: number;              // mínimo de negócio
+  maxWithdrawableInCents: number;  // é ESTE que a interface deve usar como teto
+  canWithdraw: boolean;
+  limitSource: 'wallet' | 'pagarme';
+}
+```
+
+`maxWithdrawableInCents = max(0, min(saldo da carteira, saldo do recebedor) −
+taxa)`. O saldo do recebedor vem de `GET /recipients/{id}/balance` na Pagar.me;
+se a consulta falhar ou expirar, o cálculo **degrada para a carteira** em vez de
+bloquear o saque. `limitSource` indica qual dos dois limitou — `pagarme`
+significa que a carteira estava acima do saldo real, o que é sintoma de
+lançamento faltando no ledger.
+
+Usar `balanceInCents` como teto é o bug de 13/08/2026: o saque é recusado por
+saldo insuficiente, porque a taxa não cabe. Ver
+[Estado e riscos](./07-estado-riscos.md).
 
 ## Cartões salvos
 
@@ -358,7 +404,7 @@ Moderação:
 | POST | `/api/shipping/quote` | Público | cota Melhor Envio ou mock de desenvolvimento |
 | POST | `/api/shipping/label` | Autenticado | gera etiqueta manual para pedido do vendedor |
 | POST | `/api/shipping/label/:orderId/retry` | Autenticado | tenta novamente emissão automática |
-| GET | `/api/shipping/label/:orderId/pdf` | Autenticado | entrega PDF por proxy autenticado |
+| GET | `/api/shipping/label/:orderId/pdf?tipo=` | Autenticado | entrega PDF por proxy autenticado; `tipo` = `completo` (padrão), `etiqueta` ou `declaracao` |
 
 Cotação:
 
@@ -373,6 +419,25 @@ Cotação:
   listing_id?: string;
 }
 ```
+
+**Download do PDF (`?tipo=`).** O Melhor Envio **não** expõe arquivo com etiqueta
+e declaração juntas — medido em 06/08/2026 abrindo os PDFs de 8 envios reais:
+
+| `files.*` | Conteúdo real |
+|---|---|
+| `["1"].pdf` | a etiqueta, com o código de barras |
+| `dace.fullPdf` | `complete-dace.pdf` — a declaração **completa**, com a tabela de mercadorias. Só a declaração |
+| `dace.pdf` | a "DACE RESUMIDA", a mesma declaração sem os itens |
+
+O `complete` do nome qualifica a DACE, não o conjunto. Confundir os dois custou
+uma regressão: o padrão passou a servir um PDF chamado `etiqueta-e-declaracao`
+que só tinha a declaração, sem código de barras — impossível postar.
+
+Por isso `tipo=completo` baixa os dois e junta no servidor (`pdf-lib`), num PDF
+de duas páginas, preservando o MediaBox de cada uma para não reescalar o código
+de barras. Degrada para a etiqueta sozinha quando a DC-e ainda não saiu (é
+assíncrona), nunca o contrário. A resposta traz `X-Kolecta-Conteudo` com o que
+veio de fato.
 
 Geração manual:
 
@@ -395,6 +460,10 @@ Geração manual:
 
 Retry e PDF permitem o vendedor do pedido ou admin.
 
+Em produção, a cotação devolve somente os serviços permitidos por
+`MELHOR_ENVIO_SERVICOS`; o default atual é `1,2,3,17,31,33`. O filtro pode
+resultar em lista vazia mesmo quando o Melhor Envio retornou outras opções.
+
 ## Mídia
 
 | Método | Path | Acesso | Finalidade |
@@ -410,6 +479,9 @@ Retry e PDF permitem o vendedor do pedido ou admin.
 | POST | `/api/recipients/kyc-link` | User/Admin | gera link e QR de prova de vida |
 
 Onboarding aceita `type=individual|company`, nome, documento, e-mail, telefone/site opcionais, dados pessoais ou empresariais, endereço, sócios administradores e conta bancária.
+
+Quando `recipient.updated` torna o perfil operacional, o backend também retoma
+os leilões pausados do vendedor com o tempo restante persistido.
 
 ## Stripe Connect legado
 
@@ -450,6 +522,7 @@ Todas as rotas deste grupo usam `AuthGuard + RolesGuard` e exigem `admin`.
 |---|---|---|
 | GET | `/api/admin/stats` | totais e indicadores principais |
 | POST | `/api/admin/test-email` | envia template de teste |
+| POST | `/api/admin/broadcast` | ensaia ou dispara comunicado idempotente |
 | GET | `/api/admin/overview` | séries, top sellers, categorias e pendências |
 | GET | `/api/admin/reports` | GMV, métricas de leilão e categorias |
 | GET | `/api/admin/financial` | resumo, transações e saques pendentes |
@@ -465,6 +538,28 @@ Todas as rotas deste grupo usam `AuthGuard + RolesGuard` e exigem `admin`.
 | PATCH | `/api/admin/listings/:id/status` | modera com status/motivo |
 | GET | `/api/admin/founders/candidates` | candidatos e próximo número livre em 1..100 |
 | POST | `/api/admin/founders/:userId/grant` | concede número fundador; corpo `{ "number": 11 }`, aceita `0` (a casa) ou `1..100` |
+
+Broadcast:
+
+```ts
+{
+  template: string;
+  campanha: string;
+  dryRun?: boolean; // default true; somente false envia
+  apenasPara?: string;
+  audiencia?: "todos" | "recebedores-a-recadastrar";
+  limite?: number;
+  pausaMs?: number; // default 600
+}
+```
+
+O serviço exclui endereços de seed conhecidos e destinatários já registrados
+como `sent` para a mesma campanha. O contador `enviados` da resposta representa
+tentativas concluídas pelo loop; para confirmar entrega aceita pelo provedor,
+consulte `email_log.status`.
+
+`GET /api/admin/financial` agora separa `summary.revenue` (comissão) de
+`summary.shippingPassThrough` (frete que transitou pela plataforma).
 
 ## Webhooks
 
@@ -484,8 +579,8 @@ Esses endpoints precisam receber o corpo bruto original. Não passe por proxy qu
 - 403: role ou propriedade do recurso insuficiente.
 - 404: recurso não encontrado.
 - 409: conflito de estado ou duplicidade, quando aplicado pelo service.
+- 503: integração/configuração financeira indisponível, inclusive split sem recebedor da plataforma.
 - 422/erros de gateway podem ser traduzidos em mensagens de domínio.
 - 500: falha interna ou integração.
 
 O cliente deve exibir a mensagem retornada quando segura, mas não depender de texto para lógica; use status e estrutura.
-

@@ -18,8 +18,11 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { QuoteShippingDto, GenerateLabelDto } from './dto/shipping.dto';
 import {
+  EXIGEM_NOTA_FISCAL,
+  exigeNotaFiscal,
   nomeDoServico,
   parseServicos,
+  servicoPorId,
   servicosDaPlataforma,
   servicosDoVendedor,
 } from './servicos';
@@ -60,6 +63,44 @@ const NOME_DO_ARQUIVO: Readonly<Record<TipoArquivoEnvio, string>> = {
   completo: 'etiqueta-e-declaracao',
 };
 
+/**
+ * A transportadora recusou ESTE envio no carrinho do Melhor Envio.
+ *
+ * Tem tipo próprio porque é a única falha da emissão que se resolve trocando de
+ * transportadora — e porque precisa ser distinguível das nossas validações, que
+ * também são `HttpException` (pedido não pago, endereço de outra pessoa, CPF
+ * faltando). Trocar de transportadora naqueles casos só repetiria o erro com
+ * outro nome.
+ *
+ * O corpo e o status são os mesmos de antes: quem consome a API não vê
+ * diferença.
+ */
+export class CarrinhoRecusadoException extends HttpException {}
+
+/**
+ * Quanto a Kolecta aceita pagar a mais quando a transportadora escolhida recusa
+ * e a etiqueta sai por outra.
+ *
+ * O comprador já pagou um frete fechado e o dinheiro é da Kolecta (o frete
+ * inteiro entra no split dela). Cobrar a diferença dele depois da compra não é
+ * opção, e deixar sem etiqueta é pior: ele fica com o dinheiro gasto e a peça
+ * parada. Então absorvemos — mas com teto, senão uma rota cara viraria prejuízo
+ * silencioso.
+ *
+ * Acima do teto a etiqueta cai em `failed` com o motivo escrito, que é o
+ * caminho onde alguém olha.
+ */
+const TETO_DE_ABSORCAO_EM_CENTAVOS = 1500;
+
+/**
+ * Quantas alternativas tentar antes de desistir.
+ *
+ * Cada tentativa é uma chamada ao `/cart` — barata, mas não é de graça, e uma
+ * rota em que duas transportadoras seguidas recusam é problema para humano ver,
+ * não para o código insistir.
+ */
+const MAX_ALTERNATIVAS = 2;
+
 @Injectable()
 export class ShippingService {
   private readonly logger = new Logger(ShippingService.name);
@@ -67,6 +108,13 @@ export class ShippingService {
     process.env.MELHOR_ENVIO_API_URL ||
     'https://sandbox.melhorenvio.com.br/api/v2/me';
   private readonly token = process.env.MELHOR_ENVIO_TOKEN;
+
+  /**
+   * Quem exige nota fiscal, lido do Melhor Envio. Guardado por 24h: a regra é da
+   * transportadora, muda em escala de meses, e uma chamada extra por cotação
+   * seria peso puro no caminho mais quente do checkout.
+   */
+  private exigemNota: { em: number; ids: Set<number> } | null = null;
 
   constructor(
     private readonly httpService: HttpService,
@@ -76,6 +124,16 @@ export class ShippingService {
   ) {}
 
   async quoteShipping(data: QuoteShippingDto) {
+    // CEP de destino malformado NÃO é caso de mock: é erro de digitação, e a
+    // pessoa precisa saber para corrigir. Barrado aqui, antes de gastar a
+    // chamada — o Melhor Envio responderia 422 de qualquer jeito.
+    const toCep = String(data.to_cep ?? '').replace(/\D/g, '');
+    if (toCep.length !== 8) {
+      throw new BadRequestException(
+        'CEP de entrega inválido: confira o número, são 8 dígitos.',
+      );
+    }
+
     if (!this.token) {
       this.logger.warn(
         'Token do Melhor Envio não configurado. Retornando mocks para desenvolvimento.',
@@ -115,7 +173,7 @@ export class ShippingService {
     try {
       const payload = {
         from: { postal_code: fromCep },
-        to: { postal_code: data.to_cep.replace(/\D/g, '') },
+        to: { postal_code: toCep },
         package: pkg,
       };
 
@@ -126,7 +184,27 @@ export class ShippingService {
         }),
       );
 
-      const cotadas = response.data.filter((opt: any) => !opt.error);
+      const cotouComErro = response.data.filter((opt: any) => !opt.error);
+
+      // Fora quem exige nota fiscal. O `calculate` NÃO aplica essa regra: cota a
+      // Jadlog com preço e prazo e só o `/cart` recusa, com o frete já pago
+      // (pedido 0c57df5a). Quem sabe da regra é `GET /shipment/services`, e é
+      // dela que sai este corte.
+      const exigemNota = await this.servicosQueExigemNota();
+      const cotadas = cotouComErro.filter(
+        (opt: any) => !exigemNota.has(Number(opt.id)),
+      );
+      const semNota = cotouComErro.length - cotadas.length;
+      if (semNota > 0) {
+        this.logger.log(
+          `Frete ${fromCep} → ${data.to_cep}: ${semNota} opção(ões) escondidas por ` +
+            `exigirem nota fiscal: ` +
+            cotouComErro
+              .filter((o: any) => exigemNota.has(Number(o.id)))
+              .map((o: any) => `${o.company?.name} ${o.name}`)
+              .join(', '),
+        );
+      }
 
       // Quem manda no que aparece: a plataforma corta, e o VENDEDOR pode cortar
       // mais dentro do que sobrou (a agência perto da casa dele é o que decide
@@ -140,19 +218,29 @@ export class ShippingService {
       // dá para saber quantas opções o corte custou nesta rota. Pedir já
       // filtrado economizaria alguns bytes e cegaria o log.
       const permitidos = new Set(permitidosIds);
-      const permitidas = permitidos.size
+      const escolhidas = permitidos.size
         ? cotadas.filter((opt: any) => permitidos.has(Number(opt.id)))
         : cotadas;
 
       // Mini Envios só aceita até ~300g; Loggi Express e JeT têm cobertura
-      // regional. Numa rota que nenhum dos escolhidos atende, o comprador fica
-      // SEM frete e não consegue fechar a compra. É silencioso do lado dele, e
-      // este log é o único lugar onde isso aparece.
-      if (permitidas.length === 0 && cotadas.length > 0) {
+      // regional. Numa rota que nenhum dos escolhidos atende, o comprador ficava
+      // SEM frete e não conseguia fechar a compra — silencioso do lado dele, e
+      // este log era o único lugar onde aparecia.
+      //
+      // Agora a lista cede. A regra da casa é não deixar de oferecer envio: uma
+      // preferência de transportadora é conveniência do vendedor, e venda
+      // perdida por falta de frete custa mais do que despachar numa empresa que
+      // não era a favorita dele. O que NÃO cede é o filtro de nota fiscal — ali
+      // a opção não existe de verdade, oferecê-la seria vender uma etiqueta
+      // impossível.
+      const permitidas =
+        escolhidas.length === 0 && cotadas.length > 0 ? cotadas : escolhidas;
+
+      if (escolhidas.length === 0 && cotadas.length > 0) {
         this.logger.warn(
-          `Frete ${fromCep} → ${data.to_cep}: nenhuma transportadora permitida atende. ` +
-            `Permitidos: ${permitidosIds.map(nomeDoServico).join(', ') || 'nenhum'}. ` +
-            `${cotadas.length} opção(ões) foram descartadas pelo filtro: ` +
+          `Frete ${fromCep} → ${data.to_cep}: nenhuma transportadora escolhida atende. ` +
+            `Escolhidas: ${permitidosIds.map(nomeDoServico).join(', ') || 'nenhuma'}. ` +
+            `Oferecendo mesmo assim, para não deixar o comprador sem frete: ` +
             cotadas
               .map((o: any) => `${o.company?.name} ${o.name} (id ${o.id})`)
               .join(', '),
@@ -169,12 +257,62 @@ export class ShippingService {
 
       return { options, pickup: prefs.aceitaRetirada };
     } catch (error: any) {
+      // CEP recusado é problema de DADO, não de disponibilidade: devolver mock
+      // aqui fazia o comprador com CEP errado ver "PAC R$ 25,90" e "SEDEX
+      // R$ 45,50" — preços fixos do mock, de um frete que não existe. Encontrado
+      // no mapeamento de 12/08 (95800-009, Venâncio Aires/RS, CEP inexistente).
+      const recusado = this.cepRecusadoPeloMelhorEnvio(error);
+      if (recusado === 'destino') {
+        this.logger.warn(
+          `Melhor Envio não reconhece o CEP de destino ${toCep}.`,
+        );
+        throw new BadRequestException(
+          'Não encontramos esse CEP de entrega. Confira o número.',
+        );
+      }
+      if (recusado === 'origem') {
+        // Culpa do cadastro do VENDEDOR. Dizer ao comprador para conferir o CEP
+        // dele seria mandá-lo corrigir o que está certo.
+        this.logger.error(
+          `CEP de origem inválido no Melhor Envio: ${fromCep} ` +
+            `(anúncio ${data.listing_id ?? '?'}). Nenhum frete é cotável até o ` +
+            `vendedor corrigir o endereço.`,
+        );
+        throw new BadRequestException(
+          'Não foi possível calcular o frete deste anúncio: o endereço de ' +
+            'origem do vendedor está com CEP inválido.',
+        );
+      }
+
+      // O resto — timeout, instabilidade, 5xx — continua no mock: aí a opção
+      // existe, só não deu para consultar agora.
       this.logger.error(
         'Erro ao cotar frete no Melhor Envio',
         error?.response?.data || error.message,
       );
       return this.getMockShippingQuote(prefs.aceitaRetirada);
     }
+  }
+
+  /**
+   * Qual das duas pontas o Melhor Envio recusou, quando recusou.
+   *
+   * Ele responde 422 com `errors.postal_code` e o lado só aparece no TEXTO da
+   * mensagem — `cep_origem` ou `cep_destino`. Com os dois inválidos, reclama da
+   * origem primeiro (conferido contra a API em 12/08/2026).
+   */
+  private cepRecusadoPeloMelhorEnvio(err: any): 'origem' | 'destino' | null {
+    const dados = err?.response?.data;
+    const doCampo = dados?.errors?.postal_code;
+    const texto = [
+      ...(Array.isArray(doCampo) ? doCampo : [doCampo]),
+      dados?.message,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    if (/cep_origem/i.test(texto)) return 'origem';
+    if (/cep_destino/i.test(texto)) return 'destino';
+    return null;
   }
 
   /**
@@ -397,7 +535,10 @@ export class ShippingService {
         `Erro ao criar carrinho no Melhor Envio (pedido ${dto.order_id})`,
         data || error.message,
       );
-      throw new HttpException(
+      // `CarrinhoRecusadoException` e não `HttpException` crua: é aqui, e só
+      // aqui, que a transportadora diz que não leva este envio. A emissão usa
+      // esse tipo para saber que vale tentar outra.
+      throw new CarrinhoRecusadoException(
         {
           message: 'Falha ao gerar etiqueta no Melhor Envio.',
           details: data ?? error.message,
@@ -438,7 +579,8 @@ export class ShippingService {
     const order = await this.db.query.orders.findFirst({
       where: eq(schema.orders.id, orderId),
     });
-    if (!order) throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
+    if (!order)
+      throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
 
     // Já pronta: não refaz nada nem reenvia e-mail.
     if (order.shippingLabelStatus === 'ready' && order.shippingLabelUrl) {
@@ -457,7 +599,8 @@ export class ShippingService {
     }
 
     try {
-      const cartId = order.shippingCartId ?? (await this.montarCarrinho(order));
+      const cartId =
+        order.shippingCartId ?? (await this.montarCarrinhoComTroca(order));
       await this.registrarEtiqueta(orderId, { status: 'cart', cartId });
 
       // Retoma pelo estado REMOTO, não pelo nosso. O envio pode ter sido pago
@@ -518,15 +661,243 @@ export class ShippingService {
   }
 
   /**
+   * Monta o carrinho e, se a transportadora recusar, monta em outra.
+   *
+   * A recusa não dá para prever na cotação: conferido contra a API de produção
+   * em 12/08/2026, o `/shipment/calculate` devolve preço e prazo de uma
+   * transportadora que o `/cart` depois recusa — o `calculate` sequer olha o
+   * `non_commercial`. Então o único lugar onde dá para reagir é aqui, depois do
+   * "não".
+   *
+   * Sem isto, o comprador fica com o frete pago e nada postado, o vendedor com
+   * uma mensagem de erro que não é culpa dele, e a venda parada até alguém
+   * perceber. Foi o pedido 0c57df5a, na Jadlog.
+   */
+  private async montarCarrinhoComTroca(
+    order: typeof schema.orders.$inferSelect,
+  ): Promise<string> {
+    try {
+      return await this.montarCarrinho(order);
+    } catch (err: any) {
+      // Só recusa da transportadora vira troca. Pedido não pago, endereço de
+      // outra pessoa ou CPF faltando não melhoram com outro serviço.
+      if (!(err instanceof CarrinhoRecusadoException)) throw err;
+      return this.trocarDeTransportadora(order, err);
+    }
+  }
+
+  /**
+   * Reemite por outra transportadora depois de uma recusa.
+   *
+   * Falhar todas as alternativas devolve a recusa ORIGINAL, acrescida de quem
+   * mais tentamos: o vendedor precisa ler o motivo de verdade, não "nenhuma
+   * transportadora aceitou".
+   */
+  private async trocarDeTransportadora(
+    order: typeof schema.orders.$inferSelect,
+    recusa: CarrinhoRecusadoException,
+  ): Promise<string> {
+    const motivo = this.motivoDaFalha(recusa);
+    const recusadoPor = order.shippingServiceId
+      ? nomeDoServico(order.shippingServiceId)
+      : 'a transportadora escolhida';
+
+    this.logger.warn(
+      `Pedido ${order.id}: ${recusadoPor} recusou o envio (${motivo}). ` +
+        `Procurando alternativa.`,
+    );
+
+    const alternativas = (await this.alternativasDeEnvio(order)).slice(
+      0,
+      MAX_ALTERNATIVAS,
+    );
+    const tentadas: string[] = [];
+
+    for (const alternativa of alternativas) {
+      try {
+        const cartId = await this.montarCarrinho(order, alternativa.id);
+        await this.registrarTroca(order, alternativa, motivo);
+        return cartId;
+      } catch (err: any) {
+        if (!(err instanceof CarrinhoRecusadoException)) throw err;
+        tentadas.push(alternativa.nome);
+        this.logger.warn(
+          `Pedido ${order.id}: ${alternativa.nome} também recusou ` +
+            `(${this.motivoDaFalha(err)}).`,
+        );
+      }
+    }
+
+    const detalhe = tentadas.length
+      ? `${motivo} Tentamos também ${tentadas.join(' e ')}, sem sucesso.`
+      : `${motivo} Nenhuma transportadora alternativa disponível para este trajeto.`;
+    throw new CarrinhoRecusadoException(
+      {
+        message: 'Falha ao gerar etiqueta no Melhor Envio.',
+        details: { message: detalhe },
+      },
+      recusa.getStatus(),
+    );
+  }
+
+  /**
+   * Transportadoras que podem substituir a que recusou, na ordem em que valem a
+   * tentativa.
+   *
+   * Ordem: primeiro quem atende o país inteiro sem pegadinha (os Correios, que
+   * aceitam pessoa física sem nota fiscal em qualquer agência e são 9 das 9
+   * etiquetas que deram certo aqui), depois preço. É de propósito que o mais
+   * barato NÃO venha antes: a opção mais barata já falhou uma vez, e outro "não"
+   * custa mais do que os centavos economizados.
+   *
+   * A cotação já vem filtrada pelo que a plataforma e o vendedor permitem — a
+   * troca não fura nenhuma das duas regras.
+   */
+  private async alternativasDeEnvio(
+    order: typeof schema.orders.$inferSelect,
+  ): Promise<Array<{ id: number; nome: string; precoEmCentavos: number }>> {
+    const origem = await this.enderecoDoVendedor(order.sellerId);
+    const destino = order.addressId
+      ? await this.db.query.addresses.findFirst({
+          where: eq(schema.addresses.id, order.addressId),
+        })
+      : null;
+    if (!origem || !destino) return [];
+
+    const listing = order.listingId
+      ? await this.db.query.listings.findFirst({
+          where: eq(schema.listings.id, order.listingId),
+        })
+      : null;
+    const pacote = this.resolvePackage({} as QuoteShippingDto, listing ?? null);
+
+    // Falha ao recotar não pode virar o erro do pedido: o motivo que o vendedor
+    // precisa ler é a recusa da transportadora, não "CEP inválido" vindo de uma
+    // consulta que era só para achar alternativa.
+    const cotacao = await this.quoteShipping({
+      from_cep: String(origem.zip),
+      to_cep: String(destino.zip),
+      listing_id: order.listingId ?? undefined,
+      weight_kg: pacote.weight,
+      width_cm: pacote.width,
+      height_cm: pacote.height,
+      length_cm: pacote.length,
+    } as QuoteShippingDto).catch((err: any) => {
+      this.logger.warn(
+        `Pedido ${order.id}: não deu para recotar a rota em busca de ` +
+          `alternativa (${err?.message ?? err}).`,
+      );
+      return null;
+    });
+
+    const opcoes: Array<{ id: number; nome: string; precoEmCentavos: number }> =
+      (cotacao?.options ?? [])
+        .filter(
+          (o: any) =>
+            o?.raw?.id &&
+            Number.isFinite(o.price) &&
+            Number(o.raw.id) !== order.shippingServiceId,
+        )
+        .map((o: any) => ({
+          id: Number(o.raw.id),
+          nome: `${o.carrier} ${o.service}`,
+          precoEmCentavos: Math.round(o.price * 100),
+        }));
+    if (opcoes.length === 0) return [];
+
+    // Referência do teto: o que o comprador pagou. Pedido sem frete cobrado
+    // (leilão antigo, em que a Kolecta escolhia e pagava) usa a opção mais
+    // barata da rota, senão o teto viraria R$ 15 no absoluto e barraria tudo.
+    const maisBarata = Math.min(...opcoes.map((o) => o.precoEmCentavos));
+    const referencia = order.shippingInCents || maisBarata;
+    const teto = referencia + TETO_DE_ABSORCAO_EM_CENTAVOS;
+
+    const dentroDoTeto = opcoes.filter((o) => o.precoEmCentavos <= teto);
+    if (dentroDoTeto.length === 0) {
+      // Decisão sobre dinheiro não pode ser silenciosa: sem este log, o pedido
+      // apareceria como "nenhuma transportadora aceitou" quando na verdade
+      // existiam opções e nós é que recusamos o preço.
+      this.logger.warn(
+        `Pedido ${order.id}: ${opcoes.length} alternativa(s) existem, mas todas ` +
+          `acima do teto de R$ ${(teto / 100).toFixed(2)} ` +
+          `(frete pago: R$ ${(referencia / 100).toFixed(2)}): ` +
+          opcoes
+            .map((o) => `${o.nome} R$ ${(o.precoEmCentavos / 100).toFixed(2)}`)
+            .join(', '),
+      );
+      return [];
+    }
+
+    const confiavel = (id: number) => {
+      const s = servicoPorId(id);
+      return s?.nacional && !s.aviso ? 0 : 1;
+    };
+    return dentroDoTeto.sort(
+      (a, b) =>
+        confiavel(a.id) - confiavel(b.id) ||
+        a.precoEmCentavos - b.precoEmCentavos,
+    );
+  }
+
+  /**
+   * Grava a troca no pedido e avisa os dois lados.
+   *
+   * O pedido tem que passar a dizer a verdade: é por `shippingServiceName` que o
+   * comprador acompanha a entrega e o vendedor sabe em que balcão postar. Deixar
+   * o nome antigo mandaria os dois para a transportadora errada.
+   */
+  private async registrarTroca(
+    order: typeof schema.orders.$inferSelect,
+    alternativa: { id: number; nome: string; precoEmCentavos: number },
+    motivo: string,
+  ): Promise<void> {
+    const de =
+      order.shippingServiceName ?? nomeDoServico(order.shippingServiceId ?? 0);
+    const pago = order.shippingInCents ?? 0;
+    const diferenca = alternativa.precoEmCentavos - pago;
+
+    await this.db
+      .update(schema.orders)
+      .set({
+        shippingServiceId: alternativa.id,
+        shippingServiceName: alternativa.nome,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.orders.id, order.id));
+
+    this.logger.warn(
+      `Pedido ${order.id}: etiqueta trocada de ${de} para ${alternativa.nome} ` +
+        `(${motivo}). Frete pago R$ ${(pago / 100).toFixed(2)}, etiqueta ` +
+        `R$ ${(alternativa.precoEmCentavos / 100).toFixed(2)} — ` +
+        (diferenca > 0
+          ? `diferença de R$ ${(diferenca / 100).toFixed(2)} absorvida pela Kolecta.`
+          : `sem custo extra.`),
+    );
+
+    this.eventEmitter?.emit('shipping.carrier.changed', {
+      orderId: order.id,
+      de,
+      para: alternativa.nome,
+      motivo,
+      pagoEmCentavos: pago,
+      etiquetaEmCentavos: alternativa.precoEmCentavos,
+    });
+  }
+
+  /**
    * Valida as duas pontas e cria o envio no carrinho.
    *
    * A validação é o ponto em que a Kolecta confere que o envio é mesmo daquela
    * compra: o endereço de destino tem que ser do COMPRADOR do pedido e o de
    * origem do VENDEDOR. Sem isso, um address_id trocado emitiria etiqueta para
    * a casa de outra pessoa.
+   *
+   * `servicoForcado` só vem da troca de transportadora, depois de uma recusa.
+   * Fora dali, quem manda continua sendo o serviço que o comprador pagou.
    */
   private async montarCarrinho(
     order: typeof schema.orders.$inferSelect,
+    servicoForcado?: number,
   ): Promise<string> {
     if ((order.deliveryMethod ?? 'shipping') !== 'shipping') {
       throw new BadRequestException(
@@ -573,7 +944,9 @@ export class ShippingService {
       : null;
 
     const pacote = this.resolvePackage({} as QuoteShippingDto, listing ?? null);
-    const serviceId = await this.resolverServico(order, origem, destino, pacote);
+    const serviceId =
+      servicoForcado ??
+      (await this.resolverServico(order, origem, destino, pacote));
 
     const resultado = await this.createCart(
       {
@@ -692,6 +1065,54 @@ export class ShippingService {
   }
 
   /**
+   * Ids dos serviços que exigem nota fiscal, direto do Melhor Envio.
+   *
+   * Vem da API, e não de uma lista nossa, porque a regra é deles: se a Jadlog
+   * parar de exigir nota, ou se os Correios passarem a exigir, a cotação
+   * acompanha sozinha, sem deploy. A lista fixa em `servicos.ts` é a rede de
+   * segurança — falha na consulta não pode zerar o filtro e devolver ao
+   * comprador uma transportadora que vai recusar.
+   */
+  private async servicosQueExigemNota(): Promise<Set<number>> {
+    const agora = Date.now();
+    if (this.exigemNota && agora - this.exigemNota.em < 24 * 60 * 60 * 1000) {
+      return this.exigemNota.ids;
+    }
+    try {
+      const resposta = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/shipment/services`, {
+          headers: this.authHeaders(),
+          timeout: 5000,
+        }),
+      );
+      const lista: any[] = Array.isArray(resposta.data)
+        ? resposta.data
+        : (resposta.data?.data ?? []);
+      // Lista vazia é resposta estranha, não "ninguém exige nota": tratar como
+      // sucesso desligaria o filtro justamente quando a API está ruim.
+      if (lista.length === 0) throw new Error('lista de serviços vazia');
+
+      const ids = new Set<number>(
+        lista
+          .filter((s) => exigeNotaFiscal(s?.requirements))
+          .map((s) => Number(s.id)),
+      );
+      this.exigemNota = { em: agora, ids };
+      this.logger.log(
+        `Melhor Envio: ${ids.size} de ${lista.length} serviços exigem nota fiscal ` +
+          `(${[...ids].map(nomeDoServico).join(', ') || 'nenhum'}).`,
+      );
+      return ids;
+    } catch (err: any) {
+      this.logger.warn(
+        `Não deu para ler os requisitos dos serviços no Melhor Envio ` +
+          `(${err?.message ?? err}). Usando a lista fixa de ${EXIGEM_NOTA_FISCAL.length}.`,
+      );
+      return new Set(EXIGEM_NOTA_FISCAL);
+    }
+  }
+
+  /**
    * Este vendedor entrega em mãos?
    *
    * Público, porque quem precisa saber é o CHECKOUT (para mostrar ou não a
@@ -749,7 +1170,8 @@ export class ShippingService {
     const order = await this.db.query.orders.findFirst({
       where: eq(schema.orders.id, orderId),
     });
-    if (!order) throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
+    if (!order)
+      throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
     if (!order.shippingCartId) {
       throw new BadRequestException(
         'A etiqueta deste pedido ainda não foi emitida.',
@@ -764,10 +1186,10 @@ export class ShippingService {
       throw new BadRequestException(
         tipo === 'declaracao'
           ? 'O Melhor Envio ainda não emitiu a declaração de conteúdo deste ' +
-            'envio. Ela costuma sair alguns minutos depois da etiqueta — tente ' +
-            'de novo em instantes.'
+              'envio. Ela costuma sair alguns minutos depois da etiqueta — tente ' +
+              'de novo em instantes.'
           : 'O Melhor Envio ainda não disponibilizou o arquivo da etiqueta. ' +
-            'Tente de novo em alguns instantes.',
+              'Tente de novo em alguns instantes.',
       );
     }
 
@@ -855,7 +1277,7 @@ export class ShippingService {
         timeout: 20000,
       }),
     );
-    const files = (resposta.data as any)?.files ?? {};
+    const files = resposta.data?.files ?? {};
     const etiqueta = files['1']?.pdf;
     const declaracao = files?.dace?.fullPdf ?? files?.dace?.pdf;
 
@@ -1030,13 +1452,13 @@ export class ShippingService {
     const order = await this.db.query.orders.findFirst({
       where: eq(schema.orders.id, orderId),
     });
-    if (!order) throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
+    if (!order)
+      throw new NotFoundException(`Pedido ${orderId} não encontrado.`);
     if (!order.shippingCartId) return null;
 
     const rastreio = await this.rastrearEnvio(order.shippingCartId);
 
-    const entregueAgora =
-      dataMEParaDate(rastreio.entregueEm) ?? null;
+    const entregueAgora = dataMEParaDate(rastreio.entregueEm) ?? null;
     const jaConstavaEntregue = !!order.shippingDeliveredAt;
 
     await this.db
@@ -1044,7 +1466,8 @@ export class ShippingService {
       .set({
         trackingStatus: rastreio.status,
         trackingCode: order.trackingCode ?? rastreio.codigo,
-        shippingPostedAt: dataMEParaDate(rastreio.postadoEm) ?? order.shippingPostedAt,
+        shippingPostedAt:
+          dataMEParaDate(rastreio.postadoEm) ?? order.shippingPostedAt,
         shippingDeliveredAt: entregueAgora ?? order.shippingDeliveredAt,
         trackingCheckedAt: new Date(),
       })
@@ -1177,9 +1600,24 @@ export class ShippingService {
     );
     return {
       weight: pesoUnit * qtd,
-      width: pick(data.width_cm, listing?.widthCm, 'SHIPPING_DEFAULT_WIDTH_CM', 16),
-      height: pick(data.height_cm, listing?.heightCm, 'SHIPPING_DEFAULT_HEIGHT_CM', 6),
-      length: pick(data.length_cm, listing?.lengthCm, 'SHIPPING_DEFAULT_LENGTH_CM', 12),
+      width: pick(
+        data.width_cm,
+        listing?.widthCm,
+        'SHIPPING_DEFAULT_WIDTH_CM',
+        16,
+      ),
+      height: pick(
+        data.height_cm,
+        listing?.heightCm,
+        'SHIPPING_DEFAULT_HEIGHT_CM',
+        6,
+      ),
+      length: pick(
+        data.length_cm,
+        listing?.lengthCm,
+        'SHIPPING_DEFAULT_LENGTH_CM',
+        12,
+      ),
     };
   }
 

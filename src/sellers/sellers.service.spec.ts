@@ -194,3 +194,79 @@ describe('SellersService.updateMyShipping', () => {
     expect(gravado[0]).toEqual({ shippingServices: '1,31' });
   });
 });
+
+/**
+ * O nome que aparece na loja é o do PAINEL DA KOLECTA, não o do Clerk.
+ *
+ * `users.name` vem do webhook do Clerk e é reescrito a cada `user.updated` —
+ * mexer no nome da CONTA DE E-MAIL renomeava a loja. A vitrine e o leilão já
+ * resolviam pelo `store_name`; este endpoint, que serve justamente a página da
+ * loja (`/vendedor/:id` e `kolecta.com.br/<slug>`), lia `users.name` cru. O
+ * comprador via "Culture TCG" no card e o nome pessoal do dono ao clicar nele,
+ * inclusive no `<title>` que vai para o Google — enquanto a URL, gerada do
+ * `store_name`, dizia outra coisa na mesma página.
+ */
+describe('SellersService.getSellerProfile', () => {
+  const SELLER = 'user_abc';
+
+  const build = () => {
+    const selects: any[] = [];
+    const db: any = {
+      select: jest.fn((campos: any) => {
+        selects.push(campos);
+        return db;
+      }),
+      from: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      get: jest.fn().mockResolvedValue({ id: SELLER }),
+    };
+    return { db, selects, service: new SellersService(db as any) };
+  };
+
+  /**
+   * Colunas que uma expressão SQL do drizzle referencia, NA ORDEM — que aqui é
+   * a própria regra: quem vem primeiro no COALESCE é quem prevalece.
+   */
+  const colunasDe = (expr: any): string[] =>
+    (expr?.queryChunks ?? [])
+      .filter((c: any) => typeof c?.name === 'string')
+      .map((c: any) => c.name);
+
+  /** O select do perfil é o primeiro; os seguintes são as agregações. */
+  const camposDoPerfil = (selects: any[]) => selects[0];
+
+  it('resolve o nome pelo store_name ANTES de cair no users.name', async () => {
+    const { selects, service } = build();
+
+    await service.getSellerProfile(SELLER);
+
+    expect(colunasDe(camposDoPerfil(selects).name)).toEqual([
+      'store_name',
+      'name',
+    ]);
+  });
+
+  it('não devolve mais o users.name cru como nome da loja', async () => {
+    // Regressão: bastava trocar a expressão pela coluna para o nome do Clerk
+    // voltar a mandar, e nenhum teste acusaria.
+    const { selects, service } = build();
+
+    await service.getSellerProfile(SELLER);
+
+    expect(colunasDe(camposDoPerfil(selects).name)).not.toEqual(['name']);
+  });
+
+  it('mantém store_name e slug à parte do nome resolvido', async () => {
+    // `name` agora vem sempre resolvido, então deixou de ser possível saber
+    // por ele se a loja TEM nome próprio ou está caindo no do dono. Quem
+    // precisar da distinção — e o `slug`, que a página usa na URL canônica —
+    // continua tendo os campos crus aqui.
+    const { selects, service } = build();
+
+    await service.getSellerProfile(SELLER);
+
+    expect(camposDoPerfil(selects)).toHaveProperty('storeName');
+    expect(camposDoPerfil(selects)).toHaveProperty('slug');
+  });
+});

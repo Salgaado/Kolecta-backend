@@ -187,13 +187,16 @@ Checkout:
 - consulta ViaCEP no navegador;
 - cota frete pelo backend;
 - permite retirada quando oferecida pela interface;
-- aceita saldo da wallet;
 - permite PIX;
 - permite cartão quando feature flag e configuração Pagar.me estão ativas;
 - tokeniza cartão diretamente no endpoint público Pagar.me;
 - solicita simulação de parcelas ao backend;
 - envia CPF e telefone;
 - redireciona para confirmação, que acompanha estado pendente.
+
+O controle “usar saldo” foi removido em 31/07. Todo checkout novo cobra o valor
+integral no gateway; a wallet continua visível em conta/financeiro para saldo,
+depósito e saque. As telas de depósito ainda não foram adequadas a essa mudança.
 
 O frontend não deve calcular o total final como autoridade. `order-breakdown.ts` serve à apresentação; o backend recalcula.
 
@@ -257,6 +260,9 @@ A página integra:
 - like/save/pin;
 - comentários;
 - denúncia.
+
+Imagens de posts usam enquadramento padronizado no feed e abrem em visualização
+ampliada ao clicar.
 
 O client expõe leitura pública e exige token nas interações. A moderação da comunidade existe no backend, mas não há uma rota/página admin dedicada importada no `App.tsx` analisado.
 
@@ -328,6 +334,7 @@ Algumas telas de configurações/mídia comunicam funcionalidades ainda não sup
 | Path | Tela |
 |---|---|
 | `/` | home ou countdown |
+| `/fundadores` | landing permanente do programa fundador |
 | `/carrinho` | carrinho |
 | `/checkout` | checkout |
 | `/pedido/confirmacao` | confirmação/acompanhamento |
@@ -419,6 +426,7 @@ Algumas telas de configurações/mídia comunicam funcionalidades ainda não sup
 | `kolecta:catalogo:v1` | cache de catálogo |
 | `kolecta_legal_consent` | aceite local |
 | `kolecta_legal_consent_synced` | sincronização concluída |
+| `kolecta_aviso_visto:<userId>` | campanha de pagamento confirmada pela conta |
 | `dev_user_id` | usuário selecionado em desenvolvimento |
 | `report_<listingId>` | anúncio já denunciado neste navegador |
 | chave do Meta Pixel | signup já contado |
@@ -438,6 +446,7 @@ Nenhum desses dados substitui estado do servidor.
 - componentes de leilão;
 - editor de campos de categoria;
 - cart drawer;
+- modal temporário e bloqueante de aviso sobre meios de pagamento, exibido uma vez por conta/campanha;
 - componentes Radix/shadcn em `components/ui`.
 
 Bibliotecas de domínio em `src/lib` cobrem moeda, CPF, frete, taxas, busca, catálogo, condições, fotos, leilão, visibilidade, analytics e regras da home.
@@ -446,8 +455,8 @@ Bibliotecas de domínio em `src/lib` cobrem moeda, CPF, frete, taxas, busca, cat
 
 Estado verificado:
 
-- 38 arquivos Vitest;
-- 390 testes passando;
+- 44 arquivos Vitest;
+- 443 testes passando;
 - build Vite concluído.
 
 Cobertura visível:
@@ -471,4 +480,4 @@ Playwright possui cenários para favoritos, depósito e checkout. Eles exigem am
 - Vercel reescreve qualquer path para `index.html`, habilitando rotas SPA;
 - output em `dist`;
 - Vercel Analytics é carregado dentro da aplicação.
-
+- bundle JS atual: 1.886,15 kB minificado e 511,61 kB gzip; o build mantém o aviso de chunk acima de 500 kB.

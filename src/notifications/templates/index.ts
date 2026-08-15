@@ -10,6 +10,7 @@ import * as listingApproved from './listing-approved';
 import * as listingRejected from './listing-rejected';
 import * as orderShipped from './order-shipped';
 import * as shippingLabelReady from './shipping-label-ready';
+import * as shippingCarrierChanged from './shipping-carrier-changed';
 import * as bidReceived from './bid-received';
 import * as bidOutbid from './bid-outbid';
 import * as auctionWon from './auction-won';
@@ -39,6 +40,7 @@ export const TEMPLATES = {
   'listing-rejected': listingRejected,
   'order-shipped': orderShipped,
   'shipping-label-ready': shippingLabelReady,
+  'shipping-carrier-changed': shippingCarrierChanged,
   'bid-received': bidReceived,
   'bid-outbid': bidOutbid,
   'auction-won': auctionWon,
