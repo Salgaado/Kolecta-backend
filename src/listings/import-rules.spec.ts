@@ -1,5 +1,5 @@
 import {
-  MIN_IMAGES,
+  MAX_IMAGES,
   isInstructionRow,
   validateImportRow,
   mapImportRow,
@@ -99,23 +99,22 @@ describe('import-rules', () => {
       );
     });
 
-    // O mínimo mora em MIN_IMAGES e já mudou de 3 para 2 — o teste segue a
-    // constante em vez de repetir o número, senão o nome vira mentira na
-    // próxima vez que o limite mudar.
-    it(`exige o mínimo de ${MIN_IMAGES} fotos`, () => {
-      const menosQueOMinimo = Array.from(
-        { length: MIN_IMAGES - 1 },
-        (_, i) => `https://a.com/${i}.jpg`,
-      ).join(', ');
-      expect(campos(linhaOk({ images: menosQueOMinimo }))).toContain('images');
+    // Foto é OPCIONAL na planilha: os dados entram sem foto e o vendedor anexa
+    // as imagens depois. Linha sem foto (ou com poucas) NÃO gera erro.
+    it('foto é opcional: linha sem foto não erra', () => {
+      expect(campos(linhaOk({ images: '' }))).not.toContain('images');
     });
 
-    it(`aceita exatamente ${MIN_IMAGES} fotos`, () => {
-      const noMinimo = Array.from(
-        { length: MIN_IMAGES },
+    it('aceita foto por URL quando informada (fluxo antigo)', () => {
+      expect(campos(linhaOk({ images: 'https://a.com/1.jpg' }))).not.toContain('images');
+    });
+
+    it(`recusa acima do máximo de ${MAX_IMAGES} fotos`, () => {
+      const demais = Array.from(
+        { length: MAX_IMAGES + 1 },
         (_, i) => `https://a.com/${i}.jpg`,
       ).join(', ');
-      expect(campos(linhaOk({ images: noMinimo }))).not.toContain('images');
+      expect(campos(linhaOk({ images: demais }))).toContain('images');
     });
 
     it('exige os campos da categoria escolhida', () => {

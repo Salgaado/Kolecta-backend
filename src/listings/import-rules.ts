@@ -133,13 +133,13 @@ export function validateImportRow(
     add('price', 'Preço inválido ou zerado. Ex: 149.90');
   }
 
+  // Foto é OPCIONAL na planilha. O muro do modelo antigo era exigir URL de foto,
+  // o que forçava o vendedor a hospedar as imagens fora. Agora a planilha carrega
+  // só os dados; sem foto, o anúncio nasce como rascunho ("falta foto") e o
+  // vendedor anexa as imagens depois, num passo visual (a Kolecta hospeda). Quem
+  // ainda quiser passar URLs continua podendo — só não pode passar do máximo.
   const photos = parsePhotos(val('images'));
-  if (photos.length < MIN_IMAGES) {
-    add(
-      'images',
-      `Envie de ${MIN_IMAGES} a ${MAX_IMAGES} URLs de foto (encontrei ${photos.length})`,
-    );
-  } else if (photos.length > MAX_IMAGES) {
+  if (photos.length > MAX_IMAGES) {
     add('images', `Máximo de ${MAX_IMAGES} fotos (encontrei ${photos.length})`);
   }
 

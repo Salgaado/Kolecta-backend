@@ -1248,7 +1248,13 @@ export class ListingsService {
             );
           }
 
-          // Importado entra na fila de moderação, nunca direto no ar.
+          // Sem foto na planilha, o anúncio NÃO pode ir para a moderação (a fila
+          // exige imagem). Nasce como rascunho ("falta foto") e o vendedor anexa
+          // as imagens depois, no passo visual, que então o envia para análise.
+          // Com foto (fluxo antigo por URL), continua indo direto para a fila.
+          const temFoto = mapped.images !== '[]';
+
+          // Importado nunca vai direto ao ar: ou entra na fila, ou fica em rascunho.
           await this.db.insert(schema.listings).values({
             id: crypto.randomUUID(),
             sellerId,
@@ -1271,7 +1277,7 @@ export class ListingsService {
             sku: mapped.sku,
             attributes: mapped.attributes,
             stock: mapped.stock,
-            status: 'pending_review',
+            status: temFoto ? 'pending_review' : 'draft',
           });
 
           processed++;
