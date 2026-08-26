@@ -300,6 +300,16 @@ export const listings = sqliteTable('listings', {
   // produto são a mesma coisa, então não haveria como reimportar sem duplicar
   // nem sincronizar estoque depois. null = anúncio criado na Kolecta.
   blingProductId: integer('bling_product_id'),
+  // O mesmo elo, para quem usa Tiny (Olist ERP) em vez de Bling.
+  //
+  // Coluna nova em vez de um par genérico `(erp, erp_product_id)` de propósito:
+  // trocar `bling_product_id` por um genérico é migração de dado em produção,
+  // com anúncios reais já vinculados, para ganhar elegância. O preço desta
+  // escolha é que a sincronização de estoque olha duas colunas — explícito, e
+  // documentado em docs/PLAN-tiny-olist.md.
+  //
+  // Os dois nunca são preenchidos ao mesmo tempo: um anúncio nasce em UM ERP.
+  tinyProductId: integer('tiny_product_id'),
   // Quantidade em estoque. O front já coleta (criação, edição e planilha) e o
   // backend descartava — o valor sumia e o estoque não aparecia em lugar
   // nenhum. null = não informado (o MVP vende 1 unidade por anúncio).
@@ -885,6 +895,30 @@ export const withdrawalRequests = sqliteTable('withdrawal_requests', {
 // ─── Bling Connections ───────────────────────────────────────────────────────
 // Tokens OAuth v3 do Bling por seller — opcional e por conta
 export const blingConnections = sqliteTable('bling_connections', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  accessToken: text('access_token').notNull(),
+  refreshToken: text('refresh_token').notNull(),
+  // Unix timestamp em segundos de quando o access_token expira
+  expiresAt: integer('expires_at').notNull(),
+  ...timestamps,
+});
+
+// ─── Tiny (Olist ERP) Connections ────────────────────────────────────────────
+// Tokens OAuth v3 do Tiny por seller. Mesmo formato do Bling de propósito: o
+// que muda entre os dois ERPs é o endereço e o formato do dado, não o que a
+// gente guarda.
+//
+// NÃO tem `client_id`/`client_secret` aqui. Se a Olist confirmar que cada
+// lojista gera as próprias credenciais (o "Caminho A" do PLAN-tiny-olist.md),
+// elas entram em um segundo script, CRIPTOGRAFADAS — segredo de aplicativo de
+// terceiro não expira sozinho como token, e não pode ficar em claro no banco.
+export const tinyConnections = sqliteTable('tiny_connections', {
   id: text('id')
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),

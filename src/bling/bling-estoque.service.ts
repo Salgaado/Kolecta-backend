@@ -8,6 +8,7 @@ import {
   decidir,
   emLotes,
   porProduto,
+  saldoUtil,
   type Atualizacao,
   type SaldoBling,
 } from './estoque-sync';
@@ -78,7 +79,12 @@ export class BlingEstoqueService {
 
     const mudancas: Array<Atualizacao & { titulo: string }> = [];
     for (const a of anuncios) {
-      const patch = decidir(a as any, saldos.get(Number(a.blingProductId)));
+      // `decidir` é comum aos dois ERPs e recebe o saldo já normalizado — o
+      // formato do Bling (`saldoVirtualTotal`) é traduzido aqui, e não lá.
+      const patch = decidir(
+        { ...(a as any), erpProductId: a.blingProductId ?? null },
+        saldoUtil(saldos.get(Number(a.blingProductId))),
+      );
       if (patch) mudancas.push({ ...patch, titulo: a.title });
     }
 

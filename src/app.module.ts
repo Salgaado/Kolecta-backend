@@ -29,6 +29,7 @@ import { MediaModule } from './media/media.module';
 import { AdminModule } from './admin/admin.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { BlingModule } from './bling/bling.module';
+import { TinyModule } from './tiny/tiny.module';
 import { PagarmeModule } from './pagarme/pagarme.module';
 import { RecipientsModule } from './recipients/recipients.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -71,6 +72,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     AdminModule,
     AnalyticsModule,
     BlingModule,
+    TinyModule,
     NotificationsModule,
     FounderModule,
   ],
