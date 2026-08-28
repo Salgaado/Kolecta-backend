@@ -220,6 +220,55 @@ export class AdminService {
     return updated;
   }
 
+  // ── DELETE /api/admin/sellers/:id/social ────────────────────────────────
+
+  /**
+   * Derruba os links de rede social da loja.
+   *
+   * Mesma justificativa da capa, com um agravante: link não é só conteúdo
+   * publicado numa página aberta e indexável — ele TIRA o visitante da Kolecta.
+   * Um perfil que virou phishing depois de cadastrado precisa sair do ar sem
+   * depender da boa vontade de quem o colocou lá.
+   *
+   * O `website` cai junto. Ele é o único campo dos quatro que aceita qualquer
+   * domínio, então é o mais provável de ser o problema — deixá-lo de fora faria
+   * a rota resolver os três casos fáceis e justamente o difícil não.
+   *
+   * Aceita id do perfil ou do usuário, como o `/cover`: quem usa isto está com
+   * o `/vendedor/:slug` na mão e errar de id neste momento custa tempo à toa.
+   */
+  async removeSellerSocial(id: string) {
+    const [profile] = await this.db
+      .select()
+      .from(schema.sellerProfiles)
+      .where(
+        or(
+          eq(schema.sellerProfiles.id, id),
+          eq(schema.sellerProfiles.userId, id),
+        ),
+      );
+
+    if (!profile)
+      throw new NotFoundException('Perfil de vendedor não encontrado');
+
+    const [updated] = await this.db
+      .update(schema.sellerProfiles)
+      .set({
+        socialTiktok: null,
+        socialInstagram: null,
+        socialYoutube: null,
+        website: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.sellerProfiles.id, profile.id))
+      .returning();
+
+    this.logger.warn(
+      `[admin] Redes sociais da loja removidas (perfil ${profile.id}, vendedor ${profile.userId}).`,
+    );
+    return updated;
+  }
+
   // ── GET /api/admin/disputes ──────────────────────────────────────────────
 
   async listDisputes(status?: string) {

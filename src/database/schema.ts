@@ -145,6 +145,21 @@ export const sellerProfiles = sqliteTable('seller_profiles', {
   // front. null = 55.
   coverOverlay: integer('cover_overlay'),
 
+  // ─── Redes sociais da loja ──────────────────────────────────────────────────
+  // Ícones no topo do perfil, cada um independente: preencheu, aparece.
+  //
+  // Guardamos o IDENTIFICADOR, nunca a URL. O que está gravado aqui não é
+  // `href` — a URL é montada na saída por `montarRedes()`, contra uma allowlist
+  // de domínios. Sem isso, o campo "Instagram" seria um redirecionador aberto
+  // numa página pública e indexável, com o ícone do Instagram do lado.
+  //
+  // null = não informado, e o ícone simplesmente não aparece.
+  socialTiktok: text('social_tiktok'),
+  socialInstagram: text('social_instagram'),
+  // O YouTube guarda o CAMINHO do canal ('@nome', 'c/nome', 'channel/UC…'),
+  // não só o handle: os três endereços coexistem e não são intercambiáveis.
+  socialYoutube: text('social_youtube'),
+
   city: text('city'),
   state: text('state'),
   website: text('website'),

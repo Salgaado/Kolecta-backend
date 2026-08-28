@@ -10,6 +10,7 @@ import {
   Min,
 } from 'class-validator';
 import { COVER_OVERLAY_MAX, COVER_OVERLAY_MIN } from '../capa';
+import { REDE_MAX_LENGTH } from '../redes';
 
 /** PUT /api/seller/profile — dados públicos da loja. */
 export class UpdateSellerProfileDto {
@@ -68,6 +69,30 @@ export class UpdateSellerProfileDto {
   @Max(COVER_OVERLAY_MAX)
   @IsOptional()
   coverOverlay?: number;
+
+  /**
+   * Redes sociais da loja. Aceitam `@handle`, o handle solto ou a URL inteira —
+   * o `normalizarRede()` no service resolve os três para o mesmo valor. String
+   * vazia remove.
+   *
+   * Aqui só valida tipo e tamanho: a allowlist de domínio mora em `redes.ts`,
+   * porque ela é a mesma na entrada e na SAÍDA (há `website` gravado desde
+   * antes desta regra existir).
+   */
+  @IsString()
+  @IsOptional()
+  @MaxLength(REDE_MAX_LENGTH)
+  socialTiktok?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(REDE_MAX_LENGTH)
+  socialInstagram?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(REDE_MAX_LENGTH)
+  socialYoutube?: string;
 
   @IsArray()
   @IsString({ each: true })

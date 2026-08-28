@@ -211,6 +211,18 @@ export class AdminController {
     return { data: await this.adminService.removeSellerCover(id) };
   }
 
+  // ── DELETE /api/admin/sellers/:id/social ─────────────────────────────────
+  //
+  // Zera os links de rede social (e o site) da loja. Pelo mesmo motivo da capa:
+  // é conteúdo público que não passa pela fila de moderação. Com um agravante —
+  // link LEVA o visitante para fora da Kolecta, então um perfil que virou
+  // phishing depois de cadastrado precisa sair do ar na hora.
+  @Delete('sellers/:id/social')
+  @HttpCode(HttpStatus.OK)
+  async removeSellerSocial(@Param('id') id: string) {
+    return { data: await this.adminService.removeSellerSocial(id) };
+  }
+
   // ── GET /api/admin/disputes ──────────────────────────────────────────────
 
   @Get('disputes')

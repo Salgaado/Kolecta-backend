@@ -9,6 +9,7 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { slugUnico } from '../common/slug';
 import { montarCapa, urlDeCapaAceita } from './capa';
+import { handlesBrutos, montarRedes, normalizarRede } from './redes';
 import { nomeDeExibicaoDoVendedor } from '../common/nome-do-vendedor';
 import {
   users,
@@ -64,6 +65,10 @@ export class SellersService {
         coverUrl: sellerProfiles.coverUrl,
         coverFocalY: sellerProfiles.coverFocalY,
         coverOverlay: sellerProfiles.coverOverlay,
+        socialTiktok: sellerProfiles.socialTiktok,
+        socialInstagram: sellerProfiles.socialInstagram,
+        socialYoutube: sellerProfiles.socialYoutube,
+        website: sellerProfiles.website,
         isVerified: sellerProfiles.isVerified,
         storeName: sellerProfiles.storeName,
         slug: sellerProfiles.slug,
@@ -109,13 +114,33 @@ export class SellersService {
       .where(eq(reviews.targetId, id))
       .get();
 
-    // As três colunas cruas saem daqui e viram um bloco `cover` já resolvido
-    // (defaults e piso aplicados), para o front não repetir a regra.
-    const { coverUrl, coverFocalY, coverOverlay, ...resto } = profile;
+    // As colunas cruas saem daqui e viram blocos já resolvidos (`cover` com os
+    // defaults e o piso aplicados, `social` com as URLs montadas e saneadas),
+    // para o front não repetir nenhuma das duas regras.
+    // O `website` sai do spread de propósito: ele é campo livre e o que está
+    // gravado pode ser lixo (ver `urlDeWebsite`). Devolver o valor cru AO LADO
+    // do saneado seria oferecer ao front, sem querer, exatamente a versão que
+    // não passou pela validação — e é `href` de página pública.
+    const {
+      coverUrl,
+      coverFocalY,
+      coverOverlay,
+      socialTiktok,
+      socialInstagram,
+      socialYoutube,
+      website,
+      ...resto
+    } = profile;
 
     return {
       ...resto,
       cover: montarCapa({ coverUrl, coverFocalY, coverOverlay }),
+      social: montarRedes({
+        socialTiktok,
+        socialInstagram,
+        socialYoutube,
+        website,
+      }),
       totalActiveListings: activeListingsResult?.count || 0,
       totalSales: salesResult?.count || 0,
       totalReviews: reviewsResult?.count || 0,
@@ -181,6 +206,12 @@ export class SellersService {
       slug: (profile as { slug?: string | null })?.slug ?? null,
       avatarUrl: profile?.avatarUrl ?? null,
       cover: montarCapa(profile ?? {}),
+      // Dois usos do mesmo dado, e por isso dois blocos: `social` traz as URLs
+      // prontas (para a prévia e para qualquer tela que mostre o link), e
+      // `socialRaw` traz o que o vendedor digitou, que é o que precisa voltar
+      // para dentro do `<input>` quando ele reabre as Configurações.
+      social: montarRedes(profile ?? {}),
+      socialRaw: handlesBrutos(profile ?? {}),
       bio: profile?.bio ?? null,
       city: profile?.city ?? null,
       state: profile?.state ?? null,
@@ -250,6 +281,9 @@ export class SellersService {
       city?: string;
       state?: string;
       website?: string;
+      socialTiktok?: string;
+      socialInstagram?: string;
+      socialYoutube?: string;
       categories?: string[];
     },
   ) {
@@ -272,6 +306,36 @@ export class SellersService {
     }
     if (dto.coverFocalY !== undefined) patch.coverFocalY = dto.coverFocalY;
     if (dto.coverOverlay !== undefined) patch.coverOverlay = dto.coverOverlay;
+
+    // Redes sociais: mesma convenção da foto e da capa — string vazia remove.
+    //
+    // O que entra vira o identificador canônico (`@loja`, `loja` e a URL
+    // inteira gravam a mesma coisa), e o que não for daquela rede é RECUSADO em
+    // vez de virar null em silêncio. O vendedor precisa ver o erro na hora:
+    // salvar "sem reclamar" e o ícone nunca aparecer na loja é o pior dos dois
+    // mundos, porque ele só descobre dias depois — se descobrir.
+    for (const { campo, rede, nome } of [
+      { campo: 'socialTiktok', rede: 'tiktok', nome: 'TikTok' },
+      { campo: 'socialInstagram', rede: 'instagram', nome: 'Instagram' },
+      { campo: 'socialYoutube', rede: 'youtube', nome: 'YouTube' },
+    ] as const) {
+      const valor = dto[campo];
+      if (valor === undefined) continue;
+
+      if (!valor.trim()) {
+        patch[campo] = null;
+        continue;
+      }
+
+      const identificador = normalizarRede(rede, valor);
+      if (!identificador) {
+        throw new BadRequestException(
+          `O link do ${nome} não parece válido. Use o @usuário ou o endereço completo do seu perfil no ${nome}.`,
+        );
+      }
+      patch[campo] = identificador;
+    }
+
     if (dto.bio !== undefined) patch.bio = dto.bio;
     if (dto.city !== undefined) patch.city = dto.city;
     if (dto.state !== undefined) patch.state = dto.state;
