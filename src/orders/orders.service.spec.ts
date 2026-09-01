@@ -20,6 +20,8 @@ import { WalletService } from '../wallet/wallet.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { FounderService } from '../founder/founder.service';
+import { ShippingService } from '../shipping/shipping.service';
+import { FreteSubsidioService } from '../shipping/frete-subsidio.service';
 import {
   BadRequestException,
   NotFoundException,
@@ -163,6 +165,29 @@ describe('OrdersService', () => {
           provide: FounderService,
           useValue: {
             resolveCommissionPercent: jest.fn().mockResolvedValue(11),
+          },
+        },
+        // O checkout passou a RECOTAR o frete no servidor. Aqui a cotação vem
+        // vazia de propósito: sem opção identificável o serviço cai no valor
+        // declarado pelo cliente e não concede subsídio — que é exatamente o
+        // comportamento anterior, e o que estes testes descrevem. A recotação
+        // em si tem spec própria (`orders.frete-subsidio.spec.ts`).
+        {
+          provide: ShippingService,
+          useValue: {
+            quoteShipping: jest
+              .fn()
+              .mockResolvedValue({ options: [], pickup: true }),
+          },
+        },
+        {
+          provide: FreteSubsidioService,
+          useValue: {
+            resolver: jest.fn(async ({ freteEscolhidoInCents }: any) => ({
+              shippingInCents: freteEscolhidoInCents,
+              shippingCostInCents: freteEscolhidoInCents,
+              shippingSubsidyInCents: 0,
+            })),
           },
         },
       ],

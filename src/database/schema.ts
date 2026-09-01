@@ -557,6 +557,33 @@ export const orders = sqliteTable('orders', {
   // sobre o item — o frete entra inteiro, sem percentual em cima.
   shippingInCents: integer('shipping_in_cents').default(0),
 
+  // ── Frete compartilhado (docs/PLAN-frete-compartilhado.md) ──────────────────
+  // A Kolecta banca parte do frete: o comprador paga `F − S` e a plataforma
+  // absorve `S`, tirado da própria comissão. As duas colunas abaixo existem
+  // porque, sem elas, o custo real da etiqueta SOME do banco — `platform_fee`
+  // passaria a guardar a comissão mais um frete já descontado, e a receita
+  // ficaria superestimada em exatamente o subsídio. É o bug de 31/07 (painel
+  // inflado em ~4×) de roupa nova. Ver `common/comissao.ts`.
+  //
+  // A invariante, e ela vale para todo pedido novo:
+  //
+  //     shipping_cost_in_cents = shipping_in_cents + shipping_subsidy_in_cents
+  //
+  // `shipping_in_cents` NÃO mudou de significado — continua sendo o frete
+  // cobrado do comprador. É isso que mantém `platform_fee = comissão +
+  // shipping_in_cents` correto nos seis pontos que calculam a taxa.
+  //
+  // Nulas em pedido anterior à política: `subsidy = null` ≡ 0 e `cost = null`
+  // cai no `|| shippingInCents` de quem lê. Sem backfill.
+
+  // O que a etiqueta custa de verdade — o que a Kolecta paga ao Melhor Envio.
+  // É a referência do TETO_DE_ABSORCAO na troca de transportadora: ler o valor
+  // subsidiado ali encolheria o teto e recusaria alternativas legítimas, com o
+  // pedido já pago (shipping.service.ts).
+  shippingCostInCents: integer('shipping_cost_in_cents'),
+  // Quanto a Kolecta bancou. Sai da comissão dela; o vendedor não é afetado.
+  shippingSubsidyInCents: integer('shipping_subsidy_in_cents'),
+
   // Método de entrega: 'shipping' (envio via transportadora) | 'pickup' (retirada
   // pessoal). Em 'pickup' NÃO há transporte, então a confirmação do comprador
   // libera o saldo NA HORA (sem a janela de 48h). Ver OrdersService.confirmDelivery.

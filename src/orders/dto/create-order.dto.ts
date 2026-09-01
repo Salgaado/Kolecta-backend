@@ -94,8 +94,16 @@ export class CreateOrderDto {
   @Type(() => ShippingAddressDto)
   shippingAddress?: ShippingAddressDto;
 
-  // Frete escolhido pelo comprador, em centavos. Somado ao total cobrado e
-  // repassado 100% ao vendedor no split (comissão só sobre o item).
+  // Frete escolhido pelo comprador, em centavos.
+  //
+  // É uma DECLARAÇÃO do cliente, não a fonte da verdade: desde o frete
+  // compartilhado o servidor recota e usa o próprio valor (ver
+  // `OrdersService.resolverFrete`). Este campo serve para conferir que o
+  // comprador não vai ser cobrado mais do que apareceu na tela — se o servidor
+  // cotar mais caro que isto, a compra é recusada em vez de cobrar a mais.
+  //
+  // O frete vai para a KOLECTA no split, não para o vendedor: é ela que compra
+  // a etiqueta no Melhor Envio. A comissão continua incidindo só sobre o item.
   @IsInt()
   @Min(0)
   @IsOptional()

@@ -102,7 +102,9 @@ describe('ListingsService', () => {
     it('deve retornar o listing quando encontrado', async () => {
       selectChain.limit.mockResolvedValueOnce([fakeListing]);
       const result = await service.findById('listing_001');
-      expect(result).toEqual(fakeListing);
+      // O selo do frete compartilhado vem carimbado em toda leitura de
+      // anúncio. `null` aqui é a política DESLIGADA, que é o default.
+      expect(result).toEqual({ ...fakeListing, shippingSubsidyMaxInCents: null });
     });
 
     it('deve lançar NotFoundException quando não encontrado', async () => {
@@ -134,7 +136,9 @@ describe('ListingsService', () => {
       const result = await service.create('user_seller', dto);
 
       expect(insertChain.values).toHaveBeenCalled();
-      expect(result).toEqual(fakeListing);
+      // O selo do frete compartilhado vem carimbado em toda leitura de
+      // anúncio. `null` aqui é a política DESLIGADA, que é o default.
+      expect(result).toEqual({ ...fakeListing, shippingSubsidyMaxInCents: null });
     });
 
     it('sem endereço de origem cadastrado → BadRequestException', async () => {
@@ -166,7 +170,9 @@ describe('ListingsService', () => {
       const result = await service.create('user_seller', dto);
 
       expect(insertChain.values).toHaveBeenCalled();
-      expect(result).toEqual(fakeListing);
+      // O selo do frete compartilhado vem carimbado em toda leitura de
+      // anúncio. `null` aqui é a política DESLIGADA, que é o default.
+      expect(result).toEqual({ ...fakeListing, shippingSubsidyMaxInCents: null });
     });
 
     it('type=auction cria o listing E a linha de auction (relógio parado)', async () => {

@@ -25,6 +25,11 @@ import { PagarmeService } from '../pagarme/pagarme.service';
 import { buildSplit, PagarmeSplit } from '../pagarme/pagarme-split';
 import { FounderService } from '../founder/founder.service';
 import { calcGatewayFeeInCents } from '../common/gateway-fees';
+import { ShippingService } from '../shipping/shipping.service';
+import {
+  FreteResolvido,
+  FreteSubsidioService,
+} from '../shipping/frete-subsidio.service';
 
 /**
  * Recebedor da plataforma (Kolecta) na Pagar.me — destino da comissão no split.
@@ -89,6 +94,18 @@ const MAX_INSTALLMENTS = 12;
 const MIN_INSTALLMENT_IN_CENTS = 500; // R$ 5,00
 
 /**
+ * Quanto o frete cotado pelo SERVIDOR pode passar do que o comprador declarou,
+ * antes de a compra ser recusada.
+ *
+ * O preço do Melhor Envio oscila em centavos entre a cotação que a tela mostrou
+ * e a recotação no checkout; recusar por isso seria perder venda por nada. O
+ * que não pode é cobrar materialmente mais do que apareceu na tela — por isso a
+ * folga existe só nessa direção. Servidor mais BARATO que o declarado é sempre
+ * aceito, e o comprador paga o menor.
+ */
+const TOLERANCIA_DE_FRETE_EM_CENTAVOS = 50; // R$ 0,50
+
+/**
  * Calcula o parcelamento de um principal pela tabela de CET acordada. O comprador
  * paga o principal + o acréscimo de parcelar (CET_n − CET_1x); as parcelas são
  * iguais, como a Pagar.me exibe. Retorna o valor de cada parcela, o total cobrado
@@ -141,6 +158,11 @@ export class OrdersService {
     private readonly pagarme: PagarmeService,
     private readonly eventEmitter: EventEmitter2,
     private readonly founderService: FounderService,
+    // O frete do checkout passou a ser RECOTADO no servidor (o valor vinha do
+    // navegador e nunca era conferido), e é dessa cotação que sai a âncora do
+    // frete compartilhado. Ver `resolverFrete`.
+    private readonly shipping: ShippingService,
+    private readonly freteSubsidio: FreteSubsidioService,
   ) {}
 
   // ── Create orders (legacy — sem PaymentIntent) ─────────────────────────────
@@ -234,6 +256,198 @@ export class OrdersService {
       `Endereço novo salvo no checkout para ${buyerId}: ${criado.id}`,
     );
     return criado;
+  }
+
+  /**
+   * CEP de destino para a RECOTAÇÃO, sem criar nada e sem recusar nada.
+   *
+   * `resolverEnderecoDeEntrega` é quem manda no endereço: ele valida posse,
+   * grava o que foi digitado e recusa o que não presta. Roda tarde de
+   * propósito, depois das validações, para não deixar endereço órfão de um
+   * checkout recusado. Mas o total do pedido depende do frete, e o frete
+   * depende do CEP — que é preciso saber antes.
+   *
+   * Daí esta leitura, e daí ela ser TOLERANTE: qualquer tropeço aqui devolve
+   * `null`, o frete cai no valor declarado pelo cliente e nenhum subsídio é
+   * concedido. Nada de correção se perde — o endereço inválido continua sendo
+   * recusado logo adiante, pelo dono do assunto, com a exceção certa. O que se
+   * ganha é que uma consulta com problema fecha a torneira do subsídio em vez
+   * de derrubar o checkout.
+   */
+  private async cepDeEntrega(
+    buyerId: string,
+    dto: CreateOrderDto,
+  ): Promise<string | null> {
+    const limpar = (cep: unknown): string | null =>
+      String(cep ?? '').replace(/\D/g, '') || null;
+
+    // Endereço digitado agora: o CEP está no próprio corpo, sem ida ao banco.
+    if (!dto.addressId) return limpar(dto.shippingAddress?.zip);
+
+    try {
+      // Leitura relacional (`query.addresses`), e não `select()`, de propósito:
+      // é a mesma forma que `auctions.service.ts` usa para o mesmo dado, e não
+      // se mistura com as consultas do caminho principal do checkout.
+      const existente = await this.db.query.addresses.findFirst({
+        where: eq(schema.addresses.id, dto.addressId),
+      });
+
+      // Endereço de outra pessoa não vira cotação — mesmo que a recusa formal
+      // só venha depois.
+      if (!existente || existente.userId !== buyerId) return null;
+      return limpar(existente.zip);
+    } catch (err: any) {
+      this.logger.warn(
+        `Não foi possível ler o CEP do endereço ${dto.addressId} para recotar ` +
+          `o frete: ${err?.message ?? err}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Decide o frete do pedido: recota no servidor e aplica o frete compartilhado.
+   *
+   * ── Por que recotar ────────────────────────────────────────────────────────
+   *
+   * Até aqui `shippingInCents` vinha do DTO e era usado direto, sem nenhuma
+   * conferência: o navegador escolhia o número e o servidor obedecia. Enquanto
+   * o comprador pagava exatamente o que declarava, isso era quase neutro. Com o
+   * frete compartilhado deixa de ser — **a Kolecta passa a pagar parte de um
+   * valor escolhido pelo cliente.**
+   *
+   * O leilão já fazia certo (`auctions.service.ts:chooseShipping`): recota,
+   * casa a opção escolhida contra a cotação fresca e recusa o que não bate. A
+   * venda direta passa a fazer o mesmo. Vale independentemente da política de
+   * subsídio.
+   *
+   * ── Quando NÃO dá para conferir ────────────────────────────────────────────
+   *
+   * Cotação indisponível (Melhor Envio fora, sem token, sem CEP de origem)
+   * devolve mock, e mock não tem `raw.id`. Nesses casos a compra **continua**,
+   * cobrando o que o comprador declarou, mas **sem subsídio nenhum**: não se
+   * banca frete que o servidor não verificou. Derrubar o checkout inteiro
+   * quando o ME oscila seria trocar um vazamento de centavos por uma loja
+   * fechada.
+   */
+  private async resolverFrete(params: {
+    buyerId: string;
+    dto: CreateOrderDto;
+    listingId: string;
+    quantity: number;
+    itemInCents: number;
+    deliveryMethod: 'shipping' | 'pickup';
+  }): Promise<
+    FreteResolvido & {
+      shippingServiceId: number | null;
+      shippingServiceName: string | null;
+    }
+  > {
+    const { dto, deliveryMethod } = params;
+
+    // Retirada em mãos: sem transporte, sem etiqueta, sem subsídio.
+    if (deliveryMethod === 'pickup') {
+      return {
+        shippingInCents: 0,
+        shippingCostInCents: 0,
+        shippingSubsidyInCents: 0,
+        shippingServiceId: null,
+        shippingServiceName: null,
+      };
+    }
+
+    const declarado = Math.max(0, Math.trunc(dto.shippingInCents ?? 0));
+    const semConferir = (motivo: string) => {
+      this.logger.warn(
+        `Checkout do anúncio ${params.listingId}: ${motivo} — cobrando o frete ` +
+          `declarado pelo cliente (R$ ${(declarado / 100).toFixed(2)}) e ` +
+          'SEM subsídio.',
+      );
+      return {
+        shippingInCents: declarado,
+        shippingCostInCents: declarado,
+        shippingSubsidyInCents: 0,
+        shippingServiceId: dto.shippingServiceId ?? null,
+        shippingServiceName: dto.shippingServiceName ?? null,
+      };
+    };
+
+    const cep = await this.cepDeEntrega(params.buyerId, dto);
+    if (!cep) return semConferir('sem CEP de destino para recotar');
+
+    let opcoes: any[] = [];
+    try {
+      const cotacao = await this.shipping.quoteShipping({
+        to_cep: cep,
+        listing_id: params.listingId,
+        quantity: params.quantity,
+      } as any);
+      opcoes = cotacao?.options ?? [];
+    } catch (err: any) {
+      return semConferir(`recotação falhou (${err?.message ?? 'erro'})`);
+    }
+
+    // Mock não traz `raw.id`. Sem id não há como casar a escolha do comprador
+    // com a cotação, e sem isso a conferência seria teatro.
+    const comId = opcoes.filter(
+      (o: any) => o?.raw?.id && Number.isFinite(o.price),
+    );
+    if (comId.length === 0) {
+      return semConferir('cotação sem opções identificáveis (mock/indisponível)');
+    }
+
+    // Cliente antigo pode não mandar o serviço. Recusar quebraria a compra de
+    // quem só não recarregou a página; seguir sem subsídio é o meio-termo.
+    if (dto.shippingServiceId == null) {
+      return semConferir('cliente não informou a transportadora escolhida');
+    }
+
+    const escolhida = comId.find(
+      (o: any) => Number(o.raw.id) === Number(dto.shippingServiceId),
+    );
+    if (!escolhida) {
+      // Aqui SIM recusa: o comprador escolheu uma opção que não existe mais
+      // para este destino. Deixar passar emitiria etiqueta de um serviço que
+      // ele não pagou — ou nenhuma.
+      throw new BadRequestException(
+        'Esta opção de frete não está mais disponível para o seu endereço. ' +
+          'Atualize a página e escolha de novo.',
+      );
+    }
+
+    const doServidor = Math.round(escolhida.price * 100);
+
+    // Só recusa quando o servidor está MAIS CARO que o declarado, acima da
+    // folga. Mais barato o comprador leva — cobrar a mais do que a tela mostrou
+    // é que não pode.
+    if (declarado > 0 && doServidor > declarado + TOLERANCIA_DE_FRETE_EM_CENTAVOS) {
+      this.logger.warn(
+        `Checkout do anúncio ${params.listingId}: frete recotado em ` +
+          `R$ ${(doServidor / 100).toFixed(2)} contra R$ ${(declarado / 100).toFixed(2)} ` +
+          'declarados pelo cliente. Compra recusada para não cobrar mais do que ' +
+          'apareceu na tela.',
+      );
+      throw new BadRequestException(
+        'O preço do frete mudou desde que você abriu o checkout. ' +
+          'Atualize a página para ver o valor atual.',
+      );
+    }
+
+    const cobradoCheio = declarado > 0 ? Math.min(doServidor, declarado) : doServidor;
+
+    const resolvido = await this.freteSubsidio.resolver({
+      itemInCents: params.itemInCents,
+      freteEscolhidoInCents: cobradoCheio,
+      // A âncora do subsídio é a MAIS BARATA da rota, não a escolhida.
+      opcoesEmCentavos: comId.map((o: any) => Math.round(o.price * 100)),
+      contexto: `Checkout do anúncio ${params.listingId}`,
+    });
+
+    return {
+      ...resolvido,
+      shippingServiceId: Number(escolhida.raw.id),
+      shippingServiceName: `${escolhida.carrier} ${escolhida.service}`,
+    };
   }
 
   /**
@@ -430,8 +644,24 @@ export class OrdersService {
     // (já multiplicado), então escala sozinha. O frete vem cotado do cliente
     // para o peso total das unidades (1 envio só).
     const itemInCents: number = (listing.priceInCents ?? 0) * quantity;
-    const shippingInCents: number =
-      deliveryMethod === 'pickup' ? 0 : (dto.shippingInCents ?? 0);
+
+    // O frete é RECOTADO no servidor (o valor vinha do navegador e nunca era
+    // conferido) e é aqui que o frete compartilhado entra: a Kolecta banca até
+    // 7% do item, tirado da própria comissão, e `shippingInCents` passa a ser o
+    // que sobra para o comprador. Ver `resolverFrete`.
+    //
+    // `shippingInCents` NÃO mudou de significado — continua sendo o frete
+    // cobrado do comprador. É isso que mantém `platformFee = comissão +
+    // shippingInCents` correto sem tocar em nenhum dos pontos de cálculo.
+    const frete = await this.resolverFrete({
+      buyerId,
+      dto,
+      listingId: listing.id,
+      quantity,
+      itemInCents,
+      deliveryMethod,
+    });
+    const shippingInCents: number = frete.shippingInCents;
     const totalInCents: number = itemInCents + shippingInCents;
     // Pagar com saldo da carteira foi REMOVIDO em 31/07/2026, por limitação do
     // provedor: a Pagar.me não transfere entre usuários, o saldo só sai por
@@ -589,15 +819,16 @@ export class OrdersService {
           addressId: enderecoEntrega?.id ?? null,
           totalInCents,
           shippingInCents,
-          // Só faz sentido com envio: em retirada não há etiqueta.
-          shippingServiceId:
-            deliveryMethod === 'pickup'
-              ? null
-              : (dto.shippingServiceId ?? null),
-          shippingServiceName:
-            deliveryMethod === 'pickup'
-              ? null
-              : (dto.shippingServiceName ?? null),
+          // Custo cheio da etiqueta e o que a Kolecta bancou. A invariante é
+          // `cost = shipping + subsidy`; sem estas duas o custo real da
+          // etiqueta some do banco e a receita fica superestimada em exatamente
+          // o subsídio (o bug de 31/07, de roupa nova).
+          shippingCostInCents: frete.shippingCostInCents,
+          shippingSubsidyInCents: frete.shippingSubsidyInCents,
+          // Só faz sentido com envio: em retirada não há etiqueta. O serviço
+          // vem da COTAÇÃO DO SERVIDOR, não do DTO — é dela que saiu o preço.
+          shippingServiceId: frete.shippingServiceId,
+          shippingServiceName: frete.shippingServiceName,
           deliveryMethod,
           status: 'pending',
           walletAmountInCents: walletDeducted,

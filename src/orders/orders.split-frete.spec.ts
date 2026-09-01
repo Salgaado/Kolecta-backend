@@ -32,6 +32,8 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import { WalletService } from '../wallet/wallet.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { FounderService } from '../founder/founder.service';
+import { ShippingService } from '../shipping/shipping.service';
+import { FreteSubsidioService } from '../shipping/frete-subsidio.service';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { OrdersService } = require('./orders.service');
@@ -128,6 +130,29 @@ describe('OrdersService — frete no split vai para a Kolecta', () => {
             resolveCommissionPercent: jest
               .fn()
               .mockResolvedValue(COMISSAO_PCT),
+          },
+        },
+        // O checkout passou a RECOTAR o frete no servidor. Aqui a cotação vem
+        // vazia de propósito: sem opção identificável o serviço cai no valor
+        // declarado pelo cliente e não concede subsídio — que é exatamente o
+        // comportamento anterior, e o que estes testes descrevem. A recotação
+        // em si tem spec própria (`orders.frete-subsidio.spec.ts`).
+        {
+          provide: ShippingService,
+          useValue: {
+            quoteShipping: jest
+              .fn()
+              .mockResolvedValue({ options: [], pickup: true }),
+          },
+        },
+        {
+          provide: FreteSubsidioService,
+          useValue: {
+            resolver: jest.fn(async ({ freteEscolhidoInCents }: any) => ({
+              shippingInCents: freteEscolhidoInCents,
+              shippingCostInCents: freteEscolhidoInCents,
+              shippingSubsidyInCents: 0,
+            })),
           },
         },
       ],
@@ -275,6 +300,29 @@ describe('OrdersService — endereço digitado no checkout', () => {
           provide: FounderService,
           useValue: {
             resolveCommissionPercent: jest.fn().mockResolvedValue(COMISSAO_PCT),
+          },
+        },
+        // O checkout passou a RECOTAR o frete no servidor. Aqui a cotação vem
+        // vazia de propósito: sem opção identificável o serviço cai no valor
+        // declarado pelo cliente e não concede subsídio — que é exatamente o
+        // comportamento anterior, e o que estes testes descrevem. A recotação
+        // em si tem spec própria (`orders.frete-subsidio.spec.ts`).
+        {
+          provide: ShippingService,
+          useValue: {
+            quoteShipping: jest
+              .fn()
+              .mockResolvedValue({ options: [], pickup: true }),
+          },
+        },
+        {
+          provide: FreteSubsidioService,
+          useValue: {
+            resolver: jest.fn(async ({ freteEscolhidoInCents }: any) => ({
+              shippingInCents: freteEscolhidoInCents,
+              shippingCostInCents: freteEscolhidoInCents,
+              shippingSubsidyInCents: 0,
+            })),
           },
         },
       ],
@@ -430,6 +478,29 @@ describe('OrdersService — dados que o antifraude lê', () => {
         {
           provide: FounderService,
           useValue: { resolveCommissionPercent: jest.fn().mockResolvedValue(COMISSAO_PCT) },
+        },
+        // O checkout passou a RECOTAR o frete no servidor. Aqui a cotação vem
+        // vazia de propósito: sem opção identificável o serviço cai no valor
+        // declarado pelo cliente e não concede subsídio — que é exatamente o
+        // comportamento anterior, e o que estes testes descrevem. A recotação
+        // em si tem spec própria (`orders.frete-subsidio.spec.ts`).
+        {
+          provide: ShippingService,
+          useValue: {
+            quoteShipping: jest
+              .fn()
+              .mockResolvedValue({ options: [], pickup: true }),
+          },
+        },
+        {
+          provide: FreteSubsidioService,
+          useValue: {
+            resolver: jest.fn(async ({ freteEscolhidoInCents }: any) => ({
+              shippingInCents: freteEscolhidoInCents,
+              shippingCostInCents: freteEscolhidoInCents,
+              shippingSubsidyInCents: 0,
+            })),
+          },
         },
       ],
     }).compile();

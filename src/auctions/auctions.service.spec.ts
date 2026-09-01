@@ -20,6 +20,7 @@ import { FounderService } from '../founder/founder.service';
 import { CardsService } from '../cards/cards.service';
 import { PagarmeService } from '../pagarme/pagarme.service';
 import { ShippingService } from '../shipping/shipping.service';
+import { FreteSubsidioService } from '../shipping/frete-subsidio.service';
 import { ConciliacaoService } from '../pagarme/conciliacao.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -32,6 +33,19 @@ const mockEventEmitter = { emit: jest.fn() };
  * servidor. Opção sem `raw.id` é o mock que o ShippingService devolve quando a
  * API está fora, e o serviço tem que recusar.
  */
+/**
+ * Frete compartilhado. O default espelha a política DESLIGADA, que é como ela
+ * vai ao ar: o comprador paga o frete cheio e a Kolecta não banca nada. Os
+ * testes que exercitam o subsídio sobrescrevem com `mockResolvedValueOnce`.
+ */
+const mockFreteSubsidioService = {
+  resolver: jest.fn(async ({ freteEscolhidoInCents }: any) => ({
+    shippingInCents: freteEscolhidoInCents,
+    shippingCostInCents: freteEscolhidoInCents,
+    shippingSubsidyInCents: 0,
+  })),
+};
+
 const mockShippingService = {
   quoteShipping: jest.fn().mockResolvedValue({
     pickup: true,
@@ -224,6 +238,7 @@ describe('AuctionsService', () => {
         { provide: CardsService, useValue: mockCardsService },
         { provide: PagarmeService, useValue: mockPagarmeService },
         { provide: ShippingService, useValue: mockShippingService },
+        { provide: FreteSubsidioService, useValue: mockFreteSubsidioService },
         { provide: ConciliacaoService, useValue: mockConciliacaoService },
         { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
@@ -246,6 +261,13 @@ describe('AuctionsService', () => {
       .mockResolvedValue({ customerId: 'cus_1', cardId: 'card_1' });
     mockPagarmeService.post.mockReset().mockResolvedValue(authorizedOrder);
     mockPagarmeService.delete.mockReset().mockResolvedValue({});
+    mockFreteSubsidioService.resolver
+      .mockReset()
+      .mockImplementation(async ({ freteEscolhidoInCents }: any) => ({
+        shippingInCents: freteEscolhidoInCents,
+        shippingCostInCents: freteEscolhidoInCents,
+        shippingSubsidyInCents: 0,
+      }));
     mockShippingService.quoteShipping.mockReset().mockResolvedValue({
       pickup: true,
       options: [
@@ -1106,6 +1128,87 @@ describe('AuctionsService', () => {
       // vendedor não muda com o frete.
       expect(gravado.platformFeeInCents).toBe(2210);
       expect(gravado.shippingServiceId).toBe(1);
+    });
+
+    /**
+     * Frete compartilhado no leilão.
+     *
+     * O arremate só tem preço no fim, então o subsídio é decidido AQUI — e é
+     * por isso que a página do leilão nunca promete "frete grátis", no máximo
+     * "frete grátis se arrematar acima de R$ X".
+     */
+    describe('frete compartilhado', () => {
+      it('desconta o subsídio do frete cobrado e grava as três colunas', async () => {
+        mockDb = makeDrizzleMock();
+        mockDb.where.mockResolvedValueOnce([arremate]);
+        stubQuery();
+        mockFreteSubsidioService.resolver.mockResolvedValueOnce({
+          shippingInCents: 1150,
+          shippingCostInCents: 1550,
+          shippingSubsidyInCents: 400,
+        });
+        service = await buildModule();
+
+        const r = await service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'shipping',
+          shippingServiceId: 1,
+        });
+
+        expect(r.shippingInCents).toBe(1150);
+        expect(r.totalInCents).toBe(6000 + 1150);
+
+        const gravado = mockDb.set.mock.calls[0][0];
+        expect(gravado.shippingInCents).toBe(1150);
+        expect(gravado.shippingCostInCents).toBe(1550);
+        expect(gravado.shippingSubsidyInCents).toBe(400);
+        // A invariante das colunas.
+        expect(gravado.shippingCostInCents).toBe(
+          gravado.shippingInCents + gravado.shippingSubsidyInCents,
+        );
+        // E a do split: comissão (660) + o frete que o comprador pagou.
+        expect(gravado.platformFeeInCents).toBe(660 + 1150);
+      });
+
+      it('a âncora é a opção mais barata da rota, não a escolhida', async () => {
+        mockDb = makeDrizzleMock();
+        mockDb.where.mockResolvedValueOnce([arremate]);
+        stubQuery();
+        service = await buildModule();
+
+        // Vencedor escolhe SEDEX (3290), mas a cotação tem PAC a 1550.
+        await service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'shipping',
+          shippingServiceId: 2,
+        });
+
+        expect(mockFreteSubsidioService.resolver).toHaveBeenCalledWith(
+          expect.objectContaining({
+            itemInCents: 6000,
+            freteEscolhidoInCents: 3290,
+            // As duas opções da rota — quem escolhe a âncora é o serviço.
+            opcoesEmCentavos: expect.arrayContaining([1550, 3290]),
+          }),
+        );
+      });
+
+      it('retirada em mãos: sem frete, sem custo, sem subsídio', async () => {
+        mockDb = makeDrizzleMock();
+        mockDb.where
+          .mockResolvedValueOnce([arremate])
+          .mockResolvedValueOnce([{ acceptsPickup: true }]);
+        stubQuery();
+        service = await buildModule();
+
+        await service.chooseShipping(bidderId, 'order_1', {
+          deliveryMethod: 'pickup',
+        });
+
+        const gravado = mockDb.set.mock.calls[0][0];
+        expect(gravado.shippingInCents).toBe(0);
+        expect(gravado.shippingCostInCents).toBe(0);
+        expect(gravado.shippingSubsidyInCents).toBe(0);
+        expect(mockFreteSubsidioService.resolver).not.toHaveBeenCalled();
+      });
     });
 
     it('IGNORA preço vindo do cliente: usa o da recotagem no servidor', async () => {
@@ -2285,6 +2388,7 @@ describe('AuctionsService — reenviar aviso de arremate', () => {
       mockCardsService as any,
       mockPagarmeService as any,
       mockShippingService as any,
+      mockFreteSubsidioService as any,
       mockConciliacaoService as any,
       emitter as any,
     );

@@ -37,6 +37,7 @@ import { motivoPagarme } from '../pagarme/pagarme-erro';
 import { ConciliacaoService } from '../pagarme/conciliacao.service';
 import type { PagarmeAddress } from '../cards/cards.service';
 import { ShippingService } from '../shipping/shipping.service';
+import { FreteSubsidioService } from '../shipping/frete-subsidio.service';
 import {
   CreateAuctionDto,
   PlaceBidDto,
@@ -145,6 +146,9 @@ export class AuctionsService {
     private readonly cardsService: CardsService,
     private readonly pagarme: PagarmeService,
     private readonly shipping: ShippingService,
+    // Frete compartilhado: o leilão só sabe o preço no fim, então o subsídio é
+    // aplicado quando o vencedor escolhe o frete (`chooseShipping`).
+    private readonly freteSubsidio: FreteSubsidioService,
     private readonly conciliacao: ConciliacaoService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
@@ -1149,6 +1153,10 @@ export class AuctionsService {
     }
 
     let shippingInCents = 0;
+    // Custo cheio da etiqueta e o que a Kolecta bancou. Em retirada em mãos os
+    // três ficam zero, e a invariante `cost = shipping + subsidy` se mantém.
+    let shippingCostInCents = 0;
+    let shippingSubsidyInCents = 0;
     let shippingServiceId: number | null = null;
     let shippingServiceName: string | null = null;
 
@@ -1200,14 +1208,39 @@ export class AuctionsService {
         );
       }
 
-      shippingInCents = Math.round(escolhida.price * 100);
       shippingServiceId = Number(escolhida.raw.id);
       shippingServiceName = `${escolhida.carrier} ${escolhida.service}`;
+
+      // Frete compartilhado. O leilão só sabe o preço do item no fim, então é
+      // AQUI que o subsídio pode ser calculado — e é por isso que a página do
+      // leilão nunca promete "frete grátis", no máximo "frete grátis se
+      // arrematar acima de R$ X".
+      //
+      // A âncora é a opção mais barata da rota, não a escolhida: quem prefere
+      // transportadora cara paga a diferença inteira. Mesma regra da venda
+      // direta (`orders.service.ts:resolverFrete`).
+      const resolvido = await this.freteSubsidio.resolver({
+        itemInCents: bidInCents,
+        freteEscolhidoInCents: Math.round(escolhida.price * 100),
+        opcoesEmCentavos: (cotacao?.options ?? [])
+          .filter((o: any) => o?.raw?.id && Number.isFinite(o.price))
+          .map((o: any) => Math.round(o.price * 100)),
+        contexto: `Arremate ${order.id}`,
+      });
+
+      shippingInCents = resolvido.shippingInCents;
+      shippingCostInCents = resolvido.shippingCostInCents;
+      shippingSubsidyInCents = resolvido.shippingSubsidyInCents;
     }
 
     // O frete vai INTEIRO para a Kolecta, que compra a etiqueta — mesma regra
     // da venda direta (`orders.service.ts`). A comissão continua incidindo só
     // sobre o item. O líquido do vendedor, portanto, não muda com o frete.
+    //
+    // `shippingInCents` é o frete COBRADO do comprador (já descontado o
+    // subsídio), e é justamente por isso que esta linha não muda com o frete
+    // compartilhado: `platformFee = comissão + o que o comprador pagou de
+    // frete` continua sendo exatamente o valor do split.
     const totalInCents = bidInCents + shippingInCents;
     const platformFeeInCents = comissaoInCents + shippingInCents;
 
@@ -1217,6 +1250,8 @@ export class AuctionsService {
         addressId,
         deliveryMethod: dto.deliveryMethod,
         shippingInCents,
+        shippingCostInCents,
+        shippingSubsidyInCents,
         shippingServiceId,
         shippingServiceName,
         totalInCents,

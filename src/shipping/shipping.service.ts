@@ -17,6 +17,11 @@ import { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
 import { QuoteShippingDto, GenerateLabelDto } from './dto/shipping.dto';
+import { freteCheioEmCentavos } from '../common/comissao';
+import {
+  politicaDoAmbiente,
+  subsidioEmCentavos,
+} from '../common/frete-subsidio';
 import {
   EXIGEM_NOTA_FISCAL,
   exigeNotaFiscal,
@@ -255,7 +260,26 @@ export class ShippingService {
         raw: opt,
       }));
 
-      return { options, pickup: prefs.aceitaRetirada };
+      // Frete compartilhado: quanto a Kolecta banca NESTA rota, já ancorado na
+      // opção mais barata. Vai junto da cotação de propósito — é o mesmo número
+      // que `OrdersService.resolverFrete` vai aplicar no checkout, então a tela
+      // mostra exatamente o que será cobrado, sem reimplementar a regra no
+      // navegador.
+      const itemInCents =
+        (listing?.priceInCents ?? 0) * Math.max(1, Math.trunc(data.quantity ?? 1));
+      const subsidyInCents = subsidioEmCentavos(
+        itemInCents,
+        options.length
+          ? Math.min(
+              ...options.map((o: { price: number }) =>
+                Math.round(o.price * 100),
+              ),
+            )
+          : 0,
+        politicaDoAmbiente(),
+      );
+
+      return { options, pickup: prefs.aceitaRetirada, subsidyInCents };
     } catch (error: any) {
       // CEP recusado é problema de DADO, não de disponibilidade: devolver mock
       // aqui fazia o comprador com CEP errado ver "PAC R$ 25,90" e "SEDEX
@@ -805,11 +829,19 @@ export class ShippingService {
         }));
     if (opcoes.length === 0) return [];
 
-    // Referência do teto: o que o comprador pagou. Pedido sem frete cobrado
-    // (leilão antigo, em que a Kolecta escolhia e pagava) usa a opção mais
-    // barata da rota, senão o teto viraria R$ 15 no absoluto e barraria tudo.
+    // Referência do teto: o CUSTO CHEIO da etiqueta, não o que o comprador
+    // pagou. Com o frete compartilhado os dois deixaram de ser a mesma coisa —
+    // `shippingInCents` guarda o valor já descontado do subsídio, e usá-lo aqui
+    // encolheria o teto junto: um pedido com frete de R$ 25 e subsídio de
+    // R$ 12 passaria a aceitar só até R$ 28 em vez de R$ 40, recusando
+    // alternativas legítimas com a compra JÁ PAGA — pedido pago, etiqueta
+    // `failed`, nada postado.
+    //
+    // Pedido sem frete cobrado (leilão antigo, em que a Kolecta escolhia e
+    // pagava) usa a opção mais barata da rota, senão o teto viraria R$ 15 no
+    // absoluto e barraria tudo.
     const maisBarata = Math.min(...opcoes.map((o) => o.precoEmCentavos));
-    const referencia = order.shippingInCents || maisBarata;
+    const referencia = freteCheioEmCentavos(order) || maisBarata;
     const teto = referencia + TETO_DE_ABSORCAO_EM_CENTAVOS;
 
     const dentroDoTeto = opcoes.filter((o) => o.precoEmCentavos <= teto);
@@ -853,8 +885,13 @@ export class ShippingService {
   ): Promise<void> {
     const de =
       order.shippingServiceName ?? nomeDoServico(order.shippingServiceId ?? 0);
-    const pago = order.shippingInCents ?? 0;
-    const diferenca = alternativa.precoEmCentavos - pago;
+    // O que a Kolecta absorve a mais é medido contra o CUSTO CHEIO da etiqueta
+    // original, não contra o que o comprador pagou: com frete compartilhado o
+    // subsídio já é um custo assumido, e comparar com o valor cobrado faria o
+    // log reportar como "diferença absorvida" um dinheiro que já estava na
+    // conta desde a compra.
+    const custoOriginal = freteCheioEmCentavos(order);
+    const diferenca = alternativa.precoEmCentavos - custoOriginal;
 
     await this.db
       .update(schema.orders)
@@ -867,7 +904,7 @@ export class ShippingService {
 
     this.logger.warn(
       `Pedido ${order.id}: etiqueta trocada de ${de} para ${alternativa.nome} ` +
-        `(${motivo}). Frete pago R$ ${(pago / 100).toFixed(2)}, etiqueta ` +
+        `(${motivo}). Etiqueta original R$ ${(custoOriginal / 100).toFixed(2)}, nova ` +
         `R$ ${(alternativa.precoEmCentavos / 100).toFixed(2)} — ` +
         (diferenca > 0
           ? `diferença de R$ ${(diferenca / 100).toFixed(2)} absorvida pela Kolecta.`
@@ -879,7 +916,9 @@ export class ShippingService {
       de,
       para: alternativa.nome,
       motivo,
-      pagoEmCentavos: pago,
+      // O custo cheio da etiqueta original — a base contra a qual a troca é
+      // cara ou barata. O que o comprador pagou está em `shipping_in_cents`.
+      pagoEmCentavos: custoOriginal,
       etiquetaEmCentavos: alternativa.precoEmCentavos,
     });
   }
@@ -1714,6 +1753,9 @@ export class ShippingService {
   private getMockShippingQuote(pickup = true) {
     return {
       pickup,
+      // Cotação de mentira não banca frete de verdade: sem preço real não há
+      // âncora, e o checkout também recusa subsidiar o que não conferiu.
+      subsidyInCents: 0,
       options: [
         {
           carrier: 'Correios',

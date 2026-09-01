@@ -20,6 +20,10 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
+import {
+  politicaDoAmbiente,
+  subsidioMaximoEmCentavos,
+} from '../common/frete-subsidio';
 import { nomeDeExibicaoDoVendedor } from '../common/nome-do-vendedor';
 import * as Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -64,6 +68,18 @@ export type ListingRecord = typeof schema.listings.$inferSelect & {
   sellerName?: string | null;
   /** Slug público da loja do vendedor (vanity URL). Pode ser null em lojas antigas. */
   sellerSlug?: string | null;
+  /**
+   * Quanto a Kolecta paga do frete deste anúncio, no máximo — o número do selo
+   * *"a Kolecta paga até R$ X do seu frete"*.
+   *
+   * `null` = não mostrar selo. É o que vale com a política desligada, com item
+   * abaixo do piso de elegibilidade e **em leilão**.
+   *
+   * Vem do BACKEND pronto, e não de uma constante no navegador, porque o front
+   * já mentiu sobre taxa uma vez exatamente assim: `fees.ts` tinha 11% cravado
+   * e o fundador via a taxa errada. Quem manda na política é o servidor.
+   */
+  shippingSubsidyMaxInCents?: number | null;
 };
 
 /** Filtros da vitrine pública. Tudo opcional; ausente = não restringe. */
@@ -87,6 +103,32 @@ export interface ListingFilters {
 @Injectable()
 export class ListingsService {
   private readonly logger = new Logger(ListingsService.name);
+
+  /**
+   * Carimba o selo do frete compartilhado nos anúncios.
+   *
+   * O selo é o maior ativo de conversão da política e sai de graça: o subsídio
+   * é 7% do PREÇO DO ITEM, conhecido só com o anúncio, sem endereço de entrega.
+   * A frase *"a Kolecta paga até R$ 12,25 do seu frete"* é sempre verdadeira,
+   * porque o `min` com o frete real só pode reduzir esse valor, nunca aumentá-lo.
+   *
+   * **Leilão fica de fora, de propósito.** A cobertura depende do valor do
+   * arremate, que só existe no fim — a página do leilão não pode prometer
+   * "frete grátis", no máximo "frete grátis se arrematar acima de R$ X". Um
+   * selo baseado no lance atual mudaria de valor a cada lance.
+   */
+  private comSeloDeFrete<T extends { priceInCents: number | null; type?: string | null }>(
+    anuncios: T[],
+  ): (T & { shippingSubsidyMaxInCents: number | null })[] {
+    const politica = politicaDoAmbiente();
+    return anuncios.map((a) => ({
+      ...a,
+      shippingSubsidyMaxInCents:
+        a.type === 'auction' || a.priceInCents == null
+          ? null
+          : subsidioMaximoEmCentavos(a.priceInCents, politica) || null,
+    }));
+  }
 
   constructor(
     @Inject(DATABASE_CONNECTION)
@@ -185,7 +227,7 @@ export class ListingsService {
       throw new NotFoundException(`Anúncio ${id} não encontrado.`);
     }
 
-    return result[0];
+    return this.comSeloDeFrete(result)[0];
   }
 
   // ── Listar anúncios públicos ativos ──────────────────────────────────────
@@ -332,7 +374,10 @@ export class ListingsService {
         .where(where),
     ]);
 
-    return { items, total: Number(contagem?.total ?? 0) };
+    return {
+      items: this.comSeloDeFrete(items),
+      total: Number(contagem?.total ?? 0),
+    };
   }
 
   // ── Listar anúncios para Administração (filtra por status) ───────────────

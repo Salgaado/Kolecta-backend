@@ -18,7 +18,11 @@ import {
 import { ListingsService } from '../listings/listings.service';
 import { FounderService } from '../founder/founder.service';
 import { MailService } from '../notifications/mail/mail.service';
-import { comissaoEmCentavos, freteEmCentavos } from '../common/comissao';
+import {
+  comissaoEmCentavos,
+  freteEmCentavos,
+  receitaLiquidaEmCentavos,
+} from '../common/comissao';
 
 @Injectable()
 export class AdminService {
@@ -72,6 +76,7 @@ export class AdminService {
         .select({
           platformFeeInCents: schema.orders.platformFeeInCents,
           shippingInCents: schema.orders.shippingInCents,
+          shippingSubsidyInCents: schema.orders.shippingSubsidyInCents,
         })
         .from(schema.orders)
         // Receita conta desde que o pagamento foi confirmado, não só quando o
@@ -108,8 +113,11 @@ export class AdminService {
       totalListings: listingsRow?.total ?? 0,
       activeListings: activeListingsRow?.total ?? 0,
       totalOrders: ordersRow?.total ?? 0,
+      // Receita LÍQUIDA: comissão menos o frete que a Kolecta bancou. Somar a
+      // comissão bruta com frete compartilhado ligado superestimaria a receita
+      // em exatamente o subsídio — no ticket médio, 64% dela.
       totalRevenueInCents: (pedidosConcluidos ?? []).reduce(
-        (soma: number, p: any) => soma + comissaoEmCentavos(p),
+        (soma: number, p: any) => soma + receitaLiquidaEmCentavos(p),
         0,
       ),
       openDisputes: disputesRow?.total ?? 0,
@@ -532,6 +540,7 @@ export class AdminService {
             total: schema.orders.totalInCents,
             platformFeeInCents: schema.orders.platformFeeInCents,
             shippingInCents: schema.orders.shippingInCents,
+            shippingSubsidyInCents: schema.orders.shippingSubsidyInCents,
             status: schema.orders.status,
             createdAt: schema.orders.createdAt,
             categoryId: schema.listings.categoryId,
@@ -560,8 +569,9 @@ export class AdminService {
       const i = idx.get(`${d.getFullYear()}-${d.getMonth()}`);
       if (i === undefined) continue;
       salesByMonth[i].vendas += (o.total ?? 0) / 100;
-      // Comissão de verdade: sem o frete que `platform_fee` carrega junto.
-      salesByMonth[i].comissao += comissaoEmCentavos(o) / 100;
+      // Comissão de verdade: sem o frete que `platform_fee` carrega junto, e
+      // já descontado o frete que a Kolecta bancou.
+      salesByMonth[i].comissao += receitaLiquidaEmCentavos(o) / 100;
     }
 
     // Top vendedores por GMV.
@@ -667,6 +677,7 @@ export class AdminService {
           total: schema.orders.totalInCents,
           platformFeeInCents: schema.orders.platformFeeInCents,
           shippingInCents: schema.orders.shippingInCents,
+          shippingSubsidyInCents: schema.orders.shippingSubsidyInCents,
           net: schema.orders.sellerNetInCents,
           status: schema.orders.status,
           buyerName: schema.users.name,
@@ -747,19 +758,29 @@ export class AdminService {
     // Conta toda venda com pagamento confirmado, não só a finalizada: a venda
     // paga e enviada já é dinheiro nosso, e esperar o comprador confirmar
     // entrega fazia o painel mostrar R$ 4,95 sobre R$ 657 transacionados.
+    //
+    // E é a comissão LÍQUIDA: com frete compartilhado, parte dela vira frete do
+    // comprador e nunca chega na conta. Somar a bruta repetiria o erro de 31/07
+    // com outro nome — no ticket médio o subsídio come 64% da comissão.
     const revenue = txRows
       .filter((t) => ehVenda(t.status))
-      .reduce((s, t) => s + comissaoEmCentavos(t) / 100, 0);
+      .reduce((s, t) => s + receitaLiquidaEmCentavos(t) / 100, 0);
     // A parte já finalizada (entrega confirmada), para separar o que está
     // liquidado do que ainda está em trânsito.
     const revenueSettled = txRows
       .filter((t) => t.status === 'completed')
-      .reduce((s, t) => s + comissaoEmCentavos(t) / 100, 0);
+      .reduce((s, t) => s + receitaLiquidaEmCentavos(t) / 100, 0);
     // Frete que atravessou a plataforma, exibido à parte para o número anterior
     // não parecer uma queda inexplicável de receita.
     const shippingPassThrough = txRows
       .filter((t) => ehVenda(t.status))
       .reduce((s, t) => s + freteEmCentavos(t) / 100, 0);
+    // O que a Kolecta bancou de frete, na mesma tela e no mesmo período. Sem
+    // esta linha o subsídio seria um buraco invisível: a receita cairia e nada
+    // explicaria por quê.
+    const shippingSubsidy = txRows
+      .filter((t) => ehVenda(t.status))
+      .reduce((s, t) => s + (t.shippingSubsidyInCents ?? 0) / 100, 0);
     const volume = txRows
       .filter((t) => ehVenda(t.status))
       .reduce((s, t) => s + (t.total ?? 0) / 100, 0);
@@ -780,6 +801,12 @@ export class AdminService {
         buyer: t.buyerName ?? 'Comprador',
         gross,
         commission,
+        // Frete compartilhado neste pedido: o que a Kolecta bancou, e o que
+        // sobrou da comissão depois de pagá-lo. `commission` continua sendo a
+        // comissão COBRADA — é ela que aparece no split e no extrato do
+        // vendedor —, mas quem olha a receita precisa ver as duas.
+        shippingSubsidy: (t.shippingSubsidyInCents ?? 0) / 100,
+        commissionNet: receitaLiquidaEmCentavos(t) / 100,
         // % sobre o ITEM, não sobre o total: o frete não entra na base de
         // cálculo da comissão, e dividir pelo bruto fazia 11% virar 7%.
         commissionPct:
@@ -828,6 +855,9 @@ export class AdminService {
         revenue,
         revenueSettled,
         shippingPassThrough,
+        // Frete compartilhado: o que a Kolecta bancou. Já está DESCONTADO de
+        // `revenue` — aparece à parte para o número explicar a própria queda.
+        shippingSubsidy,
         volume,
         payouts,
         pendingWithdrawals: pendingWithdrawalsTotal,
@@ -976,6 +1006,7 @@ export class AdminService {
         total: schema.orders.totalInCents,
         platformFeeInCents: schema.orders.platformFeeInCents,
         shippingInCents: schema.orders.shippingInCents,
+        shippingSubsidyInCents: schema.orders.shippingSubsidyInCents,
         net: schema.orders.sellerNetInCents,
         status: schema.orders.status,
         paymentInstrument: schema.orders.paymentInstrument,
@@ -1015,6 +1046,9 @@ export class AdminService {
         listingId: r.listingId ?? null,
         gross: (r.total ?? 0) / 100,
         commission: comissaoEmCentavos(r) / 100,
+        // Frete que a Kolecta bancou neste pedido, e o que sobrou da comissão.
+        shippingSubsidy: (r.shippingSubsidyInCents ?? 0) / 100,
+        commissionNet: receitaLiquidaEmCentavos(r) / 100,
         net: r.net != null ? r.net / 100 : null,
         status: r.status,
         paymentInstrument: r.paymentInstrument ?? null,
@@ -1085,6 +1119,11 @@ export class AdminService {
       ...order,
       commissionInCents: comissaoEmCentavos(order),
       freteInCents: freteEmCentavos(order),
+      // Frete compartilhado: `commissionInCents` é a comissão COBRADA e
+      // `commissionNetInCents` é a que sobrou depois de bancar o frete. Ver as
+      // duas juntas é o que impede o painel de contar como receita um dinheiro
+      // que foi embora na etiqueta. (`...order` já traz as colunas cruas.)
+      commissionNetInCents: receitaLiquidaEmCentavos(order),
       buyer: buyerRows[0] ?? null,
       seller: sellerRows[0] ?? null,
       listing: listing

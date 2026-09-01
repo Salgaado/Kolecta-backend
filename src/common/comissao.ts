@@ -43,3 +43,45 @@ export function freteEmCentavos(pedido: {
   const taxa = pedido.platformFeeInCents ?? 0;
   return taxa - comissaoEmCentavos(pedido);
 }
+
+/**
+ * O que a Kolecta REALMENTE embolsa: a comissão menos o frete que ela bancou.
+ *
+ * `comissaoEmCentavos` continua certa depois do frete compartilhado — ela
+ * devolve a comissão BRUTA, e é isso que ela promete. Mas somar comissão bruta
+ * e chamar de receita repete, com outro nome, o erro de 31/07: o subsídio é
+ * dinheiro que sai, e some da conta se ninguém o subtrair. Num pedido no ticket
+ * médio (item R$ 165,23, frete R$ 13,76) a comissão é R$ 18,18 e o subsídio
+ * R$ 11,57 — **64% da receita bruta**. Errar isso não é detalhe de arredondamento.
+ *
+ * Toda soma que vira "receita" no painel financeiro passa por AQUI, não por
+ * `comissaoEmCentavos`. Ver `docs/PLAN-frete-compartilhado.md` §2.3.
+ *
+ * Pedido anterior à política tem `shippingSubsidyInCents` nulo, e as duas
+ * funções coincidem — que é a resposta certa: ninguém subsidiou nada antes.
+ */
+export function receitaLiquidaEmCentavos(pedido: {
+  platformFeeInCents?: number | null;
+  shippingInCents?: number | null;
+  shippingSubsidyInCents?: number | null;
+}): number {
+  return comissaoEmCentavos(pedido) - (pedido.shippingSubsidyInCents ?? 0);
+}
+
+/**
+ * O custo cheio da etiqueta — o que a Kolecta paga ao Melhor Envio.
+ *
+ * Existe para quem precisa do frete REAL e não do cobrado: a referência do
+ * `TETO_DE_ABSORCAO` na troca de transportadora é o caso que dói, porque ler o
+ * valor subsidiado ali encolhe o teto e recusa alternativas legítimas com o
+ * pedido já pago.
+ *
+ * Pedido anterior à política não tem a coluna: cai no frete cobrado, que era o
+ * custo cheio na época.
+ */
+export function freteCheioEmCentavos(pedido: {
+  shippingInCents?: number | null;
+  shippingCostInCents?: number | null;
+}): number {
+  return pedido.shippingCostInCents ?? pedido.shippingInCents ?? 0;
+}

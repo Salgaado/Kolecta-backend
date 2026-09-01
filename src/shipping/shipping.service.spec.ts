@@ -1373,6 +1373,94 @@ describe('ShippingService — recusa da transportadora e troca', () => {
     );
     expect(post).not.toHaveBeenCalled();
   });
+
+  /**
+   * O teto de absorção mede contra o CUSTO CHEIO da etiqueta, não contra o que
+   * o comprador pagou.
+   *
+   * Com frete compartilhado os dois deixaram de ser a mesma coisa:
+   * `shippingInCents` guarda o valor já descontado do subsídio. Ler ele aqui
+   * encolheria o teto junto e recusaria alternativas legítimas — com a compra
+   * JÁ PAGA. O desfecho seria pedido pago, etiqueta `failed`, nada postado, e
+   * ninguém olhando para o motivo certo.
+   */
+  describe('teto de absorção com frete subsidiado', () => {
+    /** Etiqueta de R$ 25; a Kolecta bancou R$ 12 e o comprador pagou R$ 13. */
+    const pedidoSubsidiado = {
+      ...pedidoJadlog,
+      shippingInCents: 1300,
+      shippingCostInCents: 2500,
+      shippingSubsidyInCents: 1200,
+    };
+
+    it('aceita alternativa dentro do teto medido pelo CUSTO CHEIO', async () => {
+      const db = fazerDb();
+      db.query.orders.findFirst.mockResolvedValue(pedidoSubsidiado);
+      // Custo cheio R$ 25 + teto R$ 15 = R$ 40. A alternativa de R$ 38 passa.
+      // Medindo pelo frete cobrado (R$ 13) o teto seria R$ 28 e ela seria
+      // recusada — pedido pago e nada postado.
+      const post = fazerHttp([opcao(1, 'Correios', 'PAC', 38.0)], 1);
+      const service = new ShippingService({ post } as any, db);
+
+      const r = await service.emitirEtiquetaDoPedido('ord-1');
+
+      expect(r.status).toBe('ready');
+      expect(servicosPedidos(post)).toEqual([3, 1]);
+    });
+
+    it('recusa o que passa do teto mesmo com o custo cheio', async () => {
+      const db = fazerDb();
+      db.query.orders.findFirst.mockResolvedValue(pedidoSubsidiado);
+      // R$ 25 + R$ 15 = R$ 40. R$ 42 continua fora.
+      const post = fazerHttp([opcao(1, 'Correios', 'PAC', 42.0)], 1);
+      const service = new ShippingService({ post } as any, db);
+
+      await expect(service.emitirEtiquetaDoPedido('ord-1')).rejects.toThrow(
+        /não aceita envios não-comerciais/i,
+      );
+      expect(servicosPedidos(post)).toEqual([3]);
+    });
+
+    it('a diferença absorvida é medida contra o custo cheio, não contra o cobrado', async () => {
+      const db = fazerDb();
+      db.query.orders.findFirst.mockResolvedValue(pedidoSubsidiado);
+      const emit = jest.fn();
+      const post = fazerHttp([opcao(1, 'Correios', 'PAC', 30.0)], 1);
+      const service = new ShippingService({ post } as any, db, {
+        emit,
+      } as any);
+
+      await service.emitirEtiquetaDoPedido('ord-1');
+
+      expect(emit).toHaveBeenCalledWith(
+        'shipping.carrier.changed',
+        expect.objectContaining({
+          // R$ 25 de custo original, não os R$ 13 que o comprador pagou: a
+          // troca custou R$ 5 a mais, e não R$ 17.
+          pagoEmCentavos: 2500,
+          etiquetaEmCentavos: 3000,
+        }),
+      );
+    });
+
+    it('pedido anterior à política (colunas nulas) mede pelo frete cobrado', async () => {
+      const db = fazerDb();
+      const emit = jest.fn();
+      // `pedidoJadlog` não tem as colunas novas: R$ 15,93 + R$ 15 = R$ 30,93.
+      const post = fazerHttp([opcao(1, 'Correios', 'PAC', 30.5)], 1);
+      const service = new ShippingService({ post } as any, db, {
+        emit,
+      } as any);
+
+      const r = await service.emitirEtiquetaDoPedido('ord-1');
+
+      expect(r.status).toBe('ready');
+      expect(emit).toHaveBeenCalledWith(
+        'shipping.carrier.changed',
+        expect.objectContaining({ pagoEmCentavos: 1593 }),
+      );
+    });
+  });
 });
 
 /**
