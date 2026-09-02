@@ -782,6 +782,84 @@ describe('AuctionsService', () => {
       expect(result).toContain('auction_exp_2');
       expect(result).not.toContain('auction_exp_1');
     });
+
+    /**
+     * Fecho SEM venda (reserva não atingida) — o desfecho que prendeu dois
+     * compradores em 24/08 e 01/09/2026.
+     *
+     * Não nasce pedido, e por isso não há frete a escolher. O que faltava era o
+     * resto: o anúncio ficava `active` para sempre (44 leilões mortos na
+     * vitrine) e ninguém avisava quem liderou que a reserva não foi alcançada —
+     * "Meus Lances" o tratava como arrematante.
+     */
+    it('reserva não atingida: não cria pedido, PAUSA o anúncio e avisa quem liderava', async () => {
+      const expirado = {
+        ...mockAuction,
+        id: 'auction_reserva',
+        currentBidInCents: 1100,
+        reservePriceInCents: 25000,
+        currentWinnerId: 'user_carlos',
+        endsAt: new Date(Date.now() - 1000),
+      };
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([expirado]) // leilões expirados
+        .mockResolvedValueOnce([mockListing]) // listing do leilão
+        .mockResolvedValueOnce([
+          { chargeId: 'ch_carlos', orderId: 'or_carlos', amountInCents: 1100 },
+        ]); // pré-auth vigente do líder
+      service = await buildModule();
+
+      const result = await service.endExpiredAuctions();
+
+      expect(result).toContain('auction_reserva');
+      // Sem venda = sem pedido. O pedido nasce dentro de uma transação.
+      expect(mockDb.transaction).not.toHaveBeenCalled();
+      // A retenção no cartão dele é liberada.
+      expect(mockPagarmeService.delete).toHaveBeenCalledWith(
+        '/charges/ch_carlos',
+      );
+      // O anúncio sai do ar junto com o leilão.
+      expect(mockDb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'paused' }),
+      );
+      // E o maior licitante é avisado do motivo.
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'auction.reserve-not-met',
+        expect.objectContaining({
+          auctionId: 'auction_reserva',
+          topBidderId: 'user_carlos',
+          topBidInCents: 1100,
+          reservePriceInCents: 25000,
+        }),
+      );
+    });
+
+    it('sem lance nenhum: pausa o anúncio e não avisa ninguém', async () => {
+      const expirado = {
+        ...mockAuction,
+        id: 'auction_deserto',
+        currentBidInCents: null,
+        currentWinnerId: null,
+        endsAt: new Date(Date.now() - 1000),
+      };
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([expirado])
+        .mockResolvedValueOnce([mockListing]);
+      service = await buildModule();
+
+      await service.endExpiredAuctions();
+
+      expect(mockDb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'paused' }),
+      );
+      // Ninguém deu lance: não há a quem mandar o aviso.
+      expect(mockEventEmitter.emit).not.toHaveBeenCalledWith(
+        'auction.reserve-not-met',
+        expect.anything(),
+      );
+    });
   });
 
   // ── Retomada automática ao vendedor ficar apto ───────────────────────────

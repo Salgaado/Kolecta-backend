@@ -14,6 +14,7 @@ import * as shippingCarrierChanged from './shipping-carrier-changed';
 import * as bidReceived from './bid-received';
 import * as bidOutbid from './bid-outbid';
 import * as auctionWon from './auction-won';
+import * as auctionReserveNotMet from './auction-reserve-not-met';
 import * as messageReceived from './message-received';
 import * as payoutReleased from './payout-released';
 import * as disputeOpened from './dispute-opened';
@@ -44,6 +45,7 @@ export const TEMPLATES = {
   'bid-received': bidReceived,
   'bid-outbid': bidOutbid,
   'auction-won': auctionWon,
+  'auction-reserve-not-met': auctionReserveNotMet,
   'message-received': messageReceived,
   'payout-released': payoutReleased,
   'dispute-opened': disputeOpened,

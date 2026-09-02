@@ -267,6 +267,21 @@ export class ListingsService {
   private filtrosPublicos(f: ListingFilters): SQL {
     const cond: SQL[] = [eq(schema.listings.status, 'active')];
 
+    // Leilão ENCERRADO sai da vitrine, mesmo com o anúncio ainda `active`.
+    //
+    // O fecho do leilão (`_closeAuction`) não vendeu e não mexeu no anúncio, que
+    // seguia `active` e continuava aparecendo na busca e no catálogo — item que
+    // parece disponível, abre em /modo-lance e não aceita lance nenhum, porque o
+    // leilão acabou. Em 01/09/2026 eram 44 de 81 anúncios de leilão da vitrine.
+    //
+    // `auctionStatus` já vinha no SELECT com esta promessa escrita ao lado
+    // ("quem some da lista é leilão encerrado"), só que ninguém filtrava por ela.
+    // Vem do leftJoin de `auctions`: NULL em venda direta, que passa direto.
+    // Pausado continua aparecendo de propósito — o relógio dele volta a correr.
+    cond.push(
+      sql`(${schema.auctions.status} IS NULL OR ${schema.auctions.status} = 'active')`,
+    );
+
     if (f.categoria) {
       // Aceita id ou slug, e traz junto as subcategorias: a página de uma
       // categoria raiz mostra o que está pendurado nela.

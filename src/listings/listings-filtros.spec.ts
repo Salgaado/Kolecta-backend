@@ -126,8 +126,18 @@ describe('ListingsService.findAll — filtros da vitrine', () => {
         price_in_cents: 100,
         status: 'draft',
       }),
+      anuncio('L6', {
+        title: 'Leilão que já encerrou',
+        category_id: 'c-mini',
+        price_in_cents: null,
+        type: 'auction',
+        condition: 'usado',
+      }),
       `insert into auctions (id, listing_id, starting_bid_in_cents, min_increment_in_cents, duration_hours, anti_sniper, status, created_at, updated_at)
        values ('a1','L4',20000,1000,48,1,'active',${agora},${agora})`,
+      // Encerrado: o fecho não mexia no anúncio, que continuava 'active'.
+      `insert into auctions (id, listing_id, starting_bid_in_cents, min_increment_in_cents, duration_hours, anti_sniper, status, created_at, updated_at)
+       values ('a2','L6',20000,1000,48,1,'ended',${agora},${agora})`,
     ]);
   });
 
@@ -142,6 +152,37 @@ describe('ListingsService.findAll — filtros da vitrine', () => {
     const { items, total } = await service.findAll({ limit: 50 });
     expect(items.map((i) => i.id).sort()).toEqual(['L1', 'L2', 'L3', 'L4']);
     expect(total).toBe(4);
+  });
+
+  /**
+   * O fecho do leilão não mexia no anúncio: ele ficava 'active' para sempre e
+   * seguia na busca como leilão vivo, abrindo em /modo-lance sem aceitar lance.
+   * Em 01/09/2026 eram 44 de 81 anúncios de leilão da vitrine.
+   */
+  it('tira da vitrine o anúncio cujo leilão já encerrou', async () => {
+    const { items, total } = await service.findAll({ limit: 50 });
+    expect(items.map((i) => i.id)).not.toContain('L6');
+    expect(total).toBe(4);
+
+    // E o filtro de tipo não pode ser uma porta dos fundos para ele.
+    await expect(ids({ tipo: 'auction' })).resolves.toEqual(['L4']);
+  });
+
+  /**
+   * A contrapartida do teste acima: pausado NÃO é encerrado. O leilão pausado
+   * continua 'active' com o relógio congelado e volta ao ar sozinho quando o
+   * vendedor fica apto — tirá-lo da vitrine junto com os encerrados sumiria com
+   * 24 leilões que ainda vão acontecer.
+   */
+  it('mantém na vitrine o leilão PAUSADO — o relógio dele volta a correr', async () => {
+    await client.execute(
+      `update auctions set paused_at = ${agora} where id = 'a1'`,
+    );
+    try {
+      await expect(ids({ tipo: 'auction' })).resolves.toEqual(['L4']);
+    } finally {
+      await client.execute(`update auctions set paused_at = null where id = 'a1'`);
+    }
   });
 
   it('filtra por categoria, por id ou por slug', async () => {

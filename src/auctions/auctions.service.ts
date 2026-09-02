@@ -2348,6 +2348,21 @@ export class AuctionsService {
         .set({ status: 'ended', updatedAt: new Date() })
         .where(eq(schema.auctions.id, auction.id));
 
+      // O anúncio PRECISA sair do ar junto com o leilão.
+      //
+      // Antes daqui o fecho sem venda só mexia no leilão, e o anúncio ficava
+      // `active` para sempre: aparecia na vitrine como leilão vivo, abria em
+      // /modo-lance e não aceitava lance, porque o leilão tinha acabado.
+      // `paused` é o estado certo — o vendedor vê no painel dele que a peça não
+      // vendeu e decide se relista, em vez de descobrir por um comprador
+      // reclamando que o botão não funciona.
+      if (listing) {
+        await this.db
+          .update(schema.listings)
+          .set({ status: 'paused', updatedAt: new Date() })
+          .where(eq(schema.listings.id, listing.id));
+      }
+
       if (hasWinner) {
         // Reserva não atingida → libera a retenção no cartão do arrematante.
         if (winnerAuth?.chargeId) await this._voidPreAuth(winnerAuth.chargeId);
@@ -2361,10 +2376,28 @@ export class AuctionsService {
             ),
           );
         this.logger.log(
-          `Leilão ${auction.id} encerrado sem venda (reserva não atingida). Pré-auth cancelada.`,
+          `Leilão ${auction.id} encerrado sem venda (reserva não atingida). ` +
+            `Pré-auth cancelada, anúncio ${auction.listingId} pausado.`,
         );
+
+        // Avisa quem deu o maior lance. Sem este e-mail ele não descobria em
+        // lugar nenhum que a reserva não foi atingida: a tela "Meus Lances" o
+        // tratava como arrematante ("Escolha o frete", com um botão que caía
+        // numa lista de pedidos vazia) e a página do leilão escondia o aviso de
+        // reserva justamente depois de encerrar.
+        this.eventEmitter.emit('auction.reserve-not-met', {
+          auctionId: auction.id,
+          listingId: auction.listingId,
+          listingTitle: listing?.title ?? 'Item Kolecta',
+          topBidderId: auction.currentWinnerId!,
+          topBidInCents: auction.currentBidInCents!,
+          reservePriceInCents: auction.reservePriceInCents!,
+        });
       } else {
-        this.logger.log(`Leilão ${auction.id} encerrado sem vencedor.`);
+        this.logger.log(
+          `Leilão ${auction.id} encerrado sem vencedor. ` +
+            `Anúncio ${auction.listingId} pausado.`,
+        );
       }
       return;
     }

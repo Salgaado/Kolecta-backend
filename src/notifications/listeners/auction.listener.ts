@@ -30,6 +30,16 @@ interface AuctionWonEvent {
   paymentDeadlineHours?: number;
 }
 
+interface ReserveNotMetEvent {
+  auctionId: string;
+  listingId: string;
+  listingTitle: string;
+  /** Quem deu o maior lance — e mesmo assim NÃO arrematou. */
+  topBidderId: string;
+  topBidInCents: number;
+  reservePriceInCents: number;
+}
+
 /** "2 dias", "5 horas", "40 minutos" — prazo legível para o e-mail. */
 function humanizeDeadline(endsAt: Date | null): string | null {
   if (!endsAt) return null;
@@ -110,6 +120,40 @@ export class AuctionListener {
         endsIn: humanizeDeadline(
           event.endsAt ? new Date(event.endsAt) : null,
         ),
+      },
+    });
+  }
+
+  /**
+   * Maior lance abaixo da reserva — o leilão encerra SEM venda.
+   *
+   * Era o único desfecho de leilão que não avisava ninguém. Quem liderava
+   * continuava vendo "Escolha o frete" em Meus Lances, com um botão que levava a
+   * uma lista de pedidos vazia, e não tinha onde descobrir o motivo. Foi o que
+   * prendeu dois compradores em 24/08 e 01/09/2026.
+   */
+  @OnEvent('auction.reserve-not-met')
+  async handleReserveNotMet(event: ReserveNotMetEvent): Promise<void> {
+    const bidder = await this.userById(event.topBidderId);
+    if (!bidder?.email) {
+      this.logger.warn(
+        `Maior licitante ${event.topBidderId} sem e-mail — ` +
+          `"auction-reserve-not-met" do leilão ${event.auctionId} não enviado.`,
+      );
+      return;
+    }
+
+    await this.mail.send({
+      to: bidder.email,
+      template: 'auction-reserve-not-met',
+      // Um aviso por leilão: o fecho é único, mas o cron pode reprocessar.
+      refId: `auction-reserve-not-met-${event.auctionId}`,
+      data: {
+        bidderName: bidder.name,
+        listingId: event.listingId,
+        listingTitle: event.listingTitle,
+        topBidInCents: event.topBidInCents,
+        reservePriceInCents: event.reservePriceInCents,
       },
     });
   }
