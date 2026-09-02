@@ -398,6 +398,53 @@ describe('AuctionsService', () => {
       expect(mockPagarmeService.post).not.toHaveBeenCalled();
     });
 
+    /**
+     * A retenção deixou de nascer junto com o lance.
+     *
+     * Uma pré-autorização vive ~5 a 7 dias e os leilões daqui vão a 30: reter
+     * no ato obrigava a emendar retenções ao longo do leilão, e cada emenda era
+     * uma autorização nova no cartão de alguém. A garantia passou a ser armada
+     * na reta final (`armarRetencoesDeLideres`) — até lá, o limite do comprador
+     * fica livre e o cartão não é tocado.
+     */
+    it('lance em leilão fora da reta final NÃO retém nada no cartão', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([
+          { ...mockAuction, endsAt: new Date(Date.now() + 20 * 24 * 3600 * 1000) },
+        ])
+        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([mockEndereco]);
+      service = await buildModule();
+
+      await service.placeBid(mockAuctionId, bidderId, { amountInCents: 6100 });
+
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
+      // E o lance nasce sem vínculo de retenção — nulo aqui é estado normal.
+      expect(mockDb.txs[0].values).toHaveBeenCalledWith(
+        expect.not.objectContaining({ pagarmeChargeId: expect.anything() }),
+      );
+    });
+
+    it('lance na reta final retém no ato, como antes', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where
+        .mockResolvedValueOnce([mockAuction]) // fecha em 48h → dentro da janela
+        .mockResolvedValueOnce([{ ...mockListing, sellerId: 'another_seller' }])
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([mockEndereco]);
+      service = await buildModule();
+
+      await service.placeBid(mockAuctionId, bidderId, { amountInCents: 6100 });
+
+      expect(mockPagarmeService.post).toHaveBeenCalled();
+      // A autorização do lance conta para o teto como qualquer outra.
+      expect(mockDb.txs[0].values).toHaveBeenCalledWith(
+        expect.objectContaining({ holdAttempts: 1 }),
+      );
+    });
+
     it('deve lançar BadRequestException se o cartão é recusado na pré-auth', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
@@ -911,108 +958,119 @@ describe('AuctionsService', () => {
     });
   });
 
-  // ── reauthorizeExpiringBids (Fase 3) ─────────────────────────────────────
+  // ── armarRetencoesDeLideres (Fase 3) ─────────────────────────────────────
 
-  describe('reauthorizeExpiringBids', () => {
-    // Vence daqui a 1h: dentro da janela de renovação (24h), que é o caminho
-    // pela DATA. O caminho por VERIFICAÇÃO usa `reauthRowLonge`, abaixo.
-    const reauthRow = {
+  /**
+   * O cron que substituiu a renovação em corrente.
+   *
+   * O que estes testes protegem, acima de tudo, é o TETO. O cron anterior era
+   * um laço sem memória: falhava, mantinha a auth velha e tentava de novo em
+   * 6h, para sempre. Um lance de R$45 num leilão de 14 dias virou 16 recusas
+   * seguidas no cartão de quem nem tinha arrematado (24/08/2026). Se algum dia
+   * alguém tirar a contagem de `holdAttempts` daqui, o caso volta.
+   */
+  describe('armarRetencoesDeLideres', () => {
+    /** Líder na reta final, ainda SEM retenção. */
+    const semRetencao = {
       bidId: 'bid_001',
       auctionId: mockAuctionId,
       bidderId,
       amountInCents: 6000,
-      chargeId: 'ch_old',
-      authExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      chargeId: null,
+      attempts: 0,
+      nextAttemptAt: null,
+      checkedAt: null,
       sellerId,
+      listingId: mockListingId,
+      listingTitle: 'Hot Wheels Premium',
+      endsAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
     };
 
-    /** Mesmo lance, mas com validade longe: só renova se a retenção sumiu. */
-    const reauthRowLonge = {
-      ...reauthRow,
-      authExpiresAt: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
+    /** Mesmo líder, já com retenção armada e conferida há 7h. */
+    const comRetencao = {
+      ...semRetencao,
+      chargeId: 'ch_armada',
+      attempts: 1,
+      checkedAt: new Date(Date.now() - 7 * 60 * 60 * 1000),
     };
 
-    it('não faz nada quando não há pré-auth a expirar', async () => {
+    /** Fila de `where` do caminho de ARME, depois da consulta dos líderes. */
+    const filaDoArme = (where: any) =>
+      where
+        .mockResolvedValueOnce([]) // update holdAttempts
+        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
+        .mockResolvedValueOnce([mockEndereco]);
+
+    it('não faz nada quando nenhum leilão está na reta final', async () => {
       mockDb = makeDrizzleMock();
-      mockDb.where.mockResolvedValueOnce([]); // nenhum lance na janela
+      mockDb.where.mockResolvedValueOnce([]);
       service = await buildModule();
 
-      const result = await service.reauthorizeExpiringBids();
+      const r = await service.armarRetencoesDeLideres();
 
-      expect(result).toEqual({ reauthorized: [], failed: [] });
+      expect(r).toEqual({ armadas: [], falhas: [], desistidas: [] });
       expect(mockPagarmeService.post).not.toHaveBeenCalled();
     });
 
-    it('renova a pré-auth: cria uma nova e cancela a antiga', async () => {
+    it('arma a retenção do líder que ainda não tem', async () => {
       mockDb = makeDrizzleMock();
-      mockDb.where
-        .mockResolvedValueOnce([reauthRow]) // lances líderes a expirar
-        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
-        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança do bidder
+      filaDoArme(mockDb.where.mockResolvedValueOnce([semRetencao]));
       service = await buildModule();
 
-      const result = await service.reauthorizeExpiringBids();
+      const r = await service.armarRetencoesDeLideres();
 
-      expect(result.reauthorized).toContain('bid_001');
-      expect(result.failed).toEqual([]);
-      // Criou nova pré-auth (capture:false).
+      expect(r.armadas).toContain('bid_001');
       expect(mockPagarmeService.post).toHaveBeenCalledWith(
         '/orders',
         expect.objectContaining({
-          payments: expect.arrayContaining([
+          payments: [
             expect.objectContaining({
               credit_card: expect.objectContaining({ capture: false }),
             }),
-          ]),
+          ],
         }),
         expect.any(String),
       );
-      // Cancelou a auth ANTIGA.
-      expect(mockPagarmeService.delete).toHaveBeenCalledWith('/charges/ch_old');
+      // A tentativa é contada ANTES da chamada — é o que fecha o teto.
+      expect(mockDb.set).toHaveBeenCalledWith({ holdAttempts: 1 });
     });
 
-    it('pula (sem renovar) quando o bidder não tem mais cartão salvo', async () => {
+    /**
+     * O teste que existe por causa do caso de 24/08: batido o teto, o cartão
+     * do comprador não é tocado NUNCA MAIS por este lance.
+     */
+    it('estourado o teto de tentativas, não toca mais no cartão', async () => {
       mockDb = makeDrizzleMock();
-      mockDb.where.mockResolvedValueOnce([reauthRow]);
-      mockCardsService.getCardRef.mockReset().mockResolvedValue(null);
+      mockDb.where.mockResolvedValueOnce([
+        { ...semRetencao, attempts: 3 }, // HOLD_MAX_ATTEMPTS
+      ]);
       service = await buildModule();
 
-      const result = await service.reauthorizeExpiringBids();
+      const r = await service.armarRetencoesDeLideres();
 
-      expect(result.reauthorized).toEqual([]);
-      expect(result.failed).toEqual([]);
-      // Sem cartão → não tenta autorizar nem cancela a auth antiga.
+      expect(r).toEqual({ armadas: [], falhas: [], desistidas: [] });
       expect(mockPagarmeService.post).not.toHaveBeenCalled();
-      expect(mockPagarmeService.delete).not.toHaveBeenCalled();
     });
 
-    it('desfaz a auth NOVA e não conta como renovada se o lance mudou no meio', async () => {
+    it('respeita o backoff entre tentativas', async () => {
       mockDb = makeDrizzleMock();
-      mockDb.where
-        .mockResolvedValueOnce([reauthRow])
-        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
-        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança
-      // Troca atômica não afeta linhas (lance superado/fechado no meio).
-      mockDb.returning.mockResolvedValueOnce([]);
+      mockDb.where.mockResolvedValueOnce([
+        {
+          ...semRetencao,
+          attempts: 1,
+          nextAttemptAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      ]);
       service = await buildModule();
 
-      const result = await service.reauthorizeExpiringBids();
+      await service.armarRetencoesDeLideres();
 
-      expect(result.reauthorized).toEqual([]);
-      // Rollback: cancela a auth NOVA (ch_1 do authorizedOrder), não a antiga.
-      expect(mockPagarmeService.delete).toHaveBeenCalledWith('/charges/ch_1');
-      expect(mockPagarmeService.delete).not.toHaveBeenCalledWith(
-        '/charges/ch_old',
-      );
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
     });
 
-    it('marca como falha e MANTÉM a auth antiga se o cartão é recusado agora', async () => {
+    it('cartão recusado agenda nova tentativa, sem avisar ainda', async () => {
       mockDb = makeDrizzleMock();
-      mockDb.where
-        .mockResolvedValueOnce([reauthRow])
-        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }]) // sellerProfiles → vendedor apto
-        .mockResolvedValueOnce([mockEndereco]); // endereço de cobrança
-      // Cartão recusado na renovação.
+      filaDoArme(mockDb.where.mockResolvedValueOnce([semRetencao]));
       mockPagarmeService.post.mockReset().mockResolvedValue({
         id: 'or_x',
         status: 'failed',
@@ -1020,86 +1078,123 @@ describe('AuctionsService', () => {
       });
       service = await buildModule();
 
-      const result = await service.reauthorizeExpiringBids();
+      const r = await service.armarRetencoesDeLideres();
 
-      expect(result.failed).toContain('bid_001');
-      expect(result.reauthorized).toEqual([]);
-      // A auth ANTIGA é preservada (degrada para pending_payment no fecho).
-      expect(mockPagarmeService.delete).not.toHaveBeenCalledWith(
-        '/charges/ch_old',
+      expect(r.falhas).toContain('bid_001');
+      expect(r.desistidas).toEqual([]);
+      expect(mockDb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ holdNextAttemptAt: expect.any(Date) }),
+      );
+      // Avisar a cada tropeço viraria spam: o e-mail sai só na desistência.
+      expect(mockEventEmitter.emit).not.toHaveBeenCalledWith(
+        'auction.bid-hold-failed',
+        expect.anything(),
       );
     });
 
-    // ── Retenção devolvida antes do prazo ──────────────────────────────────
-    //
-    // `authExpiresAt` é estimativa nossa. Bandeira e banco emissor às vezes
-    // liberam o saldo antes do prazo contratado e não avisam ninguém. Confiar
-    // só na data faz a plataforma acreditar numa garantia inexistente até a
-    // hora de capturar — com o leilão fechado e o vencedor já avisado.
-
-    it('renova quando a retenção sumiu, mesmo com a validade longe', async () => {
+    it('na última tentativa desiste e avisa o licitante', async () => {
       mockDb = makeDrizzleMock();
-      mockDb.where
-        .mockResolvedValueOnce([reauthRowLonge])
-        .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
-        .mockResolvedValueOnce([mockEndereco]);
-      // O banco devolveu o saldo: a transação não está mais retida.
-      mockPagarmeService.get.mockResolvedValueOnce({
-        status: 'canceled',
-        last_transaction: { status: 'voided' },
+      filaDoArme(
+        mockDb.where.mockResolvedValueOnce([{ ...semRetencao, attempts: 2 }]),
+      );
+      mockPagarmeService.post.mockReset().mockResolvedValue({
+        id: 'or_x',
+        status: 'failed',
+        charges: [{ id: 'ch_x', status: 'failed' }],
       });
       service = await buildModule();
 
-      const result = await service.reauthorizeExpiringBids();
+      const r = await service.armarRetencoesDeLideres();
 
-      expect(result.reauthorized).toContain('bid_001');
-      expect(mockPagarmeService.get).toHaveBeenCalledWith('/charges/ch_old');
+      expect(r.desistidas).toContain('bid_001');
+      expect(r.falhas).toEqual([]);
+      // Sem próxima tentativa: acabou de verdade.
+      expect(mockDb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ holdNextAttemptAt: null }),
+      );
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'auction.bid-hold-failed',
+        expect.objectContaining({
+          bidderId,
+          amountInCents: 6000,
+          listingTitle: 'Hot Wheels Premium',
+        }),
+      );
     });
 
-    it('não renova quando a retenção segue de pé e a validade está longe', async () => {
+    it('retenção de pé não é rearmada', async () => {
       mockDb = makeDrizzleMock();
-      mockDb.where.mockResolvedValueOnce([reauthRowLonge]);
-      mockPagarmeService.get.mockResolvedValueOnce({
+      mockDb.where.mockResolvedValueOnce([comRetencao]);
+      mockPagarmeService.get.mockReset().mockResolvedValue({
         status: 'pending',
         last_transaction: { status: 'authorized_pending_capture' },
       });
+      mockPagarmeService.post.mockReset();
       service = await buildModule();
 
-      const result = await service.reauthorizeExpiringBids();
+      const r = await service.armarRetencoesDeLideres();
 
-      expect(result).toEqual({ reauthorized: [], failed: [] });
-      // Renovar à toa criaria uma SEGUNDA retenção no limite do comprador.
+      expect(r.armadas).toEqual([]);
+      // Rearmar à toa prende DOIS valores no limite do comprador ao mesmo
+      // tempo — a causa mais provável das recusas de 24/08.
       expect(mockPagarmeService.post).not.toHaveBeenCalled();
     });
 
-    it('na dúvida (consulta falhou) NÃO renova — trata como retida', async () => {
-      mockDb = makeDrizzleMock();
-      mockDb.where.mockResolvedValueOnce([reauthRowLonge]);
-      mockPagarmeService.get.mockRejectedValueOnce(
-        new Error('502 bad gateway'),
-      );
-      service = await buildModule();
-
-      const result = await service.reauthorizeExpiringBids();
-
-      // Uma instabilidade do gateway não pode bloquear o limite de todos os
-      // líderes de uma vez: dúvida degrada para o comportamento anterior.
-      expect(result).toEqual({ reauthorized: [], failed: [] });
-      expect(mockPagarmeService.post).not.toHaveBeenCalled();
-    });
-
-    it('não gasta consulta com quem já vai renovar pela data', async () => {
+    it('retenção que sumiu do cartão antes do prazo é rearmada', async () => {
       mockDb = makeDrizzleMock();
       mockDb.where
-        .mockResolvedValueOnce([reauthRow]) // vence em 1h
+        .mockResolvedValueOnce([comRetencao])
+        .mockResolvedValueOnce([]) // update holdCheckedAt
+        .mockResolvedValueOnce([]) // limpa o vínculo da retenção sumida
+        .mockResolvedValueOnce([]) // update holdAttempts
         .mockResolvedValueOnce([{ recipientId: 're_seller', canReceive: true }])
         .mockResolvedValueOnce([mockEndereco]);
+      mockPagarmeService.get.mockReset().mockResolvedValue({
+        status: 'canceled',
+        last_transaction: { status: 'voided' },
+      });
+      mockPagarmeService.post.mockReset().mockResolvedValue({
+        id: 'or_novo',
+        status: 'pending',
+        charges: [{ id: 'ch_novo', status: 'authorized_pending_capture' }],
+      });
       service = await buildModule();
-      mockPagarmeService.get.mockClear(); // o mock é compartilhado entre casos
 
-      await service.reauthorizeExpiringBids();
+      const r = await service.armarRetencoesDeLideres();
+
+      expect(r.armadas).toContain('bid_001');
+      expect(mockPagarmeService.get).toHaveBeenCalledWith('/charges/ch_armada');
+      // E o rearme consome o MESMO teto: a conferência não abre um laço novo.
+      expect(mockDb.set).toHaveBeenCalledWith({ holdAttempts: 2 });
+    });
+
+    it('não confere a mesma retenção duas vezes na mesma janela', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([
+        { ...comRetencao, checkedAt: new Date(Date.now() - 60 * 60 * 1000) },
+      ]);
+      mockPagarmeService.get.mockReset();
+      service = await buildModule();
+
+      await service.armarRetencoesDeLideres();
 
       expect(mockPagarmeService.get).not.toHaveBeenCalled();
+    });
+
+    it('na dúvida (consulta falhou) NÃO rearma — trata como retida', async () => {
+      mockDb = makeDrizzleMock();
+      mockDb.where.mockResolvedValueOnce([comRetencao]);
+      mockPagarmeService.get
+        .mockReset()
+        .mockRejectedValue(new Error('502 bad gateway'));
+      mockPagarmeService.post.mockReset();
+      service = await buildModule();
+
+      const r = await service.armarRetencoesDeLideres();
+
+      // Instabilidade do gateway não pode bloquear o limite de todo mundo.
+      expect(r.armadas).toEqual([]);
+      expect(mockPagarmeService.post).not.toHaveBeenCalled();
     });
   });
 

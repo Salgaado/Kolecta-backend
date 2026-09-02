@@ -479,16 +479,32 @@ export const bids = sqliteTable('bids', {
   // Ciclo do lance: active (líder, auth vigente) | outbid | won | lost | released
   status: text('status').notNull().default('active'),
 
-  // ─── Pré-autorização no cartão (lance por cartão / retenção) ─────────────────
-  // O lance líder tem uma pré-autorização (capture:false) na Pagar.me que garante
-  // o valor. Ao ser superado → void (cancela a auth). No fechamento → captura.
-  // O cron de re-auth cria uma nova auth antes de `authExpiresAt` e voida a antiga.
+  // ─── Pré-autorização no cartão (retenção que garante o lance) ───────────────
+  // O líder da RETA FINAL tem uma pré-autorização (capture:false) na Pagar.me
+  // que garante o valor; no arremate ela é capturada como pagamento da peça.
+  //
+  // NULO é estado normal, não erro: fora da reta final o lance não retém nada
+  // (a garantia é armada quando cabe até o fecho — ver `armarRetencoesDeLideres`).
+  // Ao ser superado → void. No arremate → captura.
   pagarmeOrderId: text('pagarme_order_id'),
   pagarmeChargeId: text('pagarme_charge_id'),
-  // Snapshot do card_id usado na auth (p/ re-autorizar no mesmo cartão).
+  // Snapshot do card_id usado na auth (p/ conferir/rearmar no mesmo cartão).
   pagarmeCardId: text('pagarme_card_id'),
   // Validade estimada da pré-autorização (janela da adquirente ~5 dias).
   authExpiresAt: integer('auth_expires_at', { mode: 'timestamp' }),
+
+  // ─── Teto de autorizações por lance ─────────────────────────────────────────
+  // O cartão de um comprador nunca pode ser tentado indefinidamente. Estas
+  // colunas são o que impede: `holdAttempts` conta TODA tentativa de criar
+  // retenção para este lance (bem ou mal sucedida) e para de vez ao bater o
+  // teto. Sem elas o cron era um laço sem memória — foi assim que um lance de
+  // R$45 virou 16 recusas seguidas no cartão de quem nem tinha arrematado.
+  holdAttempts: integer('hold_attempts').notNull().default(0),
+  holdLastError: text('hold_last_error'),
+  /** Backoff: não tentar de novo antes disto. */
+  holdNextAttemptAt: integer('hold_next_attempt_at', { mode: 'timestamp' }),
+  /** Última vez que a retenção foi CONFERIDA na Pagar.me (limita as consultas). */
+  holdCheckedAt: integer('hold_checked_at', { mode: 'timestamp' }),
 
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()

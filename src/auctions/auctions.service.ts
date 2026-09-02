@@ -52,22 +52,13 @@ const PLATFORM_RECIPIENT_ID = process.env.PAGARME_PLATFORM_RECIPIENT_ID ?? '';
 
 /**
  * Janela de validade estimada da pré-autorização (dias). A adquirente garante os
- * fundos por ~5 dias; o cron de re-auth (Fase 3) renova antes disso em leilões
- * mais longos. Configurável por `PAGARME_PREAUTH_VALIDITY_DAYS`.
+ * fundos por ~5 dias, e esse número é o TETO de tudo aqui: nenhum leilão desta
+ * plataforma cabe dentro dele (7 a 30 dias), então a retenção não acompanha o
+ * leilão — ela é armada na reta final. Configurável por
+ * `PAGARME_PREAUTH_VALIDITY_DAYS`.
  */
 const AUTH_VALIDITY_DAYS = parseInt(
   process.env.PAGARME_PREAUTH_VALIDITY_DAYS ?? '5',
-  10,
-);
-
-/**
- * Antecedência com que o cron de re-auth (Fase 3) renova uma pré-autorização
- * antes de ela expirar. Ex.: 24h → toda auth que vence nas próximas 24h é
- * renovada. Precisa ser < janela real da adquirente. Configurável por
- * `PAGARME_REAUTH_WINDOW_HOURS`.
- */
-const REAUTH_WINDOW_HOURS = parseInt(
-  process.env.PAGARME_REAUTH_WINDOW_HOURS ?? '24',
   10,
 );
 
@@ -96,6 +87,66 @@ const PAYMENT_DEADLINE_HOURS = parseInt(
   process.env.AUCTION_PAYMENT_DEADLINE_HOURS ?? '24',
   10,
 );
+
+/**
+ * Margem de segurança (horas) descontada da janela de retenção.
+ *
+ * `AUTH_VALIDITY_DAYS` é ESTIMATIVA nossa, não um contrato: bandeira e emissor
+ * às vezes devolvem o saldo antes do prazo. A margem é o quanto a garantia pode
+ * cair mais cedo sem deixar o arremate sem cobertura.
+ */
+const HOLD_MARGIN_HOURS = parseInt(
+  process.env.PAGARME_HOLD_MARGIN_HOURS ?? '12',
+  10,
+);
+
+/**
+ * Teto de autorizações que um único lance pode gerar no cartão do comprador.
+ *
+ * É a trava que faltava. O cron antigo era um laço sem memória — falhava,
+ * mantinha a auth velha e tentava de novo em 6h, para sempre. Um lance de R$45
+ * num leilão de 14 dias virou 16 recusas seguidas no cartão de quem nem tinha
+ * arrematado (caso de 24/08/2026). Agora a conta é persistida no lance e
+ * NENHUM cartão vê mais que isto, aconteça o que acontecer.
+ */
+const HOLD_MAX_ATTEMPTS = parseInt(
+  process.env.PAGARME_HOLD_MAX_ATTEMPTS ?? '3',
+  10,
+);
+
+/** Espera antes de cada nova tentativa, por número da tentativa já feita. */
+const HOLD_RETRY_BACKOFF_HOURS = [1, 6, 24];
+
+/** Intervalo mínimo entre duas conferências da MESMA retenção na Pagar.me. */
+const HOLD_RECHECK_HOURS = parseInt(
+  process.env.PAGARME_HOLD_RECHECK_HOURS ?? '6',
+  10,
+);
+
+/**
+ * A RETA FINAL: quanto antes do fecho a retenção do líder pode ser armada.
+ *
+ * Uma pré-autorização vive ~5 a 7 dias. Os leilões daqui duram de 7 a 30 (95 de
+ * 147 passam da validade), então reter no ato do lance obrigava a emendar uma
+ * corrente de retenções curtas ao longo do leilão — e cada emenda era uma
+ * autorização nova no cartão de alguém, que podia ser recusada. A corrente
+ * nunca funcionou: em toda a história da plataforma, zero renovações.
+ *
+ * A retenção passa a nascer no único momento em que ela CABE: perto o bastante
+ * do fim para sobreviver ao fecho mais o prazo de pagamento do vencedor. Uma
+ * autorização por lance, nenhuma renovação, e o limite do comprador livre
+ * durante quase todo o leilão.
+ *
+ * validade − prazo de pagamento − margem. Com 7 dias de validade: 132h (5,5
+ * dias). Nunca menos que 1h, para o cálculo não virar janela negativa se
+ * alguém configurar validade menor que o prazo.
+ */
+function janelaDeRetencaoHoras(): number {
+  return Math.max(
+    AUTH_VALIDITY_DAYS * 24 - PAYMENT_DEADLINE_HOURS - HOLD_MARGIN_HOURS,
+    1,
+  );
+}
 
 @Injectable()
 export class AuctionsService {
@@ -428,20 +479,33 @@ export class AuctionsService {
       );
     }
 
-    // ── Pré-autorização (retenção) no cartão do bidder ──
-    // Cria a auth ANTES de assumir a liderança; se perdermos a corrida de
+    // ── Retenção só na RETA FINAL ──
+    //
+    // Fora dela o lance NÃO retém nada. Uma pré-autorização vive ~5 a 7 dias e
+    // os leilões daqui vão a 30: reter no ato obrigava a emendar uma corrente
+    // de retenções ao longo do leilão, e cada emenda era uma autorização nova
+    // no cartão. A garantia é armada depois, quando cabe até o fecho
+    // (`armarRetencoesDeLideres`), e até lá o limite do comprador fica livre.
+    //
+    // O cartão continua sendo conferido no ato: `getCardRef` acima consulta a
+    // Pagar.me e devolve null quando o cadastro não existe mais. O que não
+    // acontece é bloquear dinheiro por semanas.
+    //
+    // Quando cria, cria ANTES de assumir a liderança; se perdermos a corrida de
     // concorrência abaixo, cancelamos a auth (rollback). Lança BadRequest com o
     // motivo da Pagar.me quando o cartão é recusado.
-    const preAuth = await this._createBidPreAuth({
-      customerId: cardRef.customerId,
-      cardId: cardRef.cardId,
-      amountInCents: dto.amountInCents,
-      auctionId,
-      bidderId,
-      sellerId: listing.sellerId,
-      sellerRecipientId,
-      billingAddress,
-    });
+    const preAuth = this._naRetaFinal(auction.endsAt)
+      ? await this._createBidPreAuth({
+          customerId: cardRef.customerId,
+          cardId: cardRef.cardId,
+          amountInCents: dto.amountInCents,
+          auctionId,
+          bidderId,
+          sellerId: listing.sellerId,
+          sellerRecipientId,
+          billingAddress,
+        })
+      : null;
 
     let bid: typeof schema.bids.$inferSelect;
     try {
@@ -452,10 +516,20 @@ export class AuctionsService {
             auctionId,
             bidderId,
             amountInCents: dto.amountInCents,
-            pagarmeOrderId: preAuth.orderId,
-            pagarmeChargeId: preAuth.chargeId,
-            pagarmeCardId: cardRef.cardId,
-            authExpiresAt: preAuth.expiresAt,
+            // Sem retenção os quatro campos ficam nulos — estado normal fora da
+            // reta final, e é `armarRetencoesDeLideres` que os preenche depois.
+            // `holdAttempts` já nasce em 1 quando retém: a autorização do lance
+            // conta para o teto como qualquer outra.
+            ...(preAuth
+              ? {
+                  pagarmeOrderId: preAuth.orderId,
+                  pagarmeChargeId: preAuth.chargeId,
+                  pagarmeCardId: cardRef.cardId,
+                  authExpiresAt: preAuth.expiresAt,
+                  holdAttempts: 1,
+                  holdCheckedAt: new Date(),
+                }
+              : {}),
           })
           .returning();
 
@@ -515,8 +589,8 @@ export class AuctionsService {
         return newBid;
       });
     } catch (err) {
-      // Perdeu a corrida (ou erro) → cancela a retenção recém-criada.
-      await this._voidPreAuth(preAuth.chargeId);
+      // Perdeu a corrida (ou erro) → cancela a retenção recém-criada, se houve.
+      if (preAuth) await this._voidPreAuth(preAuth.chargeId);
       throw err;
     }
 
@@ -774,19 +848,7 @@ export class AuctionsService {
   // total (`payAuctionOrder`, cobrança nova) ou até o prazo vencer
   // (`_expirePendingPayment`), e nos dois casos termina em `_voidPreAuth`.
 
-  // ── Fase 3: re-autorização das pré-autorizações a expirar ────────────────
-
-  /**
-   * Renova as pré-autorizações prestes a expirar dos lances líderes de leilões
-   * ainda ativos. A adquirente garante os fundos por ~5 dias; leilões mais
-   * longos perderiam a garantia. Para cada líder cujo `authExpiresAt` cai na
-   * janela ({@link REAUTH_WINDOW_HOURS}): cria uma pré-auth nova no cartão do
-   * bidder, faz a troca atômica no lance e cancela a antiga.
-   *
-   * Falha na renovação (cartão sem saldo/recusado agora) → mantém a auth antiga
-   * e segue: no fechamento a captura da auth vencida cai no ramo
-   * `pending_payment` (Fase 4), que dá prazo ao vencedor. Degrada seguro.
-   */
+  // ── Fase 3: a retenção do líder, armada na reta final ────────────────────
   /**
    * Devolve ao ar os leilões de um vendedor que acabou de ficar apto a receber.
    *
@@ -843,16 +905,39 @@ export class AuctionsService {
     return pausados.length;
   }
 
-  async reauthorizeExpiringBids(): Promise<{
-    reauthorized: string[];
-    failed: string[];
+  /**
+   * Arma a retenção do líder quando o leilão entra na RETA FINAL.
+   *
+   * Substitui a renovação em corrente. Antes, o lance retinha no ato e este
+   * cron emendava retenções curtas ao longo de um leilão longo — a cada 6h,
+   * sem teto, sem backoff e sem avisar ninguém quando o cartão recusava. Um
+   * lance de R$45 num leilão de 14 dias virou 16 recusas seguidas (24/08/2026),
+   * e a corrente nunca chegou a funcionar: zero renovações bem-sucedidas em
+   * toda a história da plataforma.
+   *
+   * O que este cron faz agora, para cada líder de leilão que fecha dentro da
+   * janela ({@link janelaDeRetencaoHoras}):
+   *
+   * - **sem retenção** → cria UMA, respeitando {@link HOLD_MAX_ATTEMPTS} e o
+   *   backoff. Estourou o teto: para de vez e avisa o licitante.
+   * - **com retenção** → confere na Pagar.me, no máximo a cada
+   *   {@link HOLD_RECHECK_HOURS}. Se sumiu do cartão (emissor devolve o saldo
+   *   antes do prazo, sem avisar), solta o vínculo e rearma — dentro do MESMO
+   *   teto, que é o que impede a conferência de virar um laço novo.
+   *
+   * Falhar degrada seguro: sem garantia, o fecho cria o pedido
+   * `pending_payment` de sempre e o vencedor paga do zero no prazo (Fase 4).
+   */
+  async armarRetencoesDeLideres(): Promise<{
+    armadas: string[];
+    falhas: string[];
+    desistidas: string[];
   }> {
-    const threshold = new Date(
-      Date.now() + REAUTH_WINDOW_HOURS * 60 * 60 * 1000,
+    const agora = new Date();
+    const limite = new Date(
+      agora.getTime() + janelaDeRetencaoHoras() * 60 * 60 * 1000,
     );
-    // Todos os líderes com retenção — não só os que vencem na janela. O filtro
-    // por data ficou para depois, porque agora existe um segundo motivo para
-    // renovar (ver abaixo) que a data não enxerga.
+
     const rows = await this.db
       .select({
         bidId: schema.bids.id,
@@ -860,8 +945,13 @@ export class AuctionsService {
         bidderId: schema.bids.bidderId,
         amountInCents: schema.bids.amountInCents,
         chargeId: schema.bids.pagarmeChargeId,
-        authExpiresAt: schema.bids.authExpiresAt,
+        attempts: schema.bids.holdAttempts,
+        nextAttemptAt: schema.bids.holdNextAttemptAt,
+        checkedAt: schema.bids.holdCheckedAt,
         sellerId: schema.listings.sellerId,
+        listingId: schema.listings.id,
+        listingTitle: schema.listings.title,
+        endsAt: schema.auctions.endsAt,
       })
       .from(schema.bids)
       .innerJoin(schema.auctions, eq(schema.bids.auctionId, schema.auctions.id))
@@ -873,45 +963,126 @@ export class AuctionsService {
         and(
           eq(schema.bids.status, 'active'),
           eq(schema.auctions.status, 'active'),
-          isNotNull(schema.bids.pagarmeChargeId),
-          isNotNull(schema.bids.authExpiresAt),
+          // Pausado não entra: o relógio dele está congelado, então `endsAt` é
+          // uma data velha que colocaria o leilão na janela sem ele estar perto
+          // do fim de verdade.
+          isNull(schema.auctions.pausedAt),
+          lte(schema.auctions.endsAt, limite),
         ),
       );
 
-    const reauthorized: string[] = [];
-    const failed: string[] = [];
-    for (const row of rows) {
-      let motivo: string | null =
-        row.authExpiresAt && row.authExpiresAt <= threshold
-          ? 'vence dentro da janela'
-          : null;
+    const armadas: string[] = [];
+    const falhas: string[] = [];
+    const desistidas: string[] = [];
 
-      // A data de validade é ESTIMATIVA nossa (`AUTH_VALIDITY_DAYS`), não um
-      // fato: bandeira e banco emissor às vezes devolvem o saldo antes do prazo
-      // contratado, sem avisar ninguém. Confiar só na data deixa a plataforma
-      // achando que tem garantia por dias — e descobrindo o contrário na hora
-      // de capturar, com o leilão já fechado. Por isso, quem ainda não está na
-      // janela tem a retenção CONFERIDA de verdade.
-      if (!motivo) {
-        const retida = await this._preAuthAindaRetida(row.chargeId!);
-        if (retida === false) motivo = 'retenção não existe mais no cartão';
+    for (const row of rows) {
+      // ── Já tem retenção: confere se ela ainda existe ──
+      if (row.chargeId) {
+        const conferidaHaPouco =
+          !!row.checkedAt &&
+          row.checkedAt.getTime() + HOLD_RECHECK_HOURS * 60 * 60 * 1000 >
+            agora.getTime();
+        if (conferidaHaPouco) continue;
+
+        const retida = await this._preAuthAindaRetida(row.chargeId);
+        await this.db
+          .update(schema.bids)
+          .set({ holdCheckedAt: agora })
+          .where(eq(schema.bids.id, row.bidId));
+
+        // De pé, ou dúvida (`null`) → não mexe. Ver `_preAuthAindaRetida`.
+        if (retida !== false) continue;
+
+        this.logger.warn(
+          `Retenção ${row.chargeId} do lance ${row.bidId} sumiu do cartão ` +
+            `antes do prazo. Rearmando.`,
+        );
+        await this.db
+          .update(schema.bids)
+          .set({
+            pagarmeOrderId: null,
+            pagarmeChargeId: null,
+            authExpiresAt: null,
+          })
+          .where(
+            and(
+              eq(schema.bids.id, row.bidId),
+              eq(schema.bids.status, 'active'),
+              eq(schema.bids.pagarmeChargeId, row.chargeId),
+            ),
+          );
       }
 
-      if (!motivo) continue;
+      // ── Sem retenção: arma, se ainda houver tentativa ──
+      if (row.attempts >= HOLD_MAX_ATTEMPTS) continue;
+      if (row.nextAttemptAt && row.nextAttemptAt > agora) continue;
+
+      // A tentativa é contada ANTES de falar com a Pagar.me. Contar depois
+      // deixaria o teto furado justamente no cenário que ele existe para
+      // cobrir: processo derrubado no meio da chamada, tentativa nunca
+      // registrada, e o laço de volta.
+      const tentativa = row.attempts + 1;
+      await this.db
+        .update(schema.bids)
+        .set({ holdAttempts: tentativa })
+        .where(eq(schema.bids.id, row.bidId));
 
       try {
-        if (await this._reauthorizeBid(row)) {
-          reauthorized.push(row.bidId);
-          this.logger.log(`Re-auth do lance ${row.bidId}: ${motivo}.`);
+        if (await this._armarRetencao(row)) {
+          armadas.push(row.bidId);
+          this.logger.log(
+            `Retenção armada no lance ${row.bidId} ` +
+              `(tentativa ${tentativa}/${HOLD_MAX_ATTEMPTS}).`,
+          );
         }
       } catch (err: any) {
-        failed.push(row.bidId);
+        const motivo = String(err?.message ?? err).slice(0, 500);
+        const desistiu = tentativa >= HOLD_MAX_ATTEMPTS;
+        const espera =
+          HOLD_RETRY_BACKOFF_HOURS[
+            Math.min(tentativa, HOLD_RETRY_BACKOFF_HOURS.length) - 1
+          ];
+
+        await this.db
+          .update(schema.bids)
+          .set({
+            holdLastError: motivo,
+            holdNextAttemptAt: desistiu
+              ? null
+              : new Date(agora.getTime() + espera * 60 * 60 * 1000),
+          })
+          .where(eq(schema.bids.id, row.bidId));
+
+        if (!desistiu) {
+          falhas.push(row.bidId);
+          this.logger.warn(
+            `Retenção do lance ${row.bidId} falhou ` +
+              `(${tentativa}/${HOLD_MAX_ATTEMPTS}, nova tentativa em ${espera}h): ${motivo}`,
+          );
+          continue;
+        }
+
+        desistidas.push(row.bidId);
         this.logger.error(
-          `Re-auth do lance ${row.bidId} falhou (mantém a auth antiga): ${err?.message}`,
+          `Retenção do lance ${row.bidId} DESISTIDA após ${tentativa} ` +
+            `tentativas: ${motivo}. O arremate, se houver, será cobrado do ` +
+            `zero dentro do prazo de pagamento.`,
         );
+        // Avisar é parte da correção: antes, o cartão do comprador era recusado
+        // repetidamente e nem ele nem a plataforma ficavam sabendo.
+        this.eventEmitter.emit('auction.bid-hold-failed', {
+          auctionId: row.auctionId,
+          listingId: row.listingId,
+          listingTitle: row.listingTitle,
+          bidderId: row.bidderId,
+          amountInCents: row.amountInCents,
+          endsAt: row.endsAt,
+          paymentDeadlineHours: PAYMENT_DEADLINE_HOURS,
+        });
       }
     }
-    return { reauthorized, failed };
+
+    return { armadas, falhas, desistidas };
   }
 
   /**
@@ -942,28 +1113,42 @@ export class AuctionsService {
     }
   }
 
-  /** Renova a pré-auth de um lance líder. Retorna true se trocou a auth. */
-  private async _reauthorizeBid(row: {
+  /**
+   * O leilão já está perto o bastante do fim para a retenção caber?
+   *
+   * "Caber" é sobreviver ao fecho MAIS o prazo de pagamento do vencedor — a
+   * garantia só serve se ainda estiver de pé na hora da captura. Leilão sem
+   * data de fim nunca cabe.
+   */
+  private _naRetaFinal(endsAt: Date | null): boolean {
+    if (!endsAt) return false;
+    return (
+      endsAt.getTime() <= Date.now() + janelaDeRetencaoHoras() * 60 * 60 * 1000
+    );
+  }
+
+  /**
+   * Cria a retenção de um lance líder e amarra ao lance.
+   *
+   * Devolve `false` quando o lance mudou no meio do caminho (foi superado, ou
+   * já ganhou retenção por outro caminho): a auth recém-criada é desfeita e
+   * nada é gravado. Lança quando a Pagar.me recusa — aí é falha de verdade, e
+   * quem chama conta a tentativa e aplica o backoff.
+   */
+  private async _armarRetencao(row: {
     bidId: string;
     auctionId: string;
     bidderId: string;
     amountInCents: number;
-    chargeId: string | null;
     sellerId: string;
   }): Promise<boolean> {
-    // Renova no cartão ATUAL do bidder (1 por usuário). Sem cartão salvo (removido
-    // depois do lance) → não há como renovar; mantém a auth antiga.
     const cardRef = await this.cardsService.getCardRef(row.bidderId);
     if (!cardRef) {
-      this.logger.warn(
-        `Re-auth do lance ${row.bidId}: bidder ${row.bidderId} sem cartão salvo. Mantém a auth antiga.`,
+      throw new Error(
+        `licitante ${row.bidderId} está sem cartão salvo (removido depois do lance)`,
       );
-      return false;
     }
 
-    const sellerRecipientId = await this._getSellerRecipientId(row.sellerId);
-
-    // Nova pré-auth no valor do lance (lança se o cartão recusar).
     const fresh = await this._createBidPreAuth({
       customerId: cardRef.customerId,
       cardId: cardRef.cardId,
@@ -971,40 +1156,41 @@ export class AuctionsService {
       auctionId: row.auctionId,
       bidderId: row.bidderId,
       sellerId: row.sellerId,
-      sellerRecipientId,
+      sellerRecipientId: await this._getSellerRecipientId(row.sellerId),
       billingAddress: await this._getBillingAddress(row.bidderId),
     });
 
-    // Troca atômica: só aponta o lance para a auth nova se ele AINDA é o líder
-    // com a MESMA auth antiga (evita corrida com um lance que o superou/fechou).
-    const swapped = await this.db
+    // Só amarra se o lance AINDA é o líder e continua sem retenção. `isNull`
+    // no lugar da comparação com a auth antiga: aqui não existe troca, existe
+    // arme — e armar por cima de retenção existente é justamente o que prendia
+    // dois valores no limite do comprador ao mesmo tempo.
+    const armado = await this.db
       .update(schema.bids)
       .set({
         pagarmeOrderId: fresh.orderId,
         pagarmeChargeId: fresh.chargeId,
         pagarmeCardId: cardRef.cardId,
         authExpiresAt: fresh.expiresAt,
+        holdCheckedAt: new Date(),
+        holdLastError: null,
+        holdNextAttemptAt: null,
       })
       .where(
         and(
           eq(schema.bids.id, row.bidId),
           eq(schema.bids.status, 'active'),
-          eq(schema.bids.pagarmeChargeId, row.chargeId!),
+          isNull(schema.bids.pagarmeChargeId),
         ),
       )
       .returning();
 
-    if (swapped.length === 0) {
-      // O lance mudou no meio da renovação → desfaz a auth nova (rollback).
+    if (armado.length === 0) {
       await this._voidPreAuth(fresh.chargeId);
+      this.logger.warn(
+        `Retenção ${fresh.chargeId} desfeita: o lance ${row.bidId} mudou durante o arme.`,
+      );
       return false;
     }
-
-    // Trocou → cancela a auth antiga (best-effort).
-    await this._voidPreAuth(row.chargeId!);
-    this.logger.log(
-      `Re-auth do lance ${row.bidId}: nova pré-auth ${fresh.chargeId}; antiga ${row.chargeId} cancelada.`,
-    );
     return true;
   }
 

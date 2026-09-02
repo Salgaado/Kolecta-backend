@@ -18,23 +18,35 @@ export class CloseAuctionsCron {
   }
 
   /**
-   * Fase 3 — renova as pré-autorizações dos lances líderes que estão perto de
-   * expirar (leilões que duram mais que a janela da adquirente ~5 dias). Roda a
-   * cada 6h: cada auth entra na janela de renovação (~24h) e é renovada uma vez.
+   * Fase 3 — arma a retenção do líder nos leilões que entraram na reta final.
+   *
+   * Roda de hora em hora, e a frequência aqui não custa nada: a varredura é uma
+   * consulta ao banco, e só quem PRECISA de retenção fala com a Pagar.me. O que
+   * limita as tentativas no cartão não é o intervalo do cron — é o teto por
+   * lance (`HOLD_MAX_ATTEMPTS`), gravado no próprio lance.
+   *
+   * Foi o oposto disso que quebrou: o cron antigo renovava a cada 6h e, quando
+   * o cartão recusava, tentava de novo para sempre. 16 recusas seguidas no
+   * cartão de um comprador que nem tinha arrematado.
    */
-  @Cron(CronExpression.EVERY_6_HOURS)
-  async handleReauthorizeExpiringBids() {
-    this.logger.log('Verificando pré-autorizações de lance a expirar...');
-    const { reauthorized, failed } =
-      await this.auctionsService.reauthorizeExpiringBids();
-    if (reauthorized.length > 0) {
+  @Cron(CronExpression.EVERY_HOUR)
+  async handleArmarRetencoesDeLideres() {
+    const { armadas, falhas, desistidas } =
+      await this.auctionsService.armarRetencoesDeLideres();
+    if (armadas.length > 0) {
       this.logger.log(
-        `${reauthorized.length} pré-auth(s) de lance renovada(s): ${reauthorized.join(', ')}`,
+        `${armadas.length} retenção(ões) de lance armada(s): ${armadas.join(', ')}`,
       );
     }
-    if (failed.length > 0) {
+    if (falhas.length > 0) {
       this.logger.warn(
-        `${failed.length} pré-auth(s) de lance NÃO renovada(s): ${failed.join(', ')}`,
+        `${falhas.length} retenção(ões) adiada(s) para nova tentativa: ${falhas.join(', ')}`,
+      );
+    }
+    if (desistidas.length > 0) {
+      this.logger.error(
+        `${desistidas.length} retenção(ões) DESISTIDA(S) por teto de tentativas: ` +
+          `${desistidas.join(', ')}. Os licitantes foram avisados.`,
       );
     }
   }

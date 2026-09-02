@@ -15,6 +15,7 @@ import * as bidReceived from './bid-received';
 import * as bidOutbid from './bid-outbid';
 import * as auctionWon from './auction-won';
 import * as auctionReserveNotMet from './auction-reserve-not-met';
+import * as bidHoldFailed from './bid-hold-failed';
 import * as messageReceived from './message-received';
 import * as payoutReleased from './payout-released';
 import * as disputeOpened from './dispute-opened';
@@ -46,6 +47,7 @@ export const TEMPLATES = {
   'bid-outbid': bidOutbid,
   'auction-won': auctionWon,
   'auction-reserve-not-met': auctionReserveNotMet,
+  'bid-hold-failed': bidHoldFailed,
   'message-received': messageReceived,
   'payout-released': payoutReleased,
   'dispute-opened': disputeOpened,

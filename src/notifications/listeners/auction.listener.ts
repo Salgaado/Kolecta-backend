@@ -30,6 +30,16 @@ interface AuctionWonEvent {
   paymentDeadlineHours?: number;
 }
 
+interface BidHoldFailedEvent {
+  auctionId: string;
+  listingId: string;
+  listingTitle: string;
+  bidderId: string;
+  amountInCents: number;
+  endsAt: Date | null;
+  paymentDeadlineHours: number;
+}
+
 interface ReserveNotMetEvent {
   auctionId: string;
   listingId: string;
@@ -132,6 +142,41 @@ export class AuctionListener {
    * uma lista de pedidos vazia, e não tinha onde descobrir o motivo. Foi o que
    * prendeu dois compradores em 24/08 e 01/09/2026.
    */
+  /**
+   * A plataforma desistiu de reservar o valor do lance no cartão do líder.
+   *
+   * O que este e-mail conserta é o silêncio. Antes, o cron tentava reter a cada
+   * 6h para sempre, e cada recusa morria no log do servidor: o comprador via as
+   * tentativas irem e virem na fatura sem explicação nenhuma. Agora a
+   * plataforma para depois de poucas tentativas — e diz o que houve.
+   */
+  @OnEvent('auction.bid-hold-failed')
+  async handleBidHoldFailed(event: BidHoldFailedEvent): Promise<void> {
+    const bidder = await this.userById(event.bidderId);
+    if (!bidder?.email) {
+      this.logger.warn(
+        `Líder ${event.bidderId} sem e-mail — "bid-hold-failed" do leilão ` +
+          `${event.auctionId} não enviado.`,
+      );
+      return;
+    }
+
+    await this.mail.send({
+      to: bidder.email,
+      template: 'bid-hold-failed',
+      // Um aviso por lance-no-leilão: o teto é por lance, então a desistência
+      // acontece uma vez só — mas o cron pode reprocessar a mesma linha.
+      refId: `bid-hold-failed-${event.auctionId}-${event.bidderId}`,
+      data: {
+        bidderName: bidder.name,
+        listingId: event.listingId,
+        listingTitle: event.listingTitle,
+        amountInCents: event.amountInCents,
+        paymentDeadlineHours: event.paymentDeadlineHours,
+      },
+    });
+  }
+
   @OnEvent('auction.reserve-not-met')
   async handleReserveNotMet(event: ReserveNotMetEvent): Promise<void> {
     const bidder = await this.userById(event.topBidderId);
