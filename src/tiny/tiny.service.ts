@@ -10,6 +10,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import * as schema from '../database/schema';
+import { normalizarProduto } from './tiny-catalogo';
 
 type Database = any;
 
@@ -475,5 +476,96 @@ export class TinyService {
     }
 
     return res.json();
+  }
+
+  // ── Catálogo do lojista ─────────────────────────────────────────────────────
+
+  /**
+   * Uma página do catálogo do Tiny, já normalizada para a tela.
+   *
+   * Listagem barata, igual ao Bling: `GET /produtos` traz o essencial e o
+   * detalhe (peso, dimensão, GTIN, fotos) é buscado só do que o lojista escolher
+   * importar. O Tiny pagina por `limit`/`offset` (não por número de página), e
+   * `situacao=A` traz só os ativos — produto desligado no ERP não deve virar
+   * anúncio no ar.
+   */
+  async listarProdutos(userId: string, pagina = 1) {
+    const token = await this.getValidToken(userId);
+    const limite = 100; // teto da API
+    const offset = Math.max(0, (Math.max(1, pagina) - 1) * limite);
+    const url = `${TINY_API_URL}/produtos?situacao=A&limit=${limite}&offset=${offset}`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      const corpo = await res.text();
+      this.logger.error(`Tiny /produtos ${res.status}: ${corpo.slice(0, 300)}`);
+      throw new BadGatewayException(
+        'Não foi possível ler o catálogo do seu Tiny. Tente de novo em instantes.',
+      );
+    }
+
+    // O Tiny devolve `{ itens: [...], paginacao: {...} }` (conferido no swagger
+    // v3). O Bling devolve `{ data: [...] }`; é a única divergência de casca, e
+    // fica isolada aqui.
+    const corpo = await res.json();
+    const itens = Array.isArray(corpo?.itens)
+      ? corpo.itens
+      : Array.isArray(corpo?.data)
+        ? corpo.data
+        : [];
+    const produtos = itens.map(normalizarProduto);
+    return {
+      produtos,
+      pagina,
+      // Página cheia provavelmente tem mais; página curta é a última. Mesmo
+      // critério do Bling, para o front paginar igual nos dois.
+      temMais: produtos.length === limite,
+    };
+  }
+
+  /** Detalhe de um produto: peso, dimensões, GTIN e os anexos (fotos). */
+  async detalharProduto(userId: string, produtoId: number): Promise<any> {
+    const token = await this.getValidToken(userId);
+    const res = await fetch(`${TINY_API_URL}/produtos/${produtoId}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      throw new BadGatewayException(
+        `O Tiny não devolveu o produto ${produtoId} (HTTP ${res.status}).`,
+      );
+    }
+    // Alguns endpoints do Tiny embrulham em `{ data }`, outros não. Aceita os
+    // dois para não depender de um formato que só se confirma com conta real.
+    const corpo = await res.json();
+    return corpo?.data ?? corpo;
+  }
+
+  /**
+   * Saldo de estoque de UM produto no Tiny.
+   *
+   * O Tiny não tem endpoint em lote (é um produto por chamada, ao contrário do
+   * `/estoques/saldos` do Bling), então o serviço de estoque espaça as chamadas.
+   * Devolve o número cru (`disponivel`, senão `saldo`); a normalização
+   * (negativo -> 0, ausência -> null) é do `common/erp/estoque-sync`.
+   */
+  async saldoProduto(userId: string, produtoId: number): Promise<number | null> {
+    const token = await this.getValidToken(userId);
+    const res = await fetch(`${TINY_API_URL}/estoque/${produtoId}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      // Produto apagado ou consulta que falhou não é saldo zero: devolve null
+      // para o `decidir` não tirar do ar um anúncio que talvez esteja certo.
+      this.logger.warn(
+        `Tiny /estoque/${produtoId} ${res.status} — tratando como saldo desconhecido.`,
+      );
+      return null;
+    }
+    const corpo = await res.json();
+    const dado = corpo?.data ?? corpo;
+    const bruto = dado?.disponivel ?? dado?.saldo;
+    return typeof bruto === 'number' && Number.isFinite(bruto) ? bruto : null;
   }
 }

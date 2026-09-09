@@ -1,20 +1,24 @@
 import { Module } from '@nestjs/common';
 import { TinyService } from './tiny.service';
+import { TinyImportService } from './tiny-import.service';
+import { TinyEstoqueService } from './tiny-estoque.service';
 import { TinyController } from './tiny.controller';
 import { DatabaseModule } from '../database/database.module';
 import { AuthModule } from '../auth/auth.module';
+import { MediaModule } from '../media/media.module';
 
 /**
- * Fase 1 do docs/PLAN-tiny-olist.md: só a conexão OAuth.
+ * Integração com o Tiny (Olist ERP), espelhando o `BlingModule`: conexão OAuth
+ * (Fase 1) + catálogo, importação e sincronização de estoque (Fases 2-3).
  *
- * Sem `MediaModule` porque não há importação de foto ainda, e sem serviço de
- * estoque ou de pedido porque as duas coisas dependem de medir a API real —
- * ver o "⚠️" do plano.
+ * `MediaModule` entra porque a importação copia as fotos do ERP para o nosso R2.
+ * O cron de estoque usa o `ScheduleModule`, registrado globalmente no AppModule
+ * (mesmo arranjo do Bling).
  */
 @Module({
-  imports: [DatabaseModule, AuthModule],
+  imports: [DatabaseModule, AuthModule, MediaModule],
   controllers: [TinyController],
-  providers: [TinyService],
+  providers: [TinyService, TinyImportService, TinyEstoqueService],
   exports: [TinyService],
 })
 export class TinyModule {}

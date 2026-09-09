@@ -1,6 +1,8 @@
 import {
+  Body,
   Controller,
   Get,
+  Post,
   Delete,
   Logger,
   Query,
@@ -12,6 +14,9 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { TinyService } from './tiny.service';
+import { TinyImportService } from './tiny-import.service';
+import { TinyEstoqueService } from './tiny-estoque.service';
+import { ImportarTinyDto } from './dto/tiny.dto';
 import { AuthGuard } from '../auth/auth.guard';
 
 /**
@@ -26,7 +31,11 @@ import { AuthGuard } from '../auth/auth.guard';
 export class TinyController {
   private readonly logger = new Logger(TinyController.name);
 
-  constructor(private readonly tiny: TinyService) {}
+  constructor(
+    private readonly tiny: TinyService,
+    private readonly importService: TinyImportService,
+    private readonly estoqueService: TinyEstoqueService,
+  ) {}
 
   // ── GET /api/tiny/status — status da conexão do seller ──────────────────────
 
@@ -91,6 +100,62 @@ export class TinyController {
   async verificar(@Req() req: Request) {
     const userId = (req as any).auth.userId as string;
     return { data: await this.tiny.verificarConexao(userId) };
+  }
+
+  // ── GET /api/tiny/produtos — catálogo do lojista, uma página ────────────────
+  //
+  // Listagem barata (sem peso, dimensão nem GTIN, que só existem no detalhe). O
+  // detalhe é buscado só do que o lojista escolher importar.
+
+  @Get('produtos')
+  @UseGuards(AuthGuard)
+  async produtos(@Req() req: Request, @Query('pagina') pagina?: string) {
+    const userId = (req as any).auth.userId as string;
+    const n = Math.max(1, parseInt(pagina ?? '1', 10) || 1);
+    return { data: await this.tiny.listarProdutos(userId, n) };
+  }
+
+  // ── POST /api/tiny/conferir — o que falta, SEM criar nada ───────────────────
+
+  @Post('conferir')
+  @UseGuards(AuthGuard)
+  async conferir(@Req() req: Request, @Body() dto: ImportarTinyDto) {
+    const userId = (req as any).auth.userId as string;
+    return {
+      data: await this.importService.conferir(userId, dto.ids, {
+        categoria: dto.categoria,
+        condicao: dto.condicao,
+        atributos: dto.atributos,
+      }),
+    };
+  }
+
+  // ── POST /api/tiny/importar — cria os anúncios que passam ───────────────────
+
+  @Post('importar')
+  @UseGuards(AuthGuard)
+  async importar(@Req() req: Request, @Body() dto: ImportarTinyDto) {
+    const userId = (req as any).auth.userId as string;
+    return {
+      data: await this.importService.importar(userId, dto.ids, {
+        categoria: dto.categoria,
+        condicao: dto.condicao,
+        atributos: dto.atributos,
+      }),
+    };
+  }
+
+  // ── POST /api/tiny/estoque/sincronizar — puxa o saldo do ERP agora ──────────
+  //
+  // O cron já roda de meia em meia hora. Este endpoint é para o lojista que
+  // acabou de mexer no estoque e quer ver a vitrine acertada agora.
+
+  @Post('estoque/sincronizar')
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async sincronizarEstoque(@Req() req: Request) {
+    const userId = (req as any).auth.userId as string;
+    return { data: await this.estoqueService.sincronizar(userId) };
   }
 
   // ── DELETE /api/tiny/disconnect — remove a conexão ──────────────────────────
