@@ -367,7 +367,7 @@ export class BlingService {
    * requisição por produto para preencher uma tela que o lojista talvez nem
    * role até o fim. O detalhe é buscado só do que ele escolher importar.
    */
-  async listarProdutos(userId: string, pagina = 1) {
+  async listarProdutos(userId: string, pagina = 1, busca?: string) {
     const token = await this.getValidToken(userId);
     const limite = 100; // teto da API
     // `criterio=2` ordena por NOME e traz só os ativos. Conferido contra a API
@@ -381,7 +381,13 @@ export class BlingService {
     // Alfabética porque o lojista está procurando um produto pelo nome, não
     // navegando pela ordem em que cadastrou. E ativos só: produto desligado no
     // ERP não deveria virar anúncio no ar.
-    const url = `${BLING_API_URL}/produtos?pagina=${pagina}&limite=${limite}&criterio=2`;
+    // `nome` filtra por trecho do nome do produto (conferido contra a API v3
+    // com token real em 09/09/2026: `?nome=1934` devolveu só o produto que
+    // batia; `?pesquisa=`/`?descricao=` NÃO filtram, e `?codigo=` é SKU exato).
+    // Retorno de founder: catálogo grande obrigava paginar tudo até achar a peça.
+    const termo = String(busca ?? '').trim();
+    const filtro = termo ? `&nome=${encodeURIComponent(termo)}` : '';
+    const url = `${BLING_API_URL}/produtos?pagina=${pagina}&limite=${limite}&criterio=2${filtro}`;
 
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
