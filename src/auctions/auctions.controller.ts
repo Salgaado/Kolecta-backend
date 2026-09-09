@@ -50,6 +50,18 @@ export class AuctionsController {
     return { data: bids };
   }
 
+  // ── GET /api/auctions/:id/bids — Dono: lista de lances do leilão ─────────
+  //
+  // O painel do vendedor mostrava "N lances" mas a tabela vinha vazia, porque
+  // a lista nunca era buscada. Restrito ao dono do leilão (ver o serviço).
+
+  @Get(':id/bids')
+  @UseGuards(AuthGuard)
+  async bidsDoLeilao(@Param('id') id: string, @Req() req: Request) {
+    const userId = (req as any).auth.userId as string;
+    return { data: await this.auctionsService.bidsDoLeilao(id, userId) };
+  }
+
   // ── GET /api/auctions/seller/mine — Seller: meus leilões ─────────────────
 
   @Get('seller/mine')

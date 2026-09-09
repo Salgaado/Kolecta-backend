@@ -344,6 +344,56 @@ export class AuctionsService {
     }));
   }
 
+  // ── Lances de um leilão (dono) ───────────────────────────────────────────
+
+  /**
+   * Lista os lances de um leilão, para o DONO ver quem ofertou.
+   *
+   * O painel do vendedor mostrava "6 lances" (um `count`) mas a tabela vinha
+   * VAZIA: a lista de lances nunca era buscada, só o número existia. Este é o
+   * endpoint que faltava.
+   *
+   * Restrito ao vendedor do anúncio: a lista completa (nome de quem deu lance +
+   * valor) é dado de quem participou, e só faz sentido para o dono do leilão.
+   * Ordena do maior lance para o menor, que é como se lê um histórico de lances.
+   */
+  async bidsDoLeilao(auctionId: string, requesterId: string) {
+    const [dono] = await this.db
+      .select({ sellerId: schema.listings.sellerId })
+      .from(schema.auctions)
+      .innerJoin(
+        schema.listings,
+        eq(schema.auctions.listingId, schema.listings.id),
+      )
+      .where(eq(schema.auctions.id, auctionId));
+
+    if (!dono) throw new NotFoundException('Leilão não encontrado');
+    if (dono.sellerId !== requesterId) {
+      throw new ForbiddenException('Só o dono do leilão vê a lista de lances.');
+    }
+
+    const linhas = await this.db
+      .select({
+        id: schema.bids.id,
+        amountInCents: schema.bids.amountInCents,
+        createdAt: schema.bids.createdAt,
+        status: schema.bids.status,
+        bidderName: schema.users.name,
+      })
+      .from(schema.bids)
+      .leftJoin(schema.users, eq(schema.bids.bidderId, schema.users.id))
+      .where(eq(schema.bids.auctionId, auctionId))
+      .orderBy(desc(schema.bids.amountInCents), desc(schema.bids.createdAt));
+
+    return linhas.map((b) => ({
+      id: b.id,
+      bidderName: b.bidderName ?? 'Participante',
+      amountInCents: b.amountInCents,
+      createdAt: b.createdAt,
+      status: b.status,
+    }));
+  }
+
   // ── Criar leilão (seller) ────────────────────────────────────────────────
 
   async create(sellerId: string, dto: CreateAuctionDto) {
