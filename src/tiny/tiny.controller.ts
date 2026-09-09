@@ -109,10 +109,14 @@ export class TinyController {
 
   @Get('produtos')
   @UseGuards(AuthGuard)
-  async produtos(@Req() req: Request, @Query('pagina') pagina?: string) {
+  async produtos(
+    @Req() req: Request,
+    @Query('pagina') pagina?: string,
+    @Query('busca') busca?: string,
+  ) {
     const userId = (req as any).auth.userId as string;
     const n = Math.max(1, parseInt(pagina ?? '1', 10) || 1);
-    return { data: await this.tiny.listarProdutos(userId, n) };
+    return { data: await this.tiny.listarProdutos(userId, n, busca) };
   }
 
   // ── POST /api/tiny/conferir — o que falta, SEM criar nada ───────────────────

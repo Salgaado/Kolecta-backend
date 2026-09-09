@@ -489,11 +489,17 @@ export class TinyService {
    * `situacao=A` traz só os ativos — produto desligado no ERP não deve virar
    * anúncio no ar.
    */
-  async listarProdutos(userId: string, pagina = 1) {
+  async listarProdutos(userId: string, pagina = 1, busca?: string) {
     const token = await this.getValidToken(userId);
     const limite = 100; // teto da API
     const offset = Math.max(0, (Math.max(1, pagina) - 1) * limite);
-    const url = `${TINY_API_URL}/produtos?situacao=A&limit=${limite}&offset=${offset}`;
+    // `nome` é o filtro por nome do produto no Tiny (busca por trecho). Sem ele,
+    // o lojista com catálogo grande tinha que paginar tudo até achar a peça —
+    // foi o retorno de um founder. Só entra na URL quando o vendedor digitou
+    // algo, então a listagem normal (sem busca) segue idêntica.
+    const termo = String(busca ?? '').trim();
+    const filtro = termo ? `&nome=${encodeURIComponent(termo)}` : '';
+    const url = `${TINY_API_URL}/produtos?situacao=A&limit=${limite}&offset=${offset}${filtro}`;
 
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
